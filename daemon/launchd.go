@@ -298,3 +298,9 @@ func xmlEscape(s string) string {
 	}
 	return b.String()
 }
+
+// CheckLinger is a Linux/systemd concept; on macOS launchd there is no
+// equivalent. Always return enabled so the warning in daemon.go is skipped.
+func CheckLinger() (enabled bool, user string) {
+	return true, ""
+}

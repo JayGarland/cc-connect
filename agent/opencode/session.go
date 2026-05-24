@@ -164,6 +164,12 @@ func (s *opencodeSession) buildRunArgs(prompt string, imagePaths []string, chatI
 	// Enable thinking blocks.
 	args = append(args, "--thinking")
 
+	// In yolo/auto mode, skip permission prompts entirely so headless
+	// runs don't get stuck with auto-rejected external-directory ops.
+	if s.mode == "yolo" {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+
 	for _, imagePath := range imagePaths {
 		if imagePath == "" {
 			continue
