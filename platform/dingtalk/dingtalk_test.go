@@ -21,6 +21,7 @@ func TestGetAccessToken_ConcurrentAccess(t *testing.T) {
 	// with a pre-cached token are properly synchronized by the mutex
 
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 		httpClient:   &http.Client{}, // Valid HTTP client
@@ -60,6 +61,7 @@ func TestGetAccessToken_ConcurrentAccess(t *testing.T) {
 func TestGetAccessToken_MutexExists(t *testing.T) {
 	// Verify that the tokenMu mutex field exists and works
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 	}
@@ -79,6 +81,7 @@ func TestGetAccessToken_MutexExists(t *testing.T) {
 func TestGetAccessToken_CachedTokenAccess(t *testing.T) {
 	// Test that cached token access is thread-safe
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 		accessToken:  "cached_token",
@@ -114,7 +117,7 @@ func TestGetAccessToken_CachedTokenAccess(t *testing.T) {
 
 func TestPlatform_MutexFieldExists(t *testing.T) {
 	// Verify the Platform struct has the tokenMu field
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 
 	// Verify no panic under lock (test will fail to compile if tokenMu doesn't exist)
 	p.tokenMu.Lock()
@@ -126,7 +129,7 @@ func TestPlatform_MutexFieldExists(t *testing.T) {
 
 func TestPlatform_AccessTokenFieldsExist(t *testing.T) {
 	// Verify the Platform struct has the token caching fields
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 
 	// Set the fields
 	p.accessToken = "test_token"
@@ -145,7 +148,7 @@ func TestPlatform_AccessTokenFieldsExist(t *testing.T) {
 // ──────────────────────────────────────────────────────────────
 
 func TestReconstructReplyCtx_GroupSharedSession(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	rctx, err := p.ReconstructReplyCtx("dingtalk:g:conv123")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx() error = %v", err)
@@ -166,7 +169,7 @@ func TestReconstructReplyCtx_GroupSharedSession(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_GroupPerUserSession(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	rctx, err := p.ReconstructReplyCtx("dingtalk:g:conv123:user456")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx() error = %v", err)
@@ -184,7 +187,7 @@ func TestReconstructReplyCtx_GroupPerUserSession(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_DirectSession(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	rctx, err := p.ReconstructReplyCtx("dingtalk:d:conv789:user111")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx() error = %v", err)
@@ -205,7 +208,7 @@ func TestReconstructReplyCtx_DirectSession(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_InvalidPrefix(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	_, err := p.ReconstructReplyCtx("telegram:g:conv123")
 	if err == nil {
 		t.Fatal("expected error for non-dingtalk prefix")
@@ -213,7 +216,7 @@ func TestReconstructReplyCtx_InvalidPrefix(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_InvalidConvType(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	_, err := p.ReconstructReplyCtx("dingtalk:x:conv123")
 	if err == nil {
 		t.Fatal("expected error for invalid conversation type")
@@ -221,7 +224,7 @@ func TestReconstructReplyCtx_InvalidConvType(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_EmptyConversationId(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	_, err := p.ReconstructReplyCtx("dingtalk:g:")
 	if err == nil {
 		t.Fatal("expected error for empty conversationId")
@@ -229,7 +232,7 @@ func TestReconstructReplyCtx_EmptyConversationId(t *testing.T) {
 }
 
 func TestReconstructReplyCtx_TooFewParts(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	_, err := p.ReconstructReplyCtx("dingtalk:")
 	if err == nil {
 		t.Fatal("expected error for too few parts")
@@ -241,7 +244,7 @@ func TestReconstructReplyCtx_TooFewParts(t *testing.T) {
 // ──────────────────────────────────────────────────────────────
 
 func TestFormatReplyContent_WithQuotedText(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	repliedContent, _ := json.Marshal(repliedTextContent{Text: "original message"})
 	richText := &richTextContent{
 		Content:    "user reply",
@@ -259,7 +262,7 @@ func TestFormatReplyContent_WithQuotedText(t *testing.T) {
 }
 
 func TestFormatReplyContent_EmptyContent_UsesFallback(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	repliedContent, _ := json.Marshal(repliedTextContent{Text: "quoted"})
 	richText := &richTextContent{
 		Content:    "",
@@ -277,7 +280,7 @@ func TestFormatReplyContent_EmptyContent_UsesFallback(t *testing.T) {
 }
 
 func TestFormatReplyContent_TextQuotePreservesWhitespace(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	repliedContent, _ := json.Marshal(repliedTextContent{Text: "  original message  "})
 	richText := &richTextContent{
 		Content:    "user reply",
@@ -295,7 +298,7 @@ func TestFormatReplyContent_TextQuotePreservesWhitespace(t *testing.T) {
 }
 
 func TestFormatReplyContent_NilRepliedMsg(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	richText := &richTextContent{
 		Content:    "just a message",
 		IsReplyMsg: true,
@@ -308,7 +311,7 @@ func TestFormatReplyContent_NilRepliedMsg(t *testing.T) {
 }
 
 func TestFormatReplyContent_NonTextMsgType(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	richText := &richTextContent{
 		Content:    "user reply",
 		IsReplyMsg: true,
@@ -324,7 +327,7 @@ func TestFormatReplyContent_NonTextMsgType(t *testing.T) {
 }
 
 func TestFormatReplyContent_WithQuotedInteractiveCardContent(t *testing.T) {
-	p := &Platform{cardTemplateKey: "content"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "content"}
 	richText := &richTextContent{
 		Content:    "user reply",
 		IsReplyMsg: true,
@@ -349,7 +352,7 @@ func TestFormatReplyContent_WithQuotedInteractiveCardContent(t *testing.T) {
 }
 
 func TestFormatReplyContent_WithQuotedInteractiveCardCustomTemplateKey(t *testing.T) {
-	p := &Platform{cardTemplateKey: "body"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "body"}
 	richText := &richTextContent{
 		Content:    "next question",
 		IsReplyMsg: true,
@@ -374,7 +377,7 @@ func TestFormatReplyContent_WithQuotedInteractiveCardCustomTemplateKey(t *testin
 }
 
 func TestFormatReplyContent_WithQuotedInteractiveCardNestedJSONEnvelope(t *testing.T) {
-	p := &Platform{cardTemplateKey: "content"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "content"}
 	richText := &richTextContent{
 		Content:    "continue",
 		IsReplyMsg: true,
@@ -394,7 +397,7 @@ func TestFormatReplyContent_WithQuotedInteractiveCardNestedJSONEnvelope(t *testi
 }
 
 func TestFormatReplyContent_WithQuotedInteractiveCardTopLevelFallback(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	richText := &richTextContent{
 		Content:    "what next?",
 		IsReplyMsg: true,
@@ -415,7 +418,7 @@ func TestFormatReplyContent_WithQuotedInteractiveCardTopLevelFallback(t *testing
 }
 
 func TestFormatReplyContent_InteractiveCardPreservesVisibleJSONContent(t *testing.T) {
-	p := &Platform{cardTemplateKey: "content"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "content"}
 	richText := &richTextContent{
 		Content:    "follow up",
 		IsReplyMsg: true,
@@ -440,7 +443,7 @@ func TestFormatReplyContent_InteractiveCardPreservesVisibleJSONContent(t *testin
 }
 
 func TestFormatReplyContent_InteractiveCardTopLevelFallbackIgnoresCustomKey(t *testing.T) {
-	p := &Platform{cardTemplateKey: "body"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "body"}
 	richText := &richTextContent{
 		Content:    "follow up",
 		IsReplyMsg: true,
@@ -461,7 +464,7 @@ func TestFormatReplyContent_InteractiveCardTopLevelFallbackIgnoresCustomKey(t *t
 }
 
 func TestFormatReplyContent_TruncatesLongQuotedInteractiveCardContent(t *testing.T) {
-	p := &Platform{cardTemplateKey: "content"}
+	p := &Platform{allowFrom: "*", cardTemplateKey: "content"}
 	longText := strings.Repeat("x", maxQuotedMessageRunes+1)
 	cardContent, err := json.Marshal(map[string]any{
 		"cardData": map[string]any{
@@ -492,6 +495,7 @@ func TestFormatReplyContent_TruncatesLongQuotedInteractiveCardContent(t *testing
 func TestOnRawMessage_QuotedInteractiveCardEnrichesMessageContent(t *testing.T) {
 	var got *core.Message
 	p := &Platform{
+		allowFrom:       "*",
 		cardTemplateKey: "content",
 		handler: func(_ core.Platform, msg *core.Message) {
 			got = msg
@@ -533,7 +537,7 @@ func TestOnRawMessage_QuotedInteractiveCardEnrichesMessageContent(t *testing.T) 
 }
 
 func TestFormatReplyContent_EmptyQuotedText(t *testing.T) {
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	repliedContent, _ := json.Marshal(repliedTextContent{Text: ""})
 	richText := &richTextContent{
 		Content:    "user reply",
@@ -556,7 +560,7 @@ func TestFormatReplyContent_EmptyQuotedText(t *testing.T) {
 func TestProactiveRouting_GroupSessionUsesGroupAPI(t *testing.T) {
 	// Verify that a group session key produces a replyContext with isGroup=true,
 	// which sendProactiveMessage would route to groupMessages/send.
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	rctx, err := p.ReconstructReplyCtx("dingtalk:g:conv123:user456")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx() error = %v", err)
@@ -570,7 +574,7 @@ func TestProactiveRouting_GroupSessionUsesGroupAPI(t *testing.T) {
 func TestProactiveRouting_DirectSessionUsesDirectAPI(t *testing.T) {
 	// Verify that a direct session key produces a replyContext with isGroup=false,
 	// which sendProactiveMessage would route to oToMessages/batchSend.
-	p := &Platform{}
+	p := &Platform{allowFrom: "*"}
 	rctx, err := p.ReconstructReplyCtx("dingtalk:d:conv789:user111")
 	if err != nil {
 		t.Fatalf("ReconstructReplyCtx() error = %v", err)
@@ -704,6 +708,7 @@ func TestOnRawMessage_PictureMsgTypeNotDroppedAsEmptyText(t *testing.T) {
 	func() {
 		defer func() { recover() }() // handleImageMessage panics on nil httpClient — that's OK
 		p := &Platform{
+			allowFrom: "*",
 			handler: func(_ core.Platform, msg *core.Message) {
 				if msg.Content == "" && len(msg.Images) == 0 {
 					handlerCalledWithEmptyContent = true
@@ -732,6 +737,7 @@ func TestOnRawMessage_PictureMsgTypeNotDroppedAsEmptyText(t *testing.T) {
 
 func TestGetAccessToken_ZeroExpireIn_FallsBackToDefault(t *testing.T) {
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 		httpClient: &http.Client{
@@ -759,6 +765,7 @@ func TestGetAccessToken_ZeroExpireIn_FallsBackToDefault(t *testing.T) {
 
 func TestGetAccessToken_NegativeExpireIn_FallsBackToDefault(t *testing.T) {
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 		httpClient: &http.Client{
@@ -777,6 +784,7 @@ func TestGetAccessToken_NegativeExpireIn_FallsBackToDefault(t *testing.T) {
 
 func TestGetAccessToken_NormalExpireIn_AppliesBuffer(t *testing.T) {
 	p := &Platform{
+		allowFrom: "*",
 		clientID:     "test_client",
 		clientSecret: "test_secret",
 		httpClient: &http.Client{
