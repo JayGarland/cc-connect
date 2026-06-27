@@ -267,10 +267,20 @@ func (ps *probeSession) call(ctx context.Context, method string, params any) (*j
 }
 
 // close cancels the probe context, terminating the process and read loop.
+// It waits up to probeCloseTimeout for graceful shutdown before returning.
 func (ps *probeSession) close() {
 	ps.cancel()
-	<-ps.done
+	select {
+	case <-ps.done:
+	case <-time.After(probeCloseTimeout):
+		slog.Warn("copilot: probe close timed out waiting for process exit")
+	}
 }
+
+// probeCloseTimeout bounds how long we wait for the probe process to exit
+// after cancelling its context. On some platforms (Windows) the process may
+// not respond to cancellation promptly, so we must not block indefinitely.
+var probeCloseTimeout = 5 * time.Second
 
 // ListSessions returns past sessions by spawning a short-lived copilot probe
 // that performs ping + session.list, then exits. Returns nil gracefully if

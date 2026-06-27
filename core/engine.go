@@ -463,6 +463,11 @@ type Engine struct {
 
 	// Data directory for socket path injection
 	dataDir string
+
+	// configPath is the absolute path to the TOML config file used at startup.
+	// Injected into agent sessions as CC_CONNECT_CONFIG so agents (e.g. reasonix)
+	// can invoke `cc-connect relay send --config <path>` without hardcoding paths.
+	configPath string
 }
 
 // workspaceInitFlow tracks a channel that is being onboarded to a workspace.
@@ -1303,6 +1308,12 @@ func (e *Engine) SetProjectStateStore(store *ProjectStateStore) {
 
 func (e *Engine) SetDataDir(dir string) {
 	e.dataDir = dir
+}
+
+// SetConfigPath stores the config file path used at startup so it can be
+// injected into agent sessions as CC_CONNECT_CONFIG.
+func (e *Engine) SetConfigPath(path string) {
+	e.configPath = path
 }
 
 // RemoveCommand removes a custom command by name. Returns false if not found.
@@ -3895,12 +3906,28 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		if e.dataDir != "" {
 			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
 		}
+		if e.configPath != "" {
+			envVars = append(envVars, "CC_CONNECT_CONFIG="+e.configPath)
+		}
 		if exePath, err := os.Executable(); err == nil {
+			envVars = append(envVars, "CC_CONNECT_BIN="+exePath)
 			binDir := filepath.Dir(exePath)
 			if curPath := os.Getenv("PATH"); curPath != "" {
 				envVars = append(envVars, "PATH="+binDir+string(filepath.ListSeparator)+curPath)
 			} else {
 				envVars = append(envVars, "PATH="+binDir)
+			}
+		}
+		// Inject relay target from relay bindings so the agent knows
+		// which project to relay messages to.
+		if e.relayManager != nil {
+			if _, chatID, err := parseSessionKeyParts(ccKey); err == nil {
+				if others := e.relayManager.ListBoundBots(chatID, e.name); len(others) > 0 {
+					for target := range others {
+						envVars = append(envVars, "CC_RELAY_TARGET="+target)
+						break // first available target
+					}
+				}
 			}
 		}
 		inj.SetSessionEnv(envVars)
@@ -6582,12 +6609,18 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	}
 
 	if !supportsCards(p) {
+		listStart := time.Now()
 		agentSessions, err := agent.ListSessions(e.ctx)
+		listElapsed := time.Since(listStart)
+		if listElapsed > 5*time.Second {
+			slog.Warn("cmdList: slow ListSessions", "agent", agent.Name(), "elapsed", listElapsed)
+		}
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgListError), err))
 			return
 		}
 		agentSessions = e.applySessionFilter(agentSessions, sessions)
+		slog.Debug("cmdList: after filter", "count", len(agentSessions))
 		if len(agentSessions) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgListEmpty))
 			return
@@ -6614,6 +6647,7 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 
 		agentName := agent.Name()
 		activeSession := sessions.GetOrCreateActive(msg.SessionKey)
+		slog.Debug("cmdList: got active session", "agent", agentName, "activeID", activeSession.GetAgentSessionID())
 		activeAgentID := activeSession.GetAgentSessionID()
 
 		var sb strings.Builder
@@ -6648,7 +6682,16 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 			sb.WriteString(fmt.Sprintf(e.i18n.T(MsgListPageHint), page, totalPages))
 		}
 		sb.WriteString(e.i18n.T(MsgListSwitchHint))
-		e.reply(p, msg.ReplyCtx, sb.String())
+
+		content := sb.String()
+		slog.Debug("cmdList: formatted, about to send", "agent", agentName, "sessions", total, "len", len(content))
+		slog.Info("cmdList: sending", "agent", agentName, "sessions", total, "len", len(content))
+		if err := e.replyWithError(p, msg.ReplyCtx, content); err != nil {
+			slog.Error("cmdList: reply failed, trying send fallback", "agent", agentName, "error", err)
+			if err2 := e.sendWithError(p, msg.ReplyCtx, content); err2 != nil {
+				slog.Error("cmdList: send fallback also failed", "agent", agentName, "error", err2)
+			}
+		}
 		return
 	}
 
@@ -11477,8 +11520,12 @@ func (e *Engine) replyWithError(p Platform, replyCtx any, content string) error 
 }
 
 // reply wraps p.Reply with error logging, slow-operation warnings, and outgoing rate limiting.
+// Falls back to e.send() when p.Reply() fails (e.g. reply context expired for delayed responses).
 func (e *Engine) reply(p Platform, replyCtx any, content string) {
-	_ = e.replyWithError(p, replyCtx, content)
+	if err := e.replyWithError(p, replyCtx, content); err != nil {
+		slog.Warn("reply failed, falling back to send", "platform", p.Name(), "error", err)
+		e.send(p, replyCtx, content)
+	}
 }
 
 // replyWithButtons sends a reply with inline buttons if the platform supports it,
@@ -15387,11 +15434,23 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 			"CC_PROJECT=" + e.name,
 			"CC_SESSION_KEY=" + sourceSessionKey,
 		}
+		if e.dataDir != "" {
+			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
+		}
+		if e.configPath != "" {
+			envVars = append(envVars, "CC_CONNECT_CONFIG="+e.configPath)
+		}
 		if exePath, err := os.Executable(); err == nil {
+			envVars = append(envVars, "CC_CONNECT_BIN="+exePath)
 			binDir := filepath.Dir(exePath)
 			if curPath := os.Getenv("PATH"); curPath != "" {
 				envVars = append(envVars, "PATH="+binDir+string(filepath.ListSeparator)+curPath)
 			}
+		}
+		// Inject relay target (the project that sent the relay message)
+		// so the target agent can relay back if needed.
+		if fromProject != "" {
+			envVars = append(envVars, "CC_RELAY_TARGET="+fromProject)
 		}
 		inj.SetSessionEnv(envVars)
 	}

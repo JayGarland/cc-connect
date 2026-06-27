@@ -101,9 +101,26 @@ type reasonixSession struct {
 
 	// Thinking accumulator — buffers incremental reasoning chunks
 	thinkingBuf strings.Builder
+
+	// turnTextBuf accumulates all text from streaming "text" events during
+	// the current turn. Used to avoid emitting duplicate content when the
+	// final "message" event repeats the same assembled text.
+	turnTextBuf strings.Builder
+
+	// lastTextContent tracks the last emitted text/message content
+	// to deduplicate consecutive identical "text" and "message" SSE events.
+	lastTextContent string
+
+	// memoryInjected tracks whether REASONIX.md has been prepended to a prompt.
+	memoryInjected bool
+
+	// sessionEnv holds per-session environment variables forwarded from the engine
+	// (e.g. CC_PROJECT, CC_SESSION_KEY, CC_CONNECT_BIN, CC_CONNECT_CONFIG).
+	// Included in every /submit request so reasonix serve can invoke relay commands.
+	sessionEnv []string
 }
 
-func newSession(ctx context.Context, serveURL, workDir, sessionID, mode string) (*reasonixSession, error) {
+func newSession(ctx context.Context, serveURL, workDir, sessionID, mode string, sessionEnv []string) (*reasonixSession, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	s := &reasonixSession{
@@ -111,6 +128,7 @@ func newSession(ctx context.Context, serveURL, workDir, sessionID, mode string) 
 		workDir:      workDir,
 		sessionID:    sessionID,
 		mode:         mode,
+		sessionEnv:   sessionEnv,
 		ctx:          ctx,
 		cancel:       cancel,
 		events:       make(chan core.Event, 128),
@@ -150,6 +168,79 @@ func (s *reasonixSession) Send(prompt string, images []core.ImageAttachment, fil
 		return fmt.Errorf("reasonix: session is closed")
 	}
 
+	// Inject identity, relay, and cc-connect usage instructions on the first
+	// Send() call. Everything is derived from session env vars — no file dependency.
+	s.mu.Lock()
+	if !s.memoryInjected {
+		// Parse sessionEnv for cc-connect context: project, session key,
+		// binary path, config path, and relay target.
+		var project, sessionKey, ccBin, ccConfig, relayTarget string
+		for _, kv := range s.sessionEnv {
+			if idx := strings.IndexByte(kv, '='); idx >= 0 {
+				switch kv[:idx] {
+				case "CC_PROJECT":
+					project = kv[idx+1:]
+				case "CC_SESSION_KEY":
+					sessionKey = kv[idx+1:]
+				case "CC_CONNECT_BIN":
+					ccBin = kv[idx+1:]
+				case "CC_CONNECT_CONFIG":
+					ccConfig = kv[idx+1:]
+				case "CC_RELAY_TARGET":
+					relayTarget = kv[idx+1:]
+				}
+			}
+		}
+
+		// Use forward slashes for bash compatibility in relay commands.
+		if ccBin != "" {
+			ccBin = strings.ReplaceAll(ccBin, "\\", "/")
+		}
+		if ccConfig != "" {
+			ccConfig = strings.ReplaceAll(ccConfig, "\\", "/")
+		}
+
+		if project != "" {
+			prompt += "\n\n## Your Identity\n" +
+				fmt.Sprintf("You are **%s** — a coding agent in the cc-connect bridge.\n", project)
+			if relayTarget != "" {
+				prompt += fmt.Sprintf("Your relay counterpart is **%s**.\n", relayTarget)
+			}
+			prompt += "You are connected through cc-connect to a messaging platform.\n"
+		}
+		if project != "" && sessionKey != "" && ccBin != "" && ccConfig != "" {
+			toTarget := relayTarget
+			if toTarget == "" {
+				toTarget = "<target-project>"
+			}
+			prompt += "\n## Relay command\n" +
+				"To relay a message to your counterpart, run EXACTLY this ONE command (no other commands needed):\n\n" +
+				fmt.Sprintf("  %s --config %s relay send --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccConfig, project, toTarget, sessionKey) +
+				"IMPORTANT:\n" +
+				"- Use the EXACT path with forward slashes shown above\n" +
+				"- Include --config flag (required for custom data_dir)\n" +
+				"- Include --session-key flag (env vars not available in bash)\n" +
+				"- Do NOT try to start a new cc-connect instance\n" +
+				"- This is a CLI subcommand, not starting a daemon\n"
+		}
+
+		// cc-connect send usage — how to send files, images, audio back to the user.
+		if ccBin != "" {
+			prompt += "\n## cc-connect send\n" +
+				"To send generated files, images, or voice messages back to the user:\n\n" +
+				fmt.Sprintf("  %s send --image /path/to/image.png\n", ccBin) +
+				fmt.Sprintf("  %s send --file /path/to/report.pdf\n", ccBin) +
+				fmt.Sprintf("  %s send --audio /path/to/clip.mp3\n", ccBin) +
+				fmt.Sprintf("  %s send --video /path/to/demo.mp4\n", ccBin) +
+				fmt.Sprintf("  %s send --tts \"text to speak\"\n", ccBin) +
+				"\nYou may repeat --image / --file multiple times.\n" +
+				"After --tts or --audio, reply ONLY with NO_REPLY unless a text confirmation was also requested.\n"
+		}
+
+		s.memoryInjected = true
+	}
+	s.mu.Unlock()
+
 	// Save images/files to disk and append references
 	if len(images) > 0 {
 		prompt = prompt + "\n\n[Attached images: " + formatImages(images) + "]"
@@ -166,7 +257,7 @@ func (s *reasonixSession) Send(prompt string, images []core.ImageAttachment, fil
 
 	// Submit to reasonix
 	s.inTurn.Store(true)
-	body := map[string]string{"input": prompt}
+	body := s.buildSubmitBody(prompt)
 	if err := s.httpPost("/submit", body); err != nil {
 		s.inTurn.Store(false)
 		return fmt.Errorf("reasonix: submit: %w", err)
@@ -346,7 +437,11 @@ func (s *reasonixSession) dispatchEvent(data []byte) {
 
 	switch we.Kind {
 	case "turn_started":
-		// No-op
+		// Reset per-turn state for the new turn.
+		s.mu.Lock()
+		s.lastTextContent = ""
+		s.turnTextBuf.Reset()
+		s.mu.Unlock()
 
 	case "reasoning":
 		// Accumulate reasoning chunks; flush at the next meaningful event
@@ -364,9 +459,56 @@ func (s *reasonixSession) dispatchEvent(data []byte) {
 		}
 		s.emit(core.Event{Type: core.EventThinking, Content: text})
 
-	case "text", "message":
+	case "text":
 		s.flushThinking()
-		s.emit(core.Event{Type: core.EventText, Content: we.Text})
+		s.mu.Lock()
+		if strings.HasPrefix(we.Text, s.lastTextContent) && s.lastTextContent != "" {
+			// Cumulative text: extract delta
+			delta := we.Text[len(s.lastTextContent):]
+			s.lastTextContent = we.Text
+			s.turnTextBuf.WriteString(delta)
+			s.mu.Unlock()
+			if delta != "" {
+				s.emit(core.Event{Type: core.EventText, Content: delta})
+			}
+		} else {
+			// Non-cumulative or first event
+			s.lastTextContent = we.Text
+			s.turnTextBuf.WriteString(we.Text)
+			s.mu.Unlock()
+			s.emit(core.Event{Type: core.EventText, Content: we.Text})
+		}
+
+	case "message":
+		// "message" is the final assembled text. Reasonix streams
+		// incremental "text" events first, then sends a "message"
+		// event with the complete text. Emit only the delta — the
+		// portion not yet delivered by streaming text chunks — to
+		// avoid duplicating content in the engine's accumulator.
+		s.flushThinking()
+		s.mu.Lock()
+		accumulated := s.turnTextBuf.String()
+		var delta string
+		if accumulated == "" {
+			// No streaming text received this turn; emit full message.
+			delta = we.Text
+		} else if strings.HasPrefix(we.Text, accumulated) {
+			// Common case: message assembles what streaming text already delivered.
+			delta = we.Text[len(accumulated):]
+		} else {
+			// Unexpected ordering; emit full message to avoid data loss.
+			slog.Warn("reasonix: message text does not start with accumulated text",
+				"message_len", len(we.Text), "accumulated_len", len(accumulated))
+			delta = we.Text
+		}
+		if delta != "" {
+			s.lastTextContent = we.Text
+			s.turnTextBuf.WriteString(delta)
+			s.mu.Unlock()
+			s.emit(core.Event{Type: core.EventText, Content: delta})
+		} else {
+			s.mu.Unlock()
+		}
 
 	case "tool_dispatch":
 		s.flushThinking()
@@ -425,6 +567,8 @@ func (s *reasonixSession) dispatchEvent(data []byte) {
 		s.flushThinking()
 		s.inTurn.Store(false)
 		s.mu.Lock()
+		s.lastTextContent = ""
+		s.turnTextBuf.Reset()
 		if we.Err != "" {
 			s.errTurn = fmt.Errorf("%s", we.Err)
 		}
@@ -503,6 +647,22 @@ func (s *reasonixSession) httpPost(path string, body any) error {
 		return fmt.Errorf("reasonix: POST %s returned %d: %s", path, resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 	return nil
+}
+
+// buildSubmitBody constructs the JSON body for POST /submit, including
+// per-session environment variables so reasonix serve can invoke relay commands.
+func (s *reasonixSession) buildSubmitBody(prompt string) map[string]any {
+	body := map[string]any{"input": prompt}
+	if len(s.sessionEnv) > 0 {
+		env := make(map[string]string, len(s.sessionEnv))
+		for _, kv := range s.sessionEnv {
+			if idx := strings.IndexByte(kv, '='); idx >= 0 {
+				env[kv[:idx]] = kv[idx+1:]
+			}
+		}
+		body["env"] = env
+	}
+	return body
 }
 
 // formatImages builds a comma-separated list of image filenames for inclusion

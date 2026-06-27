@@ -169,7 +169,7 @@ func TestReasonixSession_Send_PostsToSubmitEndpoint(t *testing.T) {
 		}
 	})
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -194,7 +194,7 @@ func TestReasonixSession_SSE_MapsEventTypes(t *testing.T) {
 	ts, sseCh := sseServer(t)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -276,7 +276,7 @@ func TestReasonixSession_SSEReconnect_Backoff(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -307,7 +307,7 @@ func TestReasonixSession_Close_CancelsContext(t *testing.T) {
 	ts := mockReasonixServe(t)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 
 	// First Close
@@ -390,7 +390,7 @@ func TestReasonixSession_RespondPermission_PostsApprove(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -429,7 +429,7 @@ func TestReasonixSession_Send_CompactCommand(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -457,7 +457,7 @@ func TestReasonixSession_httpPost_ErrorIncludesBody(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 
@@ -474,7 +474,7 @@ func TestReasonixSession_Send_FailsAfterClose(t *testing.T) {
 	ts := mockReasonixServe(t)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 
 	err = sess.Close()
@@ -492,7 +492,7 @@ func TestReasonixSession_ThinkingAccumulator(t *testing.T) {
 	ts, sseCh := sseServer(t)
 	defer ts.Close()
 
-	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default")
+	sess, err := newSession(context.Background(), ts.URL, ".", "test", "default", nil)
 	require.NoError(t, err)
 	defer func() { _ = sess.Close() }()
 

@@ -447,6 +447,11 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+		if absCfg, err := filepath.Abs(configPath); err == nil {
+			engine.SetConfigPath(absCfg)
+		} else {
+			engine.SetConfigPath(configPath)
+		}
 
 		// Wire multi-workspace mode
 		if proj.Mode == "multi-workspace" {

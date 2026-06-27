@@ -212,6 +212,14 @@ func (p *Platform) ProgressStyle() string {
 	return p.progressStyle
 }
 
+// KeepPreviewOnFinish tells the engine to keep the preview message and
+// edit it in-place rather than deleting and re-sending on turn completion.
+// Telegram's EditMessageText API supports this well, so in-place editing
+// avoids a visible "flash" (delete + resend) for users.
+func (p *Platform) KeepPreviewOnFinish() bool {
+	return true
+}
+
 func (p *Platform) Start(handler core.MessageHandler) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -27,6 +27,11 @@ type Agent struct {
 	serveURL string // e.g. "http://localhost:8080"
 	workDir  string // local project directory (for /dir and display)
 	mode     string // permission mode: "default", "yolo", "plan"
+
+	// sessionEnv holds per-session environment variables injected by the engine
+	// (e.g. CC_PROJECT, CC_SESSION_KEY). These are forwarded to reasonix serve
+	// via the /submit request body so it can invoke `cc-connect relay send`.
+	sessionEnv []string
 }
 
 // New creates a Reasonix agent.
@@ -74,12 +79,25 @@ func normalizeMode(opts map[string]any) string {
 
 func (a *Agent) Name() string { return "reasonix" }
 
+// SetSessionEnv stores per-session environment variables (e.g. CC_PROJECT,
+// CC_SESSION_KEY) so they can be forwarded to reasonix serve via /submit.
+// Implements core.SessionEnvInjector.
+func (a *Agent) SetSessionEnv(env []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessionEnv = env
+}
+
 // StartSession creates a session connected to reasonix serve.
 // It establishes an SSE connection to /events and waits for it to be ready.
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	slog.Info("reasonix: starting session", "session_id", sessionID)
 
-	s, err := newSession(ctx, a.serveURL, a.workDir, sessionID, a.mode)
+	a.mu.RLock()
+	env := a.sessionEnv
+	a.mu.RUnlock()
+
+	s, err := newSession(ctx, a.serveURL, a.workDir, sessionID, a.mode, env)
 	if err != nil {
 		return nil, fmt.Errorf("reasonix: start session: %w", err)
 	}
