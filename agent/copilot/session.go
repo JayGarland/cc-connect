@@ -704,7 +704,7 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 	if !cs.identityInjected.Load() {
 		// Parse sessionEnv for cc-connect context: project, session key,
 		// binary path, config path, and relay target.
-		var project, sessionKey, ccBin, ccConfig, relayTarget string
+		var project, sessionKey, ccBin, ccConfig, ccDataDir, relayTarget string
 		for _, kv := range cs.sessionEnv {
 			if idx := strings.IndexByte(kv, '='); idx >= 0 {
 				switch kv[:idx] {
@@ -716,6 +716,8 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 					ccBin = kv[idx+1:]
 				case "CC_CONNECT_CONFIG":
 					ccConfig = kv[idx+1:]
+				case "CC_DATA_DIR":
+					ccDataDir = kv[idx+1:]
 				case "CC_RELAY_TARGET":
 					relayTarget = kv[idx+1:]
 				}
@@ -729,6 +731,9 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 		if ccConfig != "" {
 			ccConfig = strings.ReplaceAll(ccConfig, "\\", "/")
 		}
+		if ccDataDir != "" {
+			ccDataDir = strings.ReplaceAll(ccDataDir, "\\", "/")
+		}
 
 		if project != "" {
 			prompt += "\n\n## Your Identity\n" +
@@ -738,14 +743,14 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 			}
 			prompt += "You are connected through cc-connect to a messaging platform.\n"
 		}
-		if project != "" && sessionKey != "" && ccBin != "" && ccConfig != "" {
+		if project != "" && sessionKey != "" && ccBin != "" && ccDataDir != "" {
 			toTarget := relayTarget
 			if toTarget == "" {
 				toTarget = "<target-project>"
 			}
 			prompt += "\n## Relay command\n" +
 				"To relay a message to your counterpart, run EXACTLY this ONE command (no other commands needed):\n\n" +
-				fmt.Sprintf("  %s --config %s relay send --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccConfig, project, toTarget, sessionKey) +
+				fmt.Sprintf("  %s relay send --data-dir %s --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccDataDir, project, toTarget, sessionKey) +
 				"CRITICAL RULES for relaying:\n" +
 				"- When the user says \"relay to X: <message>\", replace \"your message\" with the EXACT text after the colon.\n" +
 				"- Do NOT interpret, answer, modify, or rephrase the message — relay it VERBATIM.\n" +
@@ -756,7 +761,7 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 				"- Good replies: \"Got it, relayed ✅\", \"They said it's 8 👍\"\n" +
 				"- Bad replies: \"3 + 5 = 8\" (repeating), \"I'll relay...\" (before running)\n" +
 				"- Use the EXACT path with forward slashes shown above\n" +
-				"- Include --config flag (required for custom data_dir)\n" +
+				"- Include --data-dir flag (required to find the running daemon)\n" +
 				"- Include --session-key flag (env vars not available in bash)\n"
 		}
 

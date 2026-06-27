@@ -31,6 +31,8 @@ type opencodeSession struct {
 	mode              string
 	agentName         string
 	extraEnv          []string
+	sessionEnv        []string // per-session env vars for relay injection
+	identityInjected  atomic.Bool
 	events            chan core.Event
 	chatID            atomic.Value // stores string — OpenCode session ID
 	ctx               context.Context
@@ -41,7 +43,7 @@ type opencodeSession struct {
 	resultSent        atomic.Bool // true when EventResult has been sent for this turn
 }
 
-func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, agentName, resumeID string, extraEnv []string) (*opencodeSession, error) {
+func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, agentName, resumeID string, extraEnv []string, sessionEnv []string) (*opencodeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	s := &opencodeSession{
@@ -52,6 +54,7 @@ func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, wor
 		mode:      mode,
 		agentName: agentName,
 		extraEnv:  extraEnv,
+		sessionEnv: sessionEnv,
 		events:    make(chan core.Event, 64),
 		ctx:       sessionCtx,
 		cancel:    cancel,
@@ -66,6 +69,60 @@ func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, wor
 }
 
 func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	// Inject identity and relay instructions on first Send().
+	if !s.identityInjected.Load() {
+		var project, sessionKey, ccBin, ccDataDir, relayTarget string
+		for _, kv := range s.sessionEnv {
+			if idx := strings.IndexByte(kv, '='); idx >= 0 {
+				switch kv[:idx] {
+				case "CC_PROJECT":
+					project = kv[idx+1:]
+				case "CC_SESSION_KEY":
+					sessionKey = kv[idx+1:]
+				case "CC_CONNECT_BIN":
+					ccBin = kv[idx+1:]
+				case "CC_DATA_DIR":
+					ccDataDir = kv[idx+1:]
+				case "CC_RELAY_TARGET":
+					relayTarget = kv[idx+1:]
+				}
+			}
+		}
+		// Forward slashes for bash compatibility.
+		if ccBin != "" {
+			ccBin = strings.ReplaceAll(ccBin, "\\", "/")
+		}
+		if ccDataDir != "" {
+			ccDataDir = strings.ReplaceAll(ccDataDir, "\\", "/")
+		}
+
+		if project != "" {
+			prompt += "\n\n## Your Identity\n" +
+				fmt.Sprintf("You are **%s** — a coding agent in the cc-connect bridge.\n", project)
+			if relayTarget != "" {
+				prompt += fmt.Sprintf("Your relay counterpart is **%s**.\n", relayTarget)
+			}
+			prompt += "You are connected through cc-connect to a messaging platform.\n"
+		}
+		if project != "" && sessionKey != "" && ccBin != "" && ccDataDir != "" {
+			toTarget := relayTarget
+			if toTarget == "" {
+				toTarget = "<target-project>"
+			}
+			prompt += "\n## Relay command\n" +
+				"To relay a message to your counterpart, run this ONE command:\n\n" +
+				fmt.Sprintf("  %s relay send --data-dir %s --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccDataDir, project, toTarget, sessionKey) +
+				"CRITICAL: relay the user's message VERBATIM after the colon. Do NOT answer it yourself.\n" +
+				"After running the relay command, read the CLI output (it's your counterpart's answer)\n" +
+				"and reply with a brief acknowledgment based on it.\n"
+		}
+		if ccBin != "" {
+			prompt += "\n## cc-connect send\n" +
+				fmt.Sprintf("To send files/images back: %s send --file /path/to/file\n", ccBin)
+		}
+		s.identityInjected.Store(true)
+	}
+
 	if len(files) > 0 {
 		filePaths := core.SaveFilesToDisk(s.workDir, files)
 		prompt = core.AppendFileRefs(prompt, filePaths)
