@@ -259,6 +259,7 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 	// Post the response to the group chat for visibility.
 	if targetEngine != nil && visibility != RelayVisibilityNone {
 		label := relayVisibilityResponseLabel(visibility, toName, response)
+		slog.Info("relay: posting response visibility", "to", toName, "response_len", len(response))
 		rm.sendToGroup(ctx, targetEngine, platform, groupSessionKey, label)
 	}
 
@@ -267,6 +268,7 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 
 // sendToGroup sends a message to the group chat for visibility.
 func (rm *RelayManager) sendToGroup(ctx context.Context, e *Engine, platform, sessionKey, content string) {
+	slog.Info("relay: sendToGroup", "engine", e.name, "platform", platform, "session_key", sessionKey, "content_len", len(content))
 	for _, p := range e.platforms {
 		if p.Name() != platform {
 			continue
@@ -277,11 +279,11 @@ func (rm *RelayManager) sendToGroup(ctx context.Context, e *Engine, platform, se
 		}
 		rctx, err := rc.ReconstructReplyCtx(sessionKey)
 		if err != nil {
-			slog.Debug("relay: failed to reconstruct reply ctx", "error", err)
+			slog.Warn("relay: failed to reconstruct reply ctx", "error", err)
 			continue
 		}
 		if err := p.Send(ctx, rctx, content); err != nil {
-			slog.Debug("relay: failed to send group message", "error", err)
+			slog.Warn("relay: failed to send group message", "error", err)
 		}
 		return
 	}

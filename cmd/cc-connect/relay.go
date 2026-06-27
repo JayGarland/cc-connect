@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,7 +28,7 @@ func runRelay(args []string) {
 }
 
 func runRelaySend(args []string) {
-	var from, to, sessionKey, message, dataDir string
+	var from, to, sessionKey, message, dataDir, configPath string
 
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -57,12 +58,24 @@ func runRelaySend(args []string) {
 				i++
 				dataDir = args[i]
 			}
+		case "--config", "-c":
+			if i+1 < len(args) {
+				i++
+				configPath = args[i]
+			}
 		case "--help", "-h":
 			printRelaySendUsage()
 			return
 		default:
 			positional = append(positional, args[i])
 		}
+	}
+
+	// Derive data directory from config path if --data-dir was not explicitly set.
+	// Standard layout: config.toml is in the parent of data/, e.g.
+	//   F:\nexus\config.toml  →  F:\nexus\data
+	if dataDir == "" && configPath != "" {
+		dataDir = filepath.Join(filepath.Dir(configPath), "data")
 	}
 
 	if from == "" {

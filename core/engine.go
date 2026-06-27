@@ -4405,7 +4405,12 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 
 				if fullResponse != "" {
 					for _, chunk := range splitMessage(fullResponse, maxPlatformMessageLen) {
-						e.send(p, replyCtx, chunk)
+						if err := e.sendWithError(p, replyCtx, chunk); err != nil {
+							slog.Warn("unsolicited event: platform send failed",
+							"session", sessionKey,
+							"error", err,
+							"content_len", len(chunk))
+						}
 					}
 				}
 
@@ -15423,11 +15428,18 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 // dedicated relay session, sends the message to the agent, and blocks until
 // the complete response is collected (or the relay context times out).
 func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey, message string) (string, error) {
+	slog.Info("relay: HandleRelay started", "target", e.name, "from", fromProject, "message_len", len(message))
 	agent, sessions, relaySessionKey, err := e.relayContextForSourceSessionKey(fromProject, sourceSessionKey)
 	if err != nil {
 		return "", err
 	}
 	session := sessions.GetOrCreateActive(relaySessionKey)
+
+	// FIXME: Reasonix sessions started via relay always return "" for
+	// CurrentSessionID(), so saveRelaySessionID never persists the ID.
+	// Every relay starts a fresh reasonix serve session, losing multi-turn
+	// context. Fix: either make Reasonix generate a stable session ID, or
+	// have HandleRelay assign its own session ID for relay sessions.
 
 	if inj, ok := agent.(SessionEnvInjector); ok {
 		envVars := []string{
@@ -15497,9 +15509,22 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 
 	saveRelaySessionID(agentSession.CurrentSessionID(), false)
 
-	if err := agentSession.Send(message, nil, nil); err != nil {
+	// Send runs in a goroutine because some agents (e.g. Reasonix) block until
+	// the turn completes, but the relay timeout context may fire earlier.
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- agentSession.Send(message, nil, nil)
+	}()
+
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			agentSession.Close()
+			return "", fmt.Errorf("send relay message: %w", err)
+		}
+	case <-ctx.Done():
 		agentSession.Close()
-		return "", fmt.Errorf("send relay message: %w", err)
+		return "", fmt.Errorf("relay: send timed out: %w", ctx.Err())
 	}
 
 	var textParts []string

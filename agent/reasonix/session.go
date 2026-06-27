@@ -263,8 +263,16 @@ func (s *reasonixSession) Send(prompt string, images []core.ImageAttachment, fil
 		return fmt.Errorf("reasonix: submit: %w", err)
 	}
 
-	// Wait for turn to complete
-	<-s.turnDone
+	// Wait for turn to complete, respecting session context cancellation.
+	// FIXME: s.ctx is derived from engine context, NOT the relay timeout context.
+	// If reasonix serve hangs, this blocks until engine shutdown. HandleRelay
+	// wraps Send() in a goroutine with its own timeout as a workaround.
+	select {
+	case <-s.turnDone:
+	case <-s.ctx.Done():
+		s.inTurn.Store(false)
+		return s.ctx.Err()
+	}
 
 	s.mu.Lock()
 	err := s.errTurn
@@ -288,7 +296,10 @@ func (s *reasonixSession) Events() <-chan core.Event {
 }
 
 func (s *reasonixSession) CurrentSessionID() string {
-	// We don't track reasonix's internal session ID; use cc-connect's session ID.
+	// FIXME: When started by HandleRelay with empty session ID, this returns "",
+	// causing relay session IDs to never be persisted. Multi-turn relay context
+	// is lost. Fix: generate a unique session ID in newSession() when sessionID
+	// is empty, similar to how Copilot generates newCopilotSessionID().
 	return s.sessionID
 }
 
@@ -651,13 +662,23 @@ func (s *reasonixSession) httpPost(path string, body any) error {
 
 // buildSubmitBody constructs the JSON body for POST /submit, including
 // per-session environment variables so reasonix serve can invoke relay commands.
+// Windows-style backslash paths are converted to forward slashes for bash compatibility.
 func (s *reasonixSession) buildSubmitBody(prompt string) map[string]any {
 	body := map[string]any{"input": prompt}
 	if len(s.sessionEnv) > 0 {
 		env := make(map[string]string, len(s.sessionEnv))
 		for _, kv := range s.sessionEnv {
 			if idx := strings.IndexByte(kv, '='); idx >= 0 {
-				env[kv[:idx]] = kv[idx+1:]
+				key := kv[:idx]
+				val := kv[idx+1:]
+				// Convert Windows backslash paths for bash compatibility.
+				// CC_CONNECT_BIN, CC_CONNECT_CONFIG, CC_DATA_DIR, and PATH
+				// may contain backslashes that break bash tool execution.
+				if key == "CC_CONNECT_BIN" || key == "CC_CONNECT_CONFIG" ||
+					key == "CC_DATA_DIR" || key == "PATH" {
+					val = strings.ReplaceAll(val, "\\", "/")
+				}
+				env[key] = val
 			}
 		}
 		body["env"] = env

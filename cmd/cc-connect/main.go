@@ -201,17 +201,53 @@ type providerWiringResult struct {
 	canStartInitialRefresh    bool
 }
 
+// subcommandIndex finds the first non-flag argument in os.Args (skipping
+// --config <value> and other known flags that can precede subcommands).
+// Returns the index of the subcommand, the subcommand string, and the
+// full tail args starting from the subcommand (including any --config that
+// preceded it, so subcommands can use it).
+func subcommandIndex() (int, string) {
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		// Skip --config and its value, --force, --version
+		if arg == "--config" || arg == "-c" {
+			if i+1 < len(os.Args) {
+				i++ // skip value
+			}
+			continue
+		}
+		if arg == "--force" || arg == "--version" || arg == "-v" {
+			continue
+		}
+		if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-c=") {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue // skip other unknown flags
+		}
+		return i, arg
+	}
+	return -1, ""
+}
+
 func main() {
 	checkUpdateAsync()
 
-	// Handle subcommands before flag parsing
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	// Handle subcommands before flag parsing.
+	// Scan past --config <value> to find the actual subcommand, so commands
+	// like `cc-connect --config path relay send ...` work correctly.
+	// Note: --config is consumed by subcommandIndex() and NOT passed to the
+	// subcommand. Subcommands that need config should accept --config in their
+	// own args (e.g. `relay send --config path ...`) or derive the data dir from
+	// CC_DATA_DIR / CC_CONNECT_CONFIG env vars set by HandleRelay.
+	if idx, cmd := subcommandIndex(); idx > 0 {
+		tail := os.Args[idx+1:]
+		switch cmd {
 		case "config-example":
 			fmt.Print(ccconnect.ConfigExampleTOML)
 			return
 		case "config":
-			runConfig(os.Args[2:])
+			runConfig(tail)
 			return
 		case "update":
 			runUpdate()
@@ -220,40 +256,40 @@ func main() {
 			checkUpdate()
 			return
 		case "provider":
-			runProviderCommand(os.Args[2:])
+			runProviderCommand(tail)
 			return
 		case "send":
-			runSend(os.Args[2:])
+			runSend(tail)
 			return
 		case "cron":
-			runCron(os.Args[2:])
+			runCron(tail)
 			return
 		case "timer", "at":
-			runTimer(os.Args[2:])
+			runTimer(tail)
 			return
 		case "relay":
-			runRelay(os.Args[2:])
+			runRelay(tail)
 			return
 		case "sessions":
-			runSessions(os.Args[2:])
+			runSessions(tail)
 			return
 		case "agent-sid":
-			runAgentSID(os.Args[2:])
+			runAgentSID(tail)
 			return
 		case "daemon":
-			runDaemon(os.Args[2:])
+			runDaemon(tail)
 			return
 		case "feishu":
-			runFeishu(os.Args[2:])
+			runFeishu(tail)
 			return
 		case "weixin":
-			runWeixin(os.Args[2:])
+			runWeixin(tail)
 			return
 		case "doctor":
-			runDoctor(os.Args[2:])
+			runDoctor(tail)
 			return
 		case "web":
-			runWeb(os.Args[2:])
+			runWeb(tail)
 			return
 		}
 	}

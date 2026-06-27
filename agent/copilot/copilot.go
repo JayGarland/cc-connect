@@ -157,6 +157,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv := append([]string(nil), a.configEnv...)
 	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
+	sessionEnv := append([]string(nil), a.sessionEnv...)
 	provider := a.providerConfigLocked()
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
 		if m := a.providers[a.activeIdx].Model; m != "" {
@@ -165,7 +166,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 	a.mu.RUnlock()
 
-	return newCopilotSession(ctx, workDir, cmd, extraArgs, model, mode, sessionID, extraEnv, provider)
+	return newCopilotSession(ctx, workDir, cmd, extraArgs, model, mode, sessionID, extraEnv, sessionEnv, provider)
 }
 
 // listSessionsProbeTimeout bounds how long we wait for a session.list probe.

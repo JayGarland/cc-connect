@@ -50,6 +50,15 @@ type copilotSession struct {
 	// context usage tracking
 	contextMu    sync.RWMutex
 	contextUsage *core.ContextUsage
+
+	// sessionEnv holds per-session environment variables forwarded from the engine
+	// (e.g. CC_PROJECT, CC_SESSION_KEY, CC_CONNECT_BIN, CC_CONNECT_CONFIG, CC_RELAY_TARGET).
+	// Used by Send() to dynamically inject identity + relay instructions.
+	sessionEnv []string
+
+	// identityInjected tracks whether identity/relay/cc-connect-send instructions
+	// have been prepended to a prompt. Set to true after the first Send() call.
+	identityInjected atomic.Bool
 }
 
 type copilotWireProviderConfig struct {
@@ -80,7 +89,7 @@ type copilotPermissionResult struct {
 	Rules []any  `json:"rules,omitempty"`
 }
 
-func newCopilotSession(ctx context.Context, workDir, cliBin string, extraArgs []string, model, mode, resumeSessionID string, extraEnv []string, provider *copilotWireProviderConfig) (*copilotSession, error) {
+func newCopilotSession(ctx context.Context, workDir, cliBin string, extraArgs []string, model, mode, resumeSessionID string, extraEnv []string, sessionEnv []string, provider *copilotWireProviderConfig) (*copilotSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	args := append(append([]string{}, extraArgs...), "--headless", "--stdio", "--no-auto-update")
@@ -131,6 +140,7 @@ func newCopilotSession(ctx context.Context, workDir, cliBin string, extraArgs []
 		done:               make(chan struct{}),
 		pendingPermissions: make(map[string]json.RawMessage),
 		eventPermissions:   make(map[string]struct{}),
+		sessionEnv:         sessionEnv,
 	}
 	cs.alive.Store(true)
 	cs.autoApprove.Store(mode == "bypassPermissions")
@@ -686,6 +696,84 @@ func summarizeToolInput(tool string, input map[string]any) string {
 func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, files []core.FileAttachment) error {
 	if !cs.alive.Load() {
 		return fmt.Errorf("session process is not running")
+	}
+
+	// Inject identity, relay, and cc-connect usage instructions on the first
+	// Send() call. Everything is derived from session env vars — no file dependency.
+	// Same pattern as Reasonix dynamic injection.
+	if !cs.identityInjected.Load() {
+		// Parse sessionEnv for cc-connect context: project, session key,
+		// binary path, config path, and relay target.
+		var project, sessionKey, ccBin, ccConfig, relayTarget string
+		for _, kv := range cs.sessionEnv {
+			if idx := strings.IndexByte(kv, '='); idx >= 0 {
+				switch kv[:idx] {
+				case "CC_PROJECT":
+					project = kv[idx+1:]
+				case "CC_SESSION_KEY":
+					sessionKey = kv[idx+1:]
+				case "CC_CONNECT_BIN":
+					ccBin = kv[idx+1:]
+				case "CC_CONNECT_CONFIG":
+					ccConfig = kv[idx+1:]
+				case "CC_RELAY_TARGET":
+					relayTarget = kv[idx+1:]
+				}
+			}
+		}
+
+		// Use forward slashes for bash compatibility in relay commands.
+		if ccBin != "" {
+			ccBin = strings.ReplaceAll(ccBin, "\\", "/")
+		}
+		if ccConfig != "" {
+			ccConfig = strings.ReplaceAll(ccConfig, "\\", "/")
+		}
+
+		if project != "" {
+			prompt += "\n\n## Your Identity\n" +
+				fmt.Sprintf("You are **%s** — a coding agent in the cc-connect bridge.\n", project)
+			if relayTarget != "" {
+				prompt += fmt.Sprintf("Your relay counterpart is **%s**.\n", relayTarget)
+			}
+			prompt += "You are connected through cc-connect to a messaging platform.\n"
+		}
+		if project != "" && sessionKey != "" && ccBin != "" && ccConfig != "" {
+			toTarget := relayTarget
+			if toTarget == "" {
+				toTarget = "<target-project>"
+			}
+			prompt += "\n## Relay command\n" +
+				"To relay a message to your counterpart, run EXACTLY this ONE command (no other commands needed):\n\n" +
+				fmt.Sprintf("  %s --config %s relay send --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccConfig, project, toTarget, sessionKey) +
+				"CRITICAL RULES for relaying:\n" +
+				"- When the user says \"relay to X: <message>\", replace \"your message\" with the EXACT text after the colon.\n" +
+				"- Do NOT interpret, answer, modify, or rephrase the message — relay it VERBATIM.\n" +
+				"- The message is for your counterpart to answer, NOT for you. Never answer it yourself.\n" +
+				"- Run ONLY this one command. Do not add extra commands, explanations, or analysis.\n" +
+				"- The CLI output is your counterpart's answer. Read it, then reply with a brief natural acknowledgment based on it.\n" +
+				"- Do NOT repeat the answer verbatim — it already appears in chat from your counterpart's bot.\n" +
+				"- Good replies: \"Got it, relayed ✅\", \"They said it's 8 👍\"\n" +
+				"- Bad replies: \"3 + 5 = 8\" (repeating), \"I'll relay...\" (before running)\n" +
+				"- Use the EXACT path with forward slashes shown above\n" +
+				"- Include --config flag (required for custom data_dir)\n" +
+				"- Include --session-key flag (env vars not available in bash)\n"
+		}
+
+		// cc-connect send usage — how to send files, images, audio back to the user.
+		if ccBin != "" {
+			prompt += "\n## cc-connect send\n" +
+				"To send generated files, images, or voice messages back to the user:\n\n" +
+				fmt.Sprintf("  %s send --image /path/to/image.png\n", ccBin) +
+				fmt.Sprintf("  %s send --file /path/to/report.pdf\n", ccBin) +
+				fmt.Sprintf("  %s send --audio /path/to/clip.mp3\n", ccBin) +
+				fmt.Sprintf("  %s send --video /path/to/demo.mp4\n", ccBin) +
+				fmt.Sprintf("  %s send --tts \"text to speak\"\n", ccBin) +
+				"\nYou may repeat --image / --file multiple times.\n" +
+				"After --tts or --audio, reply ONLY with NO_REPLY unless a text confirmation was also requested.\n"
+		}
+
+		cs.identityInjected.Store(true)
 	}
 
 	// Handle images: save to temp dir and append file references
