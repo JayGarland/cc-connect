@@ -112,9 +112,12 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 			prompt += "\n## Relay command\n" +
 				"To relay a message to your counterpart, run this ONE command:\n\n" +
 				fmt.Sprintf("  %s relay send --data-dir %s --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccDataDir, project, toTarget, sessionKey) +
-				"CRITICAL: relay the user's message VERBATIM after the colon. Do NOT answer it yourself.\n" +
-				"After running the relay command, read the CLI output (it's your counterpart's answer)\n" +
-				"and reply with a brief acknowledgment based on it.\n"
+				"CRITICAL RULES for relaying:\n" +
+				"- ONLY relay when the user EXPLICITLY says \"relay to X: <message>\" or \"relay to X\".\n" +
+				"- If the user asks you a direct question (no \"relay to\" prefix), ANSWER IT YOURSELF. Do NOT relay.\n" +
+				"- When relaying: relay the user's message VERBATIM after the colon. Do NOT answer it yourself.\n" +
+				"- After running the relay command, read the CLI output (it's your counterpart's answer)\n" +
+				"- Reply with a brief acknowledgment based on the output.\n"
 		}
 		if ccBin != "" {
 			prompt += "\n## cc-connect send\n" +

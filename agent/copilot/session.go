@@ -752,7 +752,9 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 				"To relay a message to your counterpart, run EXACTLY this ONE command (no other commands needed):\n\n" +
 				fmt.Sprintf("  %s relay send --data-dir %s --from %s --to %s --session-key %s \"your message\"\n\n", ccBin, ccDataDir, project, toTarget, sessionKey) +
 				"CRITICAL RULES for relaying:\n" +
-				"- When the user says \"relay to X: <message>\", replace \"your message\" with the EXACT text after the colon.\n" +
+				"- ONLY relay when the user EXPLICITLY says \"relay to X: <message>\" or \"relay to X\".\n" +
+				"- If the user asks you a direct question (no \"relay to\" prefix), ANSWER IT YOURSELF. Do NOT relay.\n" +
+				"- When relaying: replace \"your message\" with the EXACT text after the colon.\n" +
 				"- Do NOT interpret, answer, modify, or rephrase the message — relay it VERBATIM.\n" +
 				"- The message is for your counterpart to answer, NOT for you. Never answer it yourself.\n" +
 				"- Run ONLY this one command. Do not add extra commands, explanations, or analysis.\n" +
