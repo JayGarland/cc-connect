@@ -126,8 +126,7 @@ func newSession(ctx context.Context, serveURL, workDir, sessionID, mode string, 
 
 	// Generate a client-side session ID when none is provided (e.g. relay
 	// sessions). This ID is returned by CurrentSessionID() and persisted by
-	// saveRelaySessionID, enabling multi-turn relay context.
-	fresh := sessionID == "" || sessionID == "new"
+	// saveRelaySessionID for cc-connect's session manager tracking.
 	if sessionID == "" {
 		sessionID = newReasonixSessionID()
 	}
@@ -153,19 +152,15 @@ func newSession(ctx context.Context, serveURL, workDir, sessionID, mode string, 
 	}
 	s.alive.Store(true)
 
-	// Only create a fresh serve session when starting from scratch. When a
-	// persisted session ID is passed (e.g. relay resume), skip /new so the
-	// existing serve session (kept alive across SSE disconnects) is reused.
-	// Reasonix serve runs ONE session at a time — /new would discard it.
-	if fresh {
-		if err := s.httpPost("/new", nil); err != nil {
-			cancel()
-			return nil, fmt.Errorf("reasonix: new session: %w", err)
-		}
-		slog.Info("reasonix: created new session", "session_id", sessionID)
-	} else {
-		slog.Info("reasonix: reusing existing session", "session_id", sessionID)
+	// Always create a fresh serve session. reasonix serve state corrupts
+	// easily (e.g. when the SSE connection is killed mid-turn), so reusing
+	// sessions is unreliable. The client-side session ID (newReasonixSessionID)
+	// is still generated for cc-connect's session manager tracking.
+	if err := s.httpPost("/new", nil); err != nil {
+		cancel()
+		return nil, fmt.Errorf("reasonix: new session: %w", err)
 	}
+	slog.Info("reasonix: created new session", "session_id", sessionID)
 
 	// Start SSE reader in background
 	readerCtx, readerCancel := context.WithCancel(ctx)
