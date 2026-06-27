@@ -1,0 +1,55 @@
+# Race detector + build verification for the private Nexus fork.
+#
+# Lives in this fork only — `if: github.repository == 'JayGarland/cc-connect'`
+# keeps it inert if rebased onto upstream/main or further forked.
+# Runs on Linux (Ubuntu) because CGO is enabled there by default; the
+# original dev host (Windows) has CGO off and cannot run -race locally.
+#
+# Scope: focused on the packages the Nexus audit pass touched. Expand if
+# the fork grows.
+
+name: nexus-race
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  race:
+    if: github.repository == 'JayGarland/cc-connect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Race — touched packages
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go test -race -count=1 -timeout 5m \
+            ./core/ \
+            ./agent/copilot/ \
+            ./agent/opencode/ \
+            ./agent/reasonix/ \
+            ./config/
+
+      - name: Race — focused tests (the audit-pass adds)
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go test -race -count=1 -timeout 2m -v \
+            ./core/ -run "TestRelayManager_Burst|TestCUJ|TestRelay"
