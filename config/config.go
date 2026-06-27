@@ -255,8 +255,10 @@ type RoleConfig struct {
 
 // RelayConfig controls bot-to-bot relay behavior.
 type RelayConfig struct {
-	TimeoutSecs *int   `toml:"timeout_secs"`         // max seconds to wait for relay response; 0 = disabled; default 120
-	Visibility  string `toml:"visibility,omitempty"` // "full" (default), "summary", or "none" for group visibility echoes
+	TimeoutSecs     *int   `toml:"timeout_secs"`                // max seconds to wait for relay response; 0 = disabled; default 120
+	Visibility      string `toml:"visibility,omitempty"`        // "full" (default), "summary", or "none" for group visibility echoes
+	BurstWindowSecs *int   `toml:"burst_window_secs,omitempty"` // rolling window for the per-source loop guard; default 60
+	BurstMax        *int   `toml:"burst_max,omitempty"`         // max relays per source per window; 0 = disabled; default 10
 }
 
 // SpeechConfig configures speech-to-text for voice messages.
@@ -1004,6 +1006,12 @@ func (c *Config) validateInternal(permissive bool) error {
 	}
 	if c.Relay.TimeoutSecs != nil && *c.Relay.TimeoutSecs < 0 {
 		return fmt.Errorf("config: relay.timeout_secs must be >= 0")
+	}
+	if c.Relay.BurstWindowSecs != nil && *c.Relay.BurstWindowSecs < 0 {
+		return fmt.Errorf("config: relay.burst_window_secs must be >= 0")
+	}
+	if c.Relay.BurstMax != nil && *c.Relay.BurstMax < 0 {
+		return fmt.Errorf("config: relay.burst_max must be >= 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Relay.Visibility)) {
 	case "", "full", "summary", "none":

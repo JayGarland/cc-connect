@@ -51,6 +51,56 @@ func TestRelayManager_RelayContextDisablesTimeoutAtZero(t *testing.T) {
 	}
 }
 
+func TestRelayManager_BurstLimit_RejectsAfterBudgetExhausted(t *testing.T) {
+	// Loop-defense regression: if an agent misinterprets a reply as a relay
+	// command, or two agents volley a "relay to me" instruction, the daemon
+	// must drop the runaway calls inside the rolling window.
+	rm := NewRelayManager("")
+	rm.SetBurstLimit(1*time.Second, 3)
+
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if err := rm.checkBurst("chat-A", "copilot-seat", now); err != nil {
+			t.Fatalf("call %d unexpectedly rate-limited: %v", i+1, err)
+		}
+	}
+	if err := rm.checkBurst("chat-A", "copilot-seat", now); err == nil {
+		t.Fatal("4th call inside the window should be rejected, got nil error")
+	}
+
+	// After the window slides forward, the budget refills.
+	if err := rm.checkBurst("chat-A", "copilot-seat", now.Add(2*time.Second)); err != nil {
+		t.Fatalf("call after window expiry rejected: %v", err)
+	}
+}
+
+func TestRelayManager_BurstLimit_DisabledWhenMaxZero(t *testing.T) {
+	rm := NewRelayManager("")
+	rm.SetBurstLimit(time.Second, 0)
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 100; i++ {
+		if err := rm.checkBurst("chat-A", "copilot-seat", now); err != nil {
+			t.Fatalf("burst disabled but call %d rejected: %v", i+1, err)
+		}
+	}
+}
+
+func TestRelayManager_BurstLimit_IsolatesSources(t *testing.T) {
+	// One spammy seat must not starve other seats in the same chat.
+	rm := NewRelayManager("")
+	rm.SetBurstLimit(time.Second, 2)
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+
+	_ = rm.checkBurst("chat-A", "copilot-seat", now)
+	_ = rm.checkBurst("chat-A", "copilot-seat", now)
+	if err := rm.checkBurst("chat-A", "copilot-seat", now); err == nil {
+		t.Fatal("copilot-seat should be rate-limited after 2 calls")
+	}
+	if err := rm.checkBurst("chat-A", "reasonix-seat", now); err != nil {
+		t.Fatalf("reasonix-seat should still be allowed (independent budget): %v", err)
+	}
+}
+
 type relayVisibilityPlatform struct {
 	stubPlatformEngine
 	reconstructed []string

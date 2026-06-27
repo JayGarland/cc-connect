@@ -47,17 +47,17 @@ func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, wor
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	s := &opencodeSession{
-		cmd:       cmd,
-		extraArgs: extraArgs,
-		workDir:   workDir,
-		model:     model,
-		mode:      mode,
-		agentName: agentName,
-		extraEnv:  extraEnv,
+		cmd:        cmd,
+		extraArgs:  extraArgs,
+		workDir:    workDir,
+		model:      model,
+		mode:       mode,
+		agentName:  agentName,
+		extraEnv:   extraEnv,
 		sessionEnv: sessionEnv,
-		events:    make(chan core.Event, 64),
-		ctx:       sessionCtx,
-		cancel:    cancel,
+		events:     make(chan core.Event, 64),
+		ctx:        sessionCtx,
+		cancel:     cancel,
 	}
 	s.alive.Store(true)
 
@@ -70,7 +70,9 @@ func newOpencodeSession(ctx context.Context, cmd string, extraArgs []string, wor
 
 func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, files []core.FileAttachment) error {
 	// Inject identity and relay instructions on first Send().
-	if !s.identityInjected.Load() {
+	// CompareAndSwap (not Load/Store) atomically claims the slot — two concurrent
+	// Send() calls can't both run the injection.
+	if s.identityInjected.CompareAndSwap(false, true) {
 		var project, sessionKey, ccBin, ccDataDir, relayTarget string
 		for _, kv := range s.sessionEnv {
 			if idx := strings.IndexByte(kv, '='); idx >= 0 {
@@ -123,7 +125,6 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 			prompt += "\n## cc-connect send\n" +
 				fmt.Sprintf("To send files/images back: %s send --file /path/to/file\n", ccBin)
 		}
-		s.identityInjected.Store(true)
 	}
 
 	if len(files) > 0 {

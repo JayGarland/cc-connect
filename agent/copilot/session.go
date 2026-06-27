@@ -701,7 +701,10 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 	// Inject identity, relay, and cc-connect usage instructions on the first
 	// Send() call. Everything is derived from session env vars — no file dependency.
 	// Same pattern as Reasonix dynamic injection.
-	if !cs.identityInjected.Load() {
+	// CompareAndSwap (not Load/Store) atomically claims the injection slot so two
+	// concurrent Send() calls cannot both run the injection work and produce a
+	// double-prefixed prompt.
+	if cs.identityInjected.CompareAndSwap(false, true) {
 		// Parse sessionEnv for cc-connect context: project, session key,
 		// binary path, config path, and relay target.
 		var project, sessionKey, ccBin, ccConfig, ccDataDir, relayTarget string
@@ -779,8 +782,6 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 				"\nYou may repeat --image / --file multiple times.\n" +
 				"After --tts or --audio, reply ONLY with NO_REPLY unless a text confirmation was also requested.\n"
 		}
-
-		cs.identityInjected.Store(true)
 	}
 
 	// Handle images: save to temp dir and append file references

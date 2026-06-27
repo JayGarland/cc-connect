@@ -14,6 +14,14 @@ import (
 
 const relayTimeout = 120 * time.Second
 
+// Default safety limits to prevent runaway relay loops (e.g. when an agent
+// misinterprets a normal reply as a relay command, or when two agents
+// volley a "relay" instruction back and forth).
+const (
+	defaultRelayBurstWindow = time.Minute
+	defaultRelayBurstMax    = 10
+)
+
 const (
 	RelayVisibilityFull    = "full"
 	RelayVisibilitySummary = "summary"
@@ -35,20 +43,78 @@ type RelayManager struct {
 	storePath  string                   // empty = no persistence
 	timeout    time.Duration
 	visibility string
+
+	// Per-source rate limit: tracks recent Send() times keyed by
+	// "<chatID>::<from>". Drops a request when the window already contains
+	// burstMax entries. Defends against agent self-relayed loops and
+	// LLM-misinterpreted relay instructions. Window/max are tunable via
+	// SetBurstLimit; zero burstMax disables the check.
+	burstWindow time.Duration
+	burstMax    int
+	burstSeen   map[string][]time.Time
 }
 
 func NewRelayManager(dataDir string) *RelayManager {
 	rm := &RelayManager{
-		engines:    make(map[string]*Engine),
-		bindings:   make(map[string]*RelayBinding),
-		timeout:    relayTimeout,
-		visibility: RelayVisibilityFull,
+		engines:     make(map[string]*Engine),
+		bindings:    make(map[string]*RelayBinding),
+		timeout:     relayTimeout,
+		visibility:  RelayVisibilityFull,
+		burstWindow: defaultRelayBurstWindow,
+		burstMax:    defaultRelayBurstMax,
+		burstSeen:   make(map[string][]time.Time),
 	}
 	if dataDir != "" {
 		rm.storePath = filepath.Join(dataDir, "relay_bindings.json")
 		rm.load()
 	}
 	return rm
+}
+
+// SetBurstLimit overrides the per-source rate limit. window is the rolling
+// window; maxPerWindow is the cap. Pass maxPerWindow=0 to disable the check.
+func (rm *RelayManager) SetBurstLimit(window time.Duration, maxPerWindow int) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if window < 0 {
+		window = 0
+	}
+	if maxPerWindow < 0 {
+		maxPerWindow = 0
+	}
+	rm.burstWindow = window
+	rm.burstMax = maxPerWindow
+}
+
+// checkBurst records this relay attempt and returns an error if the rolling
+// per-source budget is exhausted. Must be called with rm.mu NOT held.
+func (rm *RelayManager) checkBurst(chatID, from string, now time.Time) error {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	if rm.burstMax <= 0 || rm.burstWindow <= 0 {
+		return nil
+	}
+	key := chatID + "::" + from
+	cutoff := now.Add(-rm.burstWindow)
+	hits := rm.burstSeen[key]
+	// Prune entries older than the window.
+	pruned := hits[:0]
+	for _, t := range hits {
+		if t.After(cutoff) {
+			pruned = append(pruned, t)
+		}
+	}
+	if len(pruned) >= rm.burstMax {
+		// Keep the buffer so subsequent calls in the same window keep failing.
+		rm.burstSeen[key] = pruned
+		return fmt.Errorf(
+			"relay: rate limit exceeded — %s sent %d relays in the last %s; "+
+				"this usually means a loop (agents replying with relay commands) "+
+				"or a misinterpreted message",
+			from, len(pruned), rm.burstWindow)
+	}
+	rm.burstSeen[key] = append(pruned, now)
+	return nil
 }
 
 func (rm *RelayManager) RegisterEngine(name string, e *Engine) {
@@ -206,6 +272,13 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 	platform, chatID, err := parseSessionKeyParts(req.SessionKey)
 	if err != nil {
 		return nil, fmt.Errorf("relay: invalid session key: %w", err)
+	}
+
+	// Loop-defense: reject when the source has burst past the per-window budget.
+	// Runs before any binding/engine resolution so loops can't waste lookups.
+	if err := rm.checkBurst(chatID, req.From, time.Now()); err != nil {
+		slog.Warn("relay: burst rejected", "from", req.From, "to", req.To, "chat_id", chatID, "error", err)
+		return nil, err
 	}
 
 	rm.mu.RLock()

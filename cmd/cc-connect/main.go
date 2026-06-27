@@ -1318,6 +1318,19 @@ func main() {
 			}
 		}
 		relayMgr.SetVisibility(cfg.Relay.Visibility)
+		// Per-source loop guard. Both knobs are optional in config; the manager
+		// keeps its defaults when either is nil. Pass-through honors explicit 0.
+		if cfg.Relay.BurstWindowSecs != nil || cfg.Relay.BurstMax != nil {
+			window := 60 * time.Second
+			if cfg.Relay.BurstWindowSecs != nil {
+				window = time.Duration(*cfg.Relay.BurstWindowSecs) * time.Second
+			}
+			maxN := 10
+			if cfg.Relay.BurstMax != nil {
+				maxN = *cfg.Relay.BurstMax
+			}
+			relayMgr.SetBurstLimit(window, maxN)
+		}
 		apiSrv.SetRelayManager(relayMgr)
 
 		// Create shared DirHistory for all engines
