@@ -14,6 +14,7 @@ const (
 	progressStyleLegacy  = "legacy"
 	progressStyleCompact = "compact"
 	progressStyleCard    = "card"
+	progressStyleSingle  = "single"
 
 	// ProgressCardPayloadPrefix marks a structured payload for card-style progress.
 	ProgressCardPayloadPrefix = "__cc_connect_progress_card_v1__:"
@@ -241,6 +242,8 @@ func normalizeProgressStyle(style string) string {
 		return progressStyleCompact
 	case progressStyleCard:
 		return progressStyleCard
+	case progressStyleSingle:
+		return progressStyleSingle
 	default:
 		return progressStyleLegacy
 	}

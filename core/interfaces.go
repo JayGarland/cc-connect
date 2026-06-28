@@ -295,9 +295,16 @@ type StatusFooterUpdater interface {
 
 // ProgressStyleProvider is an optional interface for platforms that expose
 // a preferred style for intermediate progress rendering.
-// Typical values: "legacy", "compact", "card".
+// Typical values: "legacy", "compact", "card", "single".
 type ProgressStyleProvider interface {
 	ProgressStyle() string
+}
+
+// StreamPreviewIntervalOverride is an optional interface platforms implement
+// to override the engine's default streaming preview interval.
+// Return 0 to use the engine default.
+type StreamPreviewIntervalOverride interface {
+	StreamPreviewIntervalMs() int
 }
 
 // ProgressCardPayloadSupport is an optional interface for platforms that can

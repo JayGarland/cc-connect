@@ -177,8 +177,10 @@ func New(opts map[string]any) (core.Platform, error) {
 			progressStyle = "legacy"
 		case "compact", "card":
 			progressStyle = "compact"
+		case "single":
+			progressStyle = "single"
 		default:
-			return nil, fmt.Errorf("telegram: invalid progress_style %q (want legacy, compact, or card)", v)
+			return nil, fmt.Errorf("telegram: invalid progress_style %q (want legacy, compact, card, or single)", v)
 		}
 	}
 
@@ -210,6 +212,15 @@ func (p *Platform) ProgressStyle() string {
 		return "compact"
 	}
 	return p.progressStyle
+}
+
+// StreamPreviewIntervalMs returns 500ms for single mode (max 2 edits/sec),
+// or 0 to use the engine default for other modes.
+func (p *Platform) StreamPreviewIntervalMs() int {
+	if p.progressStyle == "single" {
+		return 500
+	}
+	return 0
 }
 
 // KeepPreviewOnFinish tells the engine to keep the preview message and

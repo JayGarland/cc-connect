@@ -146,6 +146,11 @@ type PreviewFinishPreference interface {
 }
 
 func newStreamPreview(cfg StreamPreviewCfg, p Platform, replyCtx any, ctx context.Context, transform func(string) string) *streamPreview {
+	if ov, ok := p.(StreamPreviewIntervalOverride); ok {
+		if ms := ov.StreamPreviewIntervalMs(); ms > 0 {
+			cfg.IntervalMs = ms
+		}
+	}
 	return &streamPreview{
 		cfg:       cfg,
 		platform:  p,
@@ -431,8 +436,8 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	// because it may apply different formatting (e.g. Markdown→HTML for
 	// Telegram).
 	if finalText == sp.lastSentText && sp.lastSentViaUpdate && statusFooter == "" {
-		slog.Debug("stream preview finish: text unchanged and no footer, skipping",
-			"text_len", len(finalText))
+		slog.Info("stream preview: final message sent (no update needed)",
+			"message_id", sp.previewMsgID, "text_len", len(finalText))
 		return true
 	}
 
@@ -449,7 +454,8 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	if statusFooter != "" {
 		if sfu, ok := sp.platform.(StatusFooterUpdater); ok {
 			if err := sfu.UpdateMessageWithStatusFooter(sp.ctx, sp.previewMsgID, finalText, statusFooter); err == nil {
-				slog.Debug("stream preview finish: success via UpdateMessageWithStatusFooter")
+				slog.Info("stream preview: final message sent",
+					"message_id", sp.previewMsgID, "text_len", len(finalText))
 				return true
 			} else {
 				slog.Debug("stream preview finish: UpdateMessageWithStatusFooter failed, falling back", "error", err)
@@ -473,7 +479,8 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 			statusUpdater.SetPreviewStatus(sp.previewMsgID, sp.pendingStatus)
 		}
 	}
-	slog.Debug("stream preview finish: success via UpdateMessage")
+	slog.Info("stream preview: final message sent",
+		"message_id", sp.previewMsgID, "text_len", len(finalText))
 	return true
 }
 

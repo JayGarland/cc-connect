@@ -4877,10 +4877,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				break
 			}
 			// When thinking messages are hidden, behavior depends on display mode:
-			//   quiet:   append separator to keep all text in one card
-			//   compact: freeze+detach to split text into separate cards
+			//   quiet/single: append separator to keep all text in one card
+			//   compact:      freeze+detach to split text into separate cards
 			if !e.display.ThinkingMessages && len(textParts) > segmentStart {
-				if e.display.Mode == "quiet" {
+				if e.display.Mode == "quiet" || progressStyleForTarget(p, replyCtx) == "single" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
 					}
@@ -4964,10 +4964,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				break
 			}
 			// When tool messages are hidden, behavior depends on display mode:
-			//   quiet:   append separator to keep all text in one card
-			//   compact: freeze+detach to split text into separate cards
+			//   quiet/single: append separator to keep all text in one card
+			//   compact:      freeze+detach to split text into separate cards
 			if !e.display.ToolMessages && len(textParts) > segmentStart {
-				if e.display.Mode == "quiet" {
+				if e.display.Mode == "quiet" || progressStyleForTarget(p, replyCtx) == "single" {
 					if sp.canPreview() && sp.appendSeparator("\n\n") {
 						textParts = append(textParts, "\n\n")
 					}
