@@ -207,6 +207,10 @@ type Message struct {
 	// WasMentioned is set by platforms when the message explicitly @-mentioned
 	// this bot by name before the mention was stripped from Content.
 	WasMentioned bool
+	// DropReply suppresses the agent's response from being sent to the platform.
+	// Used by silent heartbeats: the agent still runs its check internally but
+	// nothing is posted to chat.
+	DropReply bool
 }
 
 // EventType distinguishes different kinds of agent output.
