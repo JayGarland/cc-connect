@@ -6054,9 +6054,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.mu.Lock()
 				state.currentPromptLen = len(queuedPrompt)
 				state.currentPromptPreview = previewText(queuedPrompt, 300)
-				state.mu.Unlock()
-
-				state.mu.Lock()
 				as := state.agentSession // capture under lock to avoid race with cleanup
 				state.mu.Unlock()
 
