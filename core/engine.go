@@ -468,6 +468,8 @@ type Engine struct {
 	// Injected into agent sessions as CC_CONNECT_CONFIG so agents (e.g. reasonix)
 	// can invoke `cc-connect relay send --config <path>` without hardcoding paths.
 	configPath string
+
+	handoffFile string // path to inject into cold-start sessions; empty = disabled
 }
 
 // workspaceInitFlow tracks a channel that is being onboarded to a workspace.
@@ -1314,6 +1316,10 @@ func (e *Engine) SetDataDir(dir string) {
 // injected into agent sessions as CC_CONNECT_CONFIG.
 func (e *Engine) SetConfigPath(path string) {
 	e.configPath = path
+}
+
+func (e *Engine) SetHandoffFile(path string) {
+	e.handoffFile = path
 }
 
 // RemoveCommand removes a custom command by name. Returns false if not found.
@@ -2922,6 +2928,21 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			msg.Content = reactionLine
 		}
 		sessions.Save()
+	}
+
+	// Cold-start handoff injection: prepend on first message of a new session.
+	if e.handoffFile != "" {
+		if len(session.GetHistory(1)) == 0 && session.GetAgentSessionID() == "" {
+			if data, readErr := os.ReadFile(e.handoffFile); readErr == nil && len(data) > 0 {
+				base := filepath.Base(e.handoffFile)
+				handoffBlock := "[Handoff: " + base + "]\n" + strings.TrimSpace(string(data))
+				if msg.Content != "" {
+					msg.Content = handoffBlock + "\n---\n" + msg.Content
+				} else {
+					msg.Content = handoffBlock
+				}
+			}
+		}
 	}
 
 	// Ensure an interactiveState entry exists before taking the session lock.

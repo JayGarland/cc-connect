@@ -483,6 +483,9 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+		if hf, ok := proj.Agent.Options["handoff_file"].(string); ok && hf != "" {
+			engine.SetHandoffFile(hf)
+		}
 		if absCfg, err := filepath.Abs(configPath); err == nil {
 			engine.SetConfigPath(absCfg)
 		} else {
