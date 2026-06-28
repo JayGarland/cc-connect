@@ -404,6 +404,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Filter out disabled projects so all subsequent indexed loops stay in sync.
+	{
+		active := cfg.Projects[:0]
+		for _, p := range cfg.Projects {
+			if p.Disabled {
+				slog.Info("project disabled, skipping", "project", p.Name)
+				continue
+			}
+			active = append(active, p)
+		}
+		cfg.Projects = active
+	}
+
 	engines := make([]*core.Engine, 0, len(cfg.Projects))
 	effectiveWorkDirs := make([]string, 0, len(cfg.Projects))
 
