@@ -298,6 +298,37 @@ func TestHandleRelay_TimeoutWithoutTextReturnsContextError(t *testing.T) {
 	}
 }
 
+func TestHandleRelay_SuppressesToolResultsWhenToolMessagesDisabled(t *testing.T) {
+	e := newTestEngine()
+	e.display.ToolMessages = false
+	session := newControllableSession("relay-session")
+	e.agent = &controllableAgent{nextSession: session}
+
+	type relayResult struct {
+		resp string
+		err  error
+	}
+	done := make(chan relayResult, 1)
+	go func() {
+		resp, err := e.HandleRelay(context.Background(), "source", "test:chat-1:user", "hello")
+		done <- relayResult{resp: resp, err: err}
+	}()
+
+	session.events <- Event{Type: EventToolResult, ToolName: "read", ToolResult: "raw file output"}
+	session.events <- Event{Type: EventResult, Done: true}
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("HandleRelay() error = %v, want nil", got.err)
+	}
+	if strings.Contains(got.resp, "raw file output") {
+		t.Fatalf("HandleRelay() response leaked tool output: %q", got.resp)
+	}
+	if got.resp != "(empty response)" {
+		t.Fatalf("HandleRelay() response = %q, want empty-response placeholder", got.resp)
+	}
+}
+
 // relayFallbackAgent fails the first StartSession call (simulating a corrupt
 // resume) and returns freshSession on the second call (fresh start).
 type relayFallbackAgent struct {

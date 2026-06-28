@@ -4505,9 +4505,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 					for _, chunk := range splitMessage(fullResponse, maxPlatformMessageLen) {
 						if err := e.sendWithError(p, replyCtx, chunk); err != nil {
 							slog.Warn("unsolicited event: platform send failed",
-							"session", sessionKey,
-							"error", err,
-							"content_len", len(chunk))
+								"session", sessionKey,
+								"error", err,
+								"content_len", len(chunk))
 						}
 					}
 				}
@@ -15635,6 +15635,9 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 				saveRelaySessionID(event.SessionID, false)
 			}
 		case EventToolResult:
+			if !e.display.ToolMessages {
+				continue
+			}
 			out := strings.TrimSpace(event.Content)
 			if out == "" {
 				out = strings.TrimSpace(event.ToolResult)
