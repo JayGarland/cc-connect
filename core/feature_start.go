@@ -20,6 +20,15 @@ type featureStartOptions struct {
 	Title string
 }
 
+type featureStartDispatch struct {
+	agent          Agent
+	sessions       *SessionManager
+	interactiveKey string
+	workspaceDir   string
+	ccSessionKey   string
+	session        *Session
+}
+
 func parseFeatureStartArgs(args []string) (featureStartOptions, error) {
 	var opts featureStartOptions
 	titleParts := make([]string, 0, len(args))
@@ -42,6 +51,9 @@ func parseFeatureStartArgs(args []string) (featureStartOptions, error) {
 }
 
 func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
+	if e == nil || e.name != featureChefSeat {
+		return
+	}
 	opts, err := parseFeatureStartArgs(args)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, "Usage: `/feature-start <title>`")
@@ -66,6 +78,17 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, "❌ /feature-start requires data_dir so it can write the local board")
 		return
 	}
+	dispatch, err := chef.prepareFeatureStartDispatch(chefPlatform, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf("❌ Chef cold-start packet failed: %v", err))
+		return
+	}
+	dispatched := false
+	defer func() {
+		if !dispatched && dispatch != nil && dispatch.session != nil {
+			dispatch.session.UnlockWithoutUpdate()
+		}
+	}()
 
 	boardStore := NewFeatureBoardStore(chef.dataDir)
 	repoWorktree := chef.commandWorkDir(chef.agent, msg)
@@ -84,7 +107,7 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 	}
 
 	refreshed := []string{}
-	if _, err := chef.refreshFeatureSeatSession(msg, task); err != nil {
+	if err := chef.refreshFeatureSeatSessionForDispatch(dispatch, msg, task); err != nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf("❌ Chef refresh failed: %v", err))
 		return
 	}
@@ -95,10 +118,11 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 	refreshed = append(refreshed, featureChefSeat)
 
 	packet := chef.buildFeatureStartPacket(task, boardStore.Path(), refreshed, pendingFeatureSeats(seatNames, featureChefSeat))
-	if err := chef.injectFeatureStartPacket(chefPlatform, msg, packet); err != nil {
+	if err := chef.injectFeatureStartPacketWithDispatch(chefPlatform, msg, packet, dispatch); err != nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf("❌ Chef cold-start packet failed: %v", err))
 		return
 	}
+	dispatched = true
 
 	reply := fmt.Sprintf("✅ Feature started: %s\nTask: `%s`\nBoard: `%s`\nRefreshed: %s",
 		task.Title, task.TaskID, boardStore.Path(), strings.Join(refreshed, ", "))
@@ -172,6 +196,52 @@ func (e *Engine) refreshFeatureSeatSession(msg *Message, task *FeatureTask) (*Se
 	return e.refreshFeatureSeatSessionForKey(sessions, msg.SessionKey, e.interactiveKeyForSessionKey(msg.SessionKey), task)
 }
 
+func (e *Engine) prepareFeatureStartDispatch(p Platform, msg *Message) (*featureStartDispatch, error) {
+	agent, sessions, interactiveKey, workspaceDir, err := e.commandContextWithWorkspace(p, msg)
+	if err != nil {
+		return nil, err
+	}
+	if sessions == nil {
+		return nil, fmt.Errorf("session manager is nil")
+	}
+	session := sessions.GetOrCreateActive(msg.SessionKey)
+	if !session.TryLock() {
+		return nil, fmt.Errorf("chef session is still processing")
+	}
+	return &featureStartDispatch{
+		agent:          agent,
+		sessions:       sessions,
+		interactiveKey: interactiveKey,
+		workspaceDir:   workspaceDir,
+		ccSessionKey:   msg.SessionKey,
+		session:        session,
+	}, nil
+}
+
+func (e *Engine) refreshFeatureSeatSessionForDispatch(dispatch *featureStartDispatch, msg *Message, task *FeatureTask) error {
+	if e == nil {
+		return fmt.Errorf("engine is nil")
+	}
+	if dispatch == nil || dispatch.sessions == nil || dispatch.session == nil {
+		return fmt.Errorf("feature-start dispatch is not prepared")
+	}
+	e.cleanupInteractiveState(dispatch.interactiveKey)
+
+	old := dispatch.session
+	old.SetAgentSessionID("", "")
+	old.ClearHistory()
+	dispatch.sessions.Save()
+
+	name := fmt.Sprintf("feature-start %s %s", task.TaskID, task.Title)
+	next := dispatch.sessions.NewSession(msg.SessionKey, name)
+	if !next.TryLock() {
+		return fmt.Errorf("chef session is still processing")
+	}
+	old.UnlockWithoutUpdate()
+	dispatch.session = next
+	return nil
+}
+
 func (e *Engine) refreshFeatureSeatSessionForKey(sessions *SessionManager, sessionKey, interactiveKey string, task *FeatureTask) (*Session, error) {
 	if e == nil {
 		return nil, fmt.Errorf("engine is nil")
@@ -190,20 +260,15 @@ func (e *Engine) refreshFeatureSeatSessionForKey(sessions *SessionManager, sessi
 	return sessions.NewSession(sessionKey, name), nil
 }
 
-func (e *Engine) injectFeatureStartPacket(p Platform, msg *Message, packet string) error {
-	agent, sessions, interactiveKey, workspaceDir, err := e.commandContextWithWorkspace(p, msg)
-	if err != nil {
-		return err
-	}
-	session := sessions.GetOrCreateActive(msg.SessionKey)
-	if !session.TryLock() {
-		return fmt.Errorf("chef session is still processing")
+func (e *Engine) injectFeatureStartPacketWithDispatch(p Platform, msg *Message, packet string, dispatch *featureStartDispatch) error {
+	if dispatch == nil || dispatch.session == nil || dispatch.sessions == nil {
+		return fmt.Errorf("feature-start dispatch is not prepared")
 	}
 	packetMsg := *msg
 	packetMsg.Content = packet
 	packetMsg.Images = nil
 	packetMsg.Files = nil
-	go e.processInteractiveMessageWith(p, &packetMsg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
+	go e.processInteractiveMessageWith(p, &packetMsg, dispatch.session, dispatch.agent, dispatch.sessions, dispatch.interactiveKey, dispatch.workspaceDir, dispatch.ccSessionKey)
 	return nil
 }
 
