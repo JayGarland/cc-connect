@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -18,10 +17,7 @@ const (
 )
 
 type featureStartOptions struct {
-	Title  string
-	Impl   bool
-	Risk   bool
-	Review bool
+	Title string
 }
 
 func parseFeatureStartArgs(args []string) (featureStartOptions, error) {
@@ -31,12 +27,6 @@ func parseFeatureStartArgs(args []string) (featureStartOptions, error) {
 		switch strings.ToLower(strings.TrimSpace(arg)) {
 		case "":
 			continue
-		case "--impl":
-			opts.Impl = true
-		case "--risk":
-			opts.Risk = true
-		case "--review":
-			opts.Review = true
 		default:
 			if strings.HasPrefix(arg, "--") {
 				return opts, fmt.Errorf("unknown flag %s", arg)
@@ -54,7 +44,7 @@ func parseFeatureStartArgs(args []string) (featureStartOptions, error) {
 func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 	opts, err := parseFeatureStartArgs(args)
 	if err != nil {
-		e.reply(p, msg.ReplyCtx, "Usage: `/feature-start <title> [--impl] [--risk] [--review]`")
+		e.reply(p, msg.ReplyCtx, "Usage: `/feature-start <title>`")
 		return
 	}
 
@@ -104,22 +94,15 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 	}
 	refreshed = append(refreshed, featureChefSeat)
 
-	packet := chef.buildFeatureStartPacket(task, boardStore.Path(), opts, refreshed, pendingFeatureSeats(seatNames, featureChefSeat))
+	packet := chef.buildFeatureStartPacket(task, boardStore.Path(), refreshed, pendingFeatureSeats(seatNames, featureChefSeat))
 	if err := chef.injectFeatureStartPacket(chefPlatform, msg, packet); err != nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf("❌ Chef cold-start packet failed: %v", err))
 		return
 	}
 
-	if opts.Risk {
-		chef.launchFeatureCounselAudit(msg, task, boardStore.Path())
-	}
-
 	reply := fmt.Sprintf("✅ Feature started: %s\nTask: `%s`\nBoard: `%s`\nRefreshed: %s",
 		task.Title, task.TaskID, boardStore.Path(), strings.Join(refreshed, ", "))
 	reply += "\nLazy refresh pending: " + strings.Join(pendingFeatureSeats(seatNames, featureChefSeat), ", ")
-	if opts.Risk {
-		reply += "\nRisk flag: counsel-seat audit requested through relay."
-	}
 	e.reply(p, msg.ReplyCtx, reply)
 }
 
@@ -224,7 +207,7 @@ func (e *Engine) injectFeatureStartPacket(p Platform, msg *Message, packet strin
 	return nil
 }
 
-func (e *Engine) buildFeatureStartPacket(task *FeatureTask, boardPath string, opts featureStartOptions, refreshed, pending []string) string {
+func (e *Engine) buildFeatureStartPacket(task *FeatureTask, boardPath string, refreshed, pending []string) string {
 	nexusRoot := e.featureNexusRoot()
 	wakePath := filepath.Join(nexusRoot, "WAKE.md")
 	handoffPath := filepath.Join(nexusRoot, "HANDOFF.md")
@@ -252,9 +235,6 @@ func (e *Engine) buildFeatureStartPacket(task *FeatureTask, boardPath string, op
 	b.WriteString("- Chef is refreshed immediately because Chef is the entry point.\n")
 	b.WriteString("- Other seats are marked stale-for-this-feature and will be refreshed lazily on first actual use, mention, or relay.\n")
 	b.WriteString("- Lazy refresh must attach this feature context to the first real task; it must not create a standalone task for unused seats.\n")
-	b.WriteString(fmt.Sprintf("- --impl: %t\n", opts.Impl))
-	b.WriteString(fmt.Sprintf("- --risk: %t\n", opts.Risk))
-	b.WriteString(fmt.Sprintf("- --review: %t\n", opts.Review))
 	b.WriteString(fmt.Sprintf("- refreshed seats: %s\n", strings.Join(refreshed, ", ")))
 	if len(pending) > 0 {
 		b.WriteString(fmt.Sprintf("- lazy-refresh pending seats: %s\n", strings.Join(pending, ", ")))
@@ -265,15 +245,6 @@ func (e *Engine) buildFeatureStartPacket(task *FeatureTask, boardPath string, op
 	b.WriteString("- Mark pricing, API capability, product, architecture, security, and other uncertain assumptions as verified or speculative.\n")
 	b.WriteString("- Speculative price/API capability claims require spike evidence or counsel/reviewer audit before implementation.\n")
 	b.WriteString("- Do not say \"I'll monitor\" unless there is a real board item, watcher, heartbeat check, scheduled follow-up, or other durable follow-through mechanism.\n")
-	if opts.Risk {
-		b.WriteString("- Risk flag is set: wait for or request counsel-seat adversarial audit before pushing implementation forward.\n")
-	}
-	if opts.Impl {
-		b.WriteString("- Impl flag is set: dev-deepseek should be considered when implementation starts; it will refresh lazily on first actual use.\n")
-	}
-	if opts.Review {
-		b.WriteString("- Review flag is set: reviewer-seat should be considered when review starts; it will refresh lazily on first actual use.\n")
-	}
 	return b.String()
 }
 
@@ -353,31 +324,4 @@ func (e *Engine) prependFeatureContext(task *FeatureTask, boardPath, content str
 	b.WriteString("[/FEATURE-CONTEXT]\n---\n")
 	b.WriteString(content)
 	return b.String()
-}
-
-func (e *Engine) launchFeatureCounselAudit(msg *Message, task *FeatureTask, boardPath string) {
-	if e == nil || e.relayManager == nil {
-		return
-	}
-	prompt := fmt.Sprintf(`[FEATURE-START COUNSEL AUDIT]
-Task ID: %s
-Title: %s
-Board: %s
-
-Chef requested adversarial audit because /feature-start used --risk.
-Check pricing, API capability, product, architecture, security, and implementation-assumption risk.
-Return concise findings with verified/speculative labels and any blocker that should stop implementation.`,
-		task.TaskID, task.Title, boardPath)
-	go func() {
-		ctx, cancel := context.WithTimeout(e.ctx, 10*time.Minute)
-		defer cancel()
-		if _, err := e.relayManager.Send(ctx, RelayRequest{
-			From:       featureChefSeat,
-			To:         featureCounselSeat,
-			SessionKey: msg.SessionKey,
-			Message:    prompt,
-		}); err != nil {
-			slog.Warn("feature-start: counsel audit relay failed", "task_id", task.TaskID, "error", err)
-		}
-	}()
 }

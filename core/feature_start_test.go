@@ -9,21 +9,20 @@ import (
 )
 
 func TestParseFeatureStartArgs(t *testing.T) {
-	opts, err := parseFeatureStartArgs([]string{"build", "tts", "batch", "--impl", "--risk", "--review"})
+	opts, err := parseFeatureStartArgs([]string{"build", "tts", "batch"})
 	if err != nil {
 		t.Fatalf("parseFeatureStartArgs: %v", err)
 	}
 	if opts.Title != "build tts batch" {
 		t.Fatalf("Title = %q, want build tts batch", opts.Title)
 	}
-	if !opts.Impl || !opts.Risk || !opts.Review {
-		t.Fatalf("flags = impl:%v risk:%v review:%v, want all true", opts.Impl, opts.Risk, opts.Review)
-	}
 }
 
 func TestParseFeatureStartArgsRejectsUnknownFlag(t *testing.T) {
-	if _, err := parseFeatureStartArgs([]string{"x", "--auto"}); err == nil {
-		t.Fatal("expected unknown flag error")
+	for _, flag := range []string{"--impl", "--risk", "--review", "--auto"} {
+		if _, err := parseFeatureStartArgs([]string{"x", flag}); err == nil {
+			t.Fatalf("expected unknown flag error for %s", flag)
+		}
 	}
 }
 
