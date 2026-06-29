@@ -6210,7 +6210,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
-	{[]string{"feature-start", "feature_start", "feature"}, "feature-start"},
+	{[]string{"feature-start", "feature_start"}, "feature-start"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
