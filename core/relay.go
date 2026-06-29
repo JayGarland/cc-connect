@@ -225,6 +225,13 @@ func (rm *RelayManager) HasEngine(name string) bool {
 	return ok
 }
 
+// Engine returns a registered project engine by name.
+func (rm *RelayManager) Engine(name string) *Engine {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.engines[name]
+}
+
 // ListEngineNames returns all registered engine names.
 func (rm *RelayManager) ListEngineNames() []string {
 	rm.mu.RLock()

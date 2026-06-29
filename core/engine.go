@@ -1171,13 +1171,14 @@ func (e *Engine) SetAdminFrom(adminFrom string) {
 
 // privilegedCommands are commands that require admin_from authorization.
 var privilegedCommands = map[string]bool{
-	"shell":   true,
-	"show":    true,
-	"dir":     true,
-	"restart": true,
-	"upgrade": true,
-	"web":     true,
-	"diff":    true,
+	"shell":         true,
+	"show":          true,
+	"dir":           true,
+	"restart":       true,
+	"upgrade":       true,
+	"web":           true,
+	"diff":          true,
+	"feature-start": true,
 }
 
 // isAdmin checks whether the given user ID is authorized for privileged commands.
@@ -6202,6 +6203,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"feature-start", "feature_start", "feature"}, "feature-start"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -6451,6 +6453,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdWeb(p, msg, args)
 	case "ps":
 		e.cmdPs(p, msg, args)
+	case "feature-start":
+		e.cmdFeatureStart(p, msg, args)
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
 			if disabledCmds[strings.ToLower(custom.Name)] {
