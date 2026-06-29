@@ -120,6 +120,30 @@ func TestNexusSharedSkillsDiscovery(t *testing.T) {
 	for _, s := range e.ListSkills() {
 		got[s.Name] = true
 	}
+	for _, want := range []string{"grill-me", "grilling"} {
+		if !got[want] {
+			t.Fatalf("missing skill %q in %#v", want, got)
+		}
+	}
+	if got["handoff"] {
+		t.Fatalf("handoff should not be in shared-only dirs, got %#v", got)
+	}
+}
+
+func TestNexusChefSeatSkillsDiscovery(t *testing.T) {
+	chefSeat := filepath.Join(`F:\nexus`, "data", "skills", "chef-seat")
+	shared := filepath.Join(`F:\nexus`, "data", "skills", "shared")
+	if _, err := os.Stat(chefSeat); err != nil {
+		t.Skip("nexus chef-seat skills dir not present:", err)
+	}
+	e := NewEngine("chef-seat", &stubAgent{}, nil, "", LangEnglish)
+	if err := e.ApplyConfigSkillDirs([]string{chefSeat, shared}); err != nil {
+		t.Fatalf("ApplyConfigSkillDirs: %v", err)
+	}
+	got := map[string]bool{}
+	for _, s := range e.ListSkills() {
+		got[s.Name] = true
+	}
 	for _, want := range []string{"grill-me", "grilling", "handoff"} {
 		if !got[want] {
 			t.Fatalf("missing skill %q in %#v", want, got)
