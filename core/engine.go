@@ -516,6 +516,8 @@ type interactiveState struct {
 	approveAll             bool            // when true, auto-approve all permission requests for this session
 	fromVoice              bool            // true if current turn originated from voice transcription
 	sideText               string
+	currentPromptLen       int
+	currentPromptPreview   string
 	deleteMode             *deleteModeState
 	modelSwitch            *modelSwitchState
 	pendingProviderAdd     *pendingProviderAddState
@@ -3182,6 +3184,55 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	return true
 }
 
+func (e *Engine) queueRelayHandbackForBusySession(p Platform, msg *Message, interactiveKey string, session *Session) bool {
+	if session == nil || !session.Busy() {
+		return false
+	}
+	e.interactiveMu.Lock()
+	state, hasState := e.interactiveStates[interactiveKey]
+	if !hasState || state == nil {
+		e.interactiveMu.Unlock()
+		return false
+	}
+	state.mu.Lock()
+	e.interactiveMu.Unlock()
+	defer state.mu.Unlock()
+
+	if state.agentSession != nil && !state.agentSession.Alive() {
+		return false
+	}
+	if len(state.pendingMessages) >= e.maxQueuedMessages {
+		slog.Warn("relay handback queue full; persisting only",
+			"session", msg.SessionKey,
+			"interactive_key", interactiveKey,
+			"queue_depth", len(state.pendingMessages),
+		)
+		return false
+	}
+	state.pendingMessages = append(state.pendingMessages, queuedMessage{
+		messageID:         msg.MessageID,
+		platform:          p,
+		replyCtx:          msg.ReplyCtx,
+		content:           msg.Content,
+		images:            msg.Images,
+		files:             msg.Files,
+		fromVoice:         msg.FromVoice,
+		userID:            msg.UserID,
+		userName:          msg.UserName,
+		msgPlatform:       msg.Platform,
+		msgSessionKey:     msg.SessionKey,
+		channelKey:        msg.ChannelKey,
+		userMessageTimeMs: msg.UserMessageTimeMs,
+	})
+	slog.Info("relay handback queued for source session",
+		"session", msg.SessionKey,
+		"interactive_key", interactiveKey,
+		"queue_depth", len(state.pendingMessages),
+		"content_len", len(msg.Content),
+	)
+	return true
+}
+
 // ensureInteractiveStateForQueueing creates a placeholder interactiveState
 // entry if none exists. This allows messages arriving while the agent session
 // is still starting up to be queued instead of dropped (issue #565).
@@ -3771,6 +3822,8 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.currentMessageID = msg.MessageID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
+	state.currentPromptLen = len(promptContent)
+	state.currentPromptPreview = previewText(promptContent, 300)
 	state.mu.Unlock()
 
 	// Run Send concurrently with processInteractiveEvents. Some agents block inside
@@ -5378,6 +5431,24 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				fullResponse = strings.Join(textParts, "")
 			}
 			if fullResponse == "" {
+				state.mu.Lock()
+				promptLen := state.currentPromptLen
+				promptPreview := state.currentPromptPreview
+				state.mu.Unlock()
+				textPartsJoined := strings.Join(textParts, "")
+				slog.Warn("empty final response before placeholder",
+					"project", e.name,
+					"session", session.ID,
+					"agent_session", session.GetAgentSessionID(),
+					"msg_id", msgID,
+					"prompt_len", promptLen,
+					"prompt_preview", promptPreview,
+					"event_content_len", len(event.Content),
+					"text_parts", len(textParts),
+					"text_parts_len", len(textPartsJoined),
+					"input_tokens", event.InputTokens,
+					"output_tokens", event.OutputTokens,
+				)
 				fullResponse = e.i18n.T(MsgEmptyResponse)
 			}
 
@@ -5731,6 +5802,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 
 				queuedPrompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+				state.mu.Lock()
+				state.currentPromptLen = len(queuedPrompt)
+				state.currentPromptPreview = previewText(queuedPrompt, 300)
+				state.mu.Unlock()
 
 				nextSend := make(chan error, 1)
 				go func() {
@@ -6044,6 +6119,10 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 
 		e.i18n.DetectAndSet(queued.content)
 		prompt := e.buildSenderPrompt(queued.content, queued.userID, queued.userName, queued.msgPlatform, queued.msgSessionKey, queued.channelKey)
+		state.mu.Lock()
+		state.currentPromptLen = len(prompt)
+		state.currentPromptPreview = previewText(prompt, 300)
+		state.mu.Unlock()
 
 		if state.agentSession == nil || !state.agentSession.Alive() {
 			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session ended"))
@@ -15659,6 +15738,20 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 				resp = strings.Join(textParts, "")
 			}
 			if resp == "" {
+				textPartsJoined := strings.Join(textParts, "")
+				slog.Warn("relay empty final response before placeholder",
+					"project", e.name,
+					"from", fromProject,
+					"relay_key", relaySessionKey,
+					"agent_session", session.GetAgentSessionID(),
+					"prompt_len", len(message),
+					"prompt_preview", previewText(message, 300),
+					"event_content_len", len(event.Content),
+					"text_parts", len(textParts),
+					"text_parts_len", len(textPartsJoined),
+					"input_tokens", event.InputTokens,
+					"output_tokens", event.OutputTokens,
+				)
 				resp = "(empty response)"
 			}
 			slog.Info("relay: turn complete", "from", fromProject, "to", e.name, "response_len", len(resp))
@@ -15876,6 +15969,83 @@ func (e *Engine) cmdBindStatus(p Platform, replyCtx any, chatID string) {
 		parts = append(parts, proj)
 	}
 	e.reply(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgRelayBound), strings.Join(parts, " ↔ ")))
+}
+
+func (e *Engine) InjectRelayHandback(ctx context.Context, platformName, sessionKey, fromName, response string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if strings.TrimSpace(sessionKey) == "" {
+		return fmt.Errorf("relay handback: empty source session key")
+	}
+	if strings.TrimSpace(response) == "" {
+		response = "(empty response)"
+	}
+
+	var platform Platform
+	for _, p := range e.platforms {
+		if p.Name() == platformName {
+			platform = p
+			break
+		}
+	}
+	if platform == nil {
+		return fmt.Errorf("relay handback: platform %q not found", platformName)
+	}
+
+	replyCtx := any(sessionKey)
+	if rc, ok := platform.(ReplyContextReconstructor); ok {
+		if reconstructed, err := rc.ReconstructReplyCtx(sessionKey); err == nil {
+			replyCtx = reconstructed
+		} else {
+			slog.Warn("relay handback: failed to reconstruct reply ctx; using session key fallback",
+				"project", e.name,
+				"platform", platformName,
+				"session", sessionKey,
+				"error", err,
+			)
+		}
+	}
+
+	content := fmt.Sprintf("[CC-RELAY-HANDBACK]\nFrom: %s\n\n%s", fromName, response)
+	msg := &Message{
+		Platform:          platformName,
+		SessionKey:        sessionKey,
+		Content:           content,
+		UserID:            "cc-connect-relay",
+		UserName:          "cc-connect relay",
+		ReplyCtx:          replyCtx,
+		UserMessageTimeMs: time.Now().UnixMilli(),
+	}
+
+	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	if e.queueRelayHandbackForBusySession(platform, msg, interactiveKey, session) {
+		return nil
+	}
+
+	if session.TryLock() {
+		slog.Info("relay handback starting synthetic source turn",
+			"project", e.name,
+			"session", sessionKey,
+			"from", fromName,
+			"response_len", len(response),
+		)
+		go e.processInteractiveMessageWith(platform, msg, session, e.agent, e.sessions, interactiveKey, "", sessionKey)
+		return nil
+	}
+
+	session.AddHistory("user", content)
+	e.sessions.Save()
+	slog.Warn("relay handback persisted without live delivery",
+		"project", e.name,
+		"session", sessionKey,
+		"from", fromName,
+		"response_len", len(response),
+	)
+	return nil
 }
 
 const ccConnectInstructionMarker = "<!-- cc-connect-instructions -->"

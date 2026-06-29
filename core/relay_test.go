@@ -185,6 +185,58 @@ func TestRelayManager_DefaultVisibilityEchoesFullMessages(t *testing.T) {
 	}
 }
 
+func TestRelayManager_InjectsHandbackIntoSourceSession(t *testing.T) {
+	sourcePlatform := &relayVisibilityPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	targetPlatform := &relayVisibilityPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	sourceEngine := NewEngine("source", &stubAgent{}, []Platform{sourcePlatform}, "", LangEnglish)
+	targetSession := newControllableSession("target-session")
+	targetEngine := NewEngine("target", &controllableAgent{nextSession: targetSession}, []Platform{targetPlatform}, "", LangEnglish)
+
+	rm := NewRelayManager("")
+	rm.Bind("feishu", "chat-1", map[string]string{
+		"source": "source-bot",
+		"target": "target-bot",
+	})
+	rm.RegisterEngine("source", sourceEngine)
+	rm.RegisterEngine("target", targetEngine)
+
+	sessionKey := "feishu:chat-1:user-1"
+	done := make(chan error, 1)
+	go func() {
+		_, err := rm.Send(context.Background(), RelayRequest{
+			From:       "source",
+			To:         "target",
+			SessionKey: sessionKey,
+			Message:    "please ask target",
+		})
+		done <- err
+	}()
+
+	targetSession.events <- Event{Type: EventResult, Content: "target says long answer", Done: true}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RelayManager.Send() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RelayManager.Send() did not return")
+	}
+
+	history := sourceEngine.sessions.GetOrCreateActive(sessionKey).GetHistory(0)
+	if len(history) != 1 {
+		t.Fatalf("source history len = %d, want 1", len(history))
+	}
+	if history[0].Role != "user" {
+		t.Fatalf("source history role = %q, want user", history[0].Role)
+	}
+	if !strings.Contains(history[0].Content, "[CC-RELAY-HANDBACK]") ||
+		!strings.Contains(history[0].Content, "From: target-bot") ||
+		!strings.Contains(history[0].Content, "target says long answer") {
+		t.Fatalf("source history missing handback content: %q", history[0].Content)
+	}
+}
+
 func TestRelayManager_VisibilitySummarySuppressesBodies(t *testing.T) {
 	resp, sourceSent, targetSent := runRelayVisibilityScenario(t, RelayVisibilitySummary)
 

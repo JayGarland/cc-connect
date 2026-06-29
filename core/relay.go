@@ -341,11 +341,21 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 		return nil, fmt.Errorf("relay: %w", err)
 	}
 
-	// Post the response to the group chat for visibility.
-	// If the source engine exposes its bot username (Telegram), prefix with
-	// @<username> so Telegram routes the handback as an @-mention to the source
-	// engine — that way the source agent (Chef) receives the result directly
-	// without needing to poll or manually close the loop.
+	if sourceEngine != nil {
+		if err := sourceEngine.InjectRelayHandback(ctx, platform, req.SessionKey, toName, response); err != nil {
+			slog.Warn("relay: source handback injection failed",
+				"from", req.From,
+				"to", req.To,
+				"session_key", req.SessionKey,
+				"error", err,
+			)
+		}
+	}
+
+	// Post the response to the group chat for visibility. Source delivery no
+	// longer depends on Telegram self-delivering bot-originated @mentions; the
+	// source engine was updated directly above. The @mention remains useful for
+	// human-readable chat context.
 	if targetEngine != nil && visibility != RelayVisibilityNone {
 		label := relayVisibilityResponseLabel(visibility, toName, response)
 		if sourceEngine != nil {

@@ -1100,10 +1100,10 @@ func TestProcessInteractiveEvents_NonTerminalResultContinuesTurn(t *testing.T) {
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s1")
 	state := &interactiveState{
-		agentSession:                  agentSession,
-		platform:                      p,
-		replyCtx:                      "ctx-1",
-		currentTurnUserMessageTimeMs:  100,
+		agentSession:                   agentSession,
+		platform:                       p,
+		replyCtx:                       "ctx-1",
+		currentTurnUserMessageTimeMs:   100,
 		lastCompletedUserMessageTimeMs: 0,
 	}
 	e.interactiveStates[sessionKey] = state
@@ -9139,6 +9139,44 @@ func TestQueueMessage_NoState_ReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestInjectRelayHandback_QueuesBusySourceSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newQueuingSession("source-session")
+	agent := &controllableAgent{nextSession: sess}
+	e := NewEngine("source", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:chat:user"
+	session := e.sessions.GetOrCreateActive(key)
+	if !session.TryLock() {
+		t.Fatal("failed to lock source session for busy-state test")
+	}
+	defer session.Unlock()
+
+	state := &interactiveState{
+		agentSession: sess,
+		platform:     p,
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	if err := e.InjectRelayHandback(context.Background(), "test", key, "target-seat", "done"); err != nil {
+		t.Fatalf("InjectRelayHandback() error = %v", err)
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.pendingMessages) != 1 {
+		t.Fatalf("pendingMessages len = %d, want 1", len(state.pendingMessages))
+	}
+	got := state.pendingMessages[0].content
+	if !strings.Contains(got, "[CC-RELAY-HANDBACK]") ||
+		!strings.Contains(got, "From: target-seat") ||
+		!strings.Contains(got, "done") {
+		t.Fatalf("queued handback content = %q", got)
+	}
+}
+
 func TestQueueMessage_DeadSession_ReturnsFalse(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	sess := newQueuingSession("dead")
@@ -14957,8 +14995,8 @@ func TestIsAllowResponse_WithMultipleMentions(t *testing.T) {
 func TestIsAllowResponse_NotInsideOtherWord(t *testing.T) {
 	cases := []string{
 		"禁止允许这种",
-		"不允许这样",   // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
-		"我不太允许这件事", // long sentence, no token equals "允许"
+		"不允许这样",                            // "不允许" has its own deny entry, but as part of "不允许这样" the user clearly is denying / negating, never allowing.
+		"我不太允许这件事",                         // long sentence, no token equals "允许"
 		"please don't allowall the things", // FieldsFunc keeps "allowall" intact, but it is the approveAll single-token form, not allow.
 		"hello world",
 		"",
@@ -14986,7 +15024,7 @@ func TestIsDenyResponse_WithMention(t *testing.T) {
 	}
 
 	negatives := []string{
-		"拒绝症患者",       // embedded — must not match
+		"拒绝症患者",        // embedded — must not match
 		"我们都不应该 hello", // unrelated
 	}
 	for _, s := range negatives {
