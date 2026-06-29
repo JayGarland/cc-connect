@@ -499,6 +499,13 @@ func main() {
 		if hf, ok := proj.Agent.Options["handoff_file"].(string); ok && hf != "" {
 			engine.SetHandoffFile(hf)
 		}
+		if skillDirs, err := core.ParseSkillDirs(proj.Agent.Options["skill_dirs"]); err != nil {
+			slog.Error("invalid skill_dirs", "project", proj.Name, "error", err)
+			os.Exit(1)
+		} else if err := engine.ApplyConfigSkillDirs(skillDirs); err != nil {
+			slog.Error("failed to apply skill_dirs", "project", proj.Name, "error", err)
+			os.Exit(1)
+		}
 		switch nv := proj.Agent.Options["on_mention_context"].(type) {
 		case int64:
 			if nv > 0 {

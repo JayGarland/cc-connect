@@ -751,6 +751,23 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 	return e
 }
 
+// ApplyConfigSkillDirs merges project-level skill_dirs from config with any
+// agent-native SkillProvider directories. Config dirs are scanned first so
+// Nexus per-seat/shared paths override agent defaults for duplicate skill names.
+func (e *Engine) ApplyConfigSkillDirs(configDirs []string) error {
+	if e == nil {
+		return fmt.Errorf("engine is nil")
+	}
+	var agentDirs []string
+	if e.agent != nil {
+		if sp, ok := e.agent.(SkillProvider); ok {
+			agentDirs = sp.SkillDirs()
+		}
+	}
+	e.skills.SetDirs(MergeSkillDirs(configDirs, agentDirs))
+	return nil
+}
+
 // DefaultWorkspaceIdleTimeout is the default time a workspace can be idle
 // before the reaper reclaims it.
 const DefaultWorkspaceIdleTimeout = 15 * time.Minute
