@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	featureChefSeat    = "chef-seat"
-	featureImplSeat    = "dev-deepseek"
-	featureCounselSeat = "counsel-seat"
-	featureReviewSeat  = "reviewer-seat"
+	featureChefSeat      = "chef-seat"
+	featureChefFlashSeat = "chef-flash-seat"
+	featureImplSeat      = "dev-deepseek"
+	featureCounselSeat   = "counsel-seat"
+	featureReviewSeat    = "reviewer-seat"
 )
 
 type featureStartOptions struct {
@@ -117,7 +118,11 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 	}
 	refreshed = append(refreshed, featureChefSeat)
 
-	packet := chef.buildFeatureStartPacket(task, boardStore.Path(), refreshed, pendingFeatureSeats(seatNames, featureChefSeat))
+	secondaryRefreshed, secondaryWarnings := chef.refreshSecondaryFeatureStartSeats(chefPlatform, msg, task, boardStore, seatNames)
+	refreshed = append(refreshed, secondaryRefreshed...)
+	pending := pendingFeatureSeats(seatNames, refreshed)
+
+	packet := chef.buildFeatureStartPacket(task, boardStore.Path(), refreshed, pending)
 	if err := chef.injectFeatureStartPacketWithDispatch(chefPlatform, msg, packet, dispatch); err != nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf("❌ Chef cold-start packet failed: %v", err))
 		return
@@ -126,7 +131,10 @@ func (e *Engine) cmdFeatureStart(p Platform, msg *Message, args []string) {
 
 	reply := fmt.Sprintf("✅ Feature started: %s\nTask: `%s`\nBoard: `%s`\nRefreshed: %s",
 		task.Title, task.TaskID, boardStore.Path(), strings.Join(refreshed, ", "))
-	reply += "\nLazy refresh pending: " + strings.Join(pendingFeatureSeats(seatNames, featureChefSeat), ", ")
+	reply += "\nLazy refresh pending: " + strings.Join(pending, ", ")
+	if len(secondaryWarnings) > 0 {
+		reply += "\nWarnings: " + strings.Join(secondaryWarnings, "; ")
+	}
 	e.reply(p, msg.ReplyCtx, reply)
 }
 
@@ -170,16 +178,61 @@ func (e *Engine) featureSeatNames() []string {
 	return names
 }
 
-func pendingFeatureSeats(seatNames []string, refreshedSeat string) []string {
+func pendingFeatureSeats(seatNames []string, refreshedSeats []string) []string {
+	refreshed := map[string]bool{}
+	for _, name := range refreshedSeats {
+		refreshed[strings.TrimSpace(name)] = true
+	}
 	var pending []string
 	for _, name := range seatNames {
-		if name == refreshedSeat || strings.TrimSpace(name) == "" {
+		name = strings.TrimSpace(name)
+		if name == "" || refreshed[name] {
 			continue
 		}
 		pending = append(pending, name)
 	}
 	sort.Strings(pending)
 	return pending
+}
+
+func (e *Engine) refreshSecondaryFeatureStartSeats(p Platform, msg *Message, task *FeatureTask, boardStore *FeatureBoardStore, seatNames []string) ([]string, []string) {
+	known := map[string]bool{}
+	for _, name := range seatNames {
+		known[strings.TrimSpace(name)] = true
+	}
+	if !known[featureChefFlashSeat] {
+		return nil, nil
+	}
+	flash := e.featureEngineByName(featureChefFlashSeat)
+	if flash == nil {
+		return nil, []string{featureChefFlashSeat + " not registered"}
+	}
+	flashPlatform := flash.platformByName(msg.Platform)
+	if flashPlatform == nil {
+		return nil, []string{featureChefFlashSeat + " has no " + msg.Platform + " platform"}
+	}
+	dispatch, err := flash.prepareFeatureStartDispatch(flashPlatform, msg)
+	if err != nil {
+		return nil, []string{featureChefFlashSeat + " refresh failed: " + err.Error()}
+	}
+	dispatched := false
+	defer func() {
+		if !dispatched && dispatch != nil && dispatch.session != nil {
+			dispatch.session.UnlockWithoutUpdate()
+		}
+	}()
+	if err := flash.refreshFeatureSeatSessionForDispatch(dispatch, msg, task); err != nil {
+		return nil, []string{featureChefFlashSeat + " refresh failed: " + err.Error()}
+	}
+	if err := boardStore.MarkSeatRefreshed(task.TaskID, featureChefFlashSeat, msg.SessionKey); err != nil {
+		return nil, []string{featureChefFlashSeat + " board update failed: " + err.Error()}
+	}
+	packet := flash.buildFeatureStartPacket(task, boardStore.Path(), []string{featureChefSeat, featureChefFlashSeat}, pendingFeatureSeats(seatNames, []string{featureChefSeat, featureChefFlashSeat}))
+	if err := flash.injectFeatureStartPacketWithDispatch(flashPlatform, msg, packet, dispatch); err != nil {
+		return nil, []string{featureChefFlashSeat + " cold-start packet failed: " + err.Error()}
+	}
+	dispatched = true
+	return []string{featureChefFlashSeat}, nil
 }
 
 func (e *Engine) platformByName(name string) Platform {
@@ -297,7 +350,8 @@ func (e *Engine) buildFeatureStartPacket(task *FeatureTask, boardPath string, re
 	b.WriteString(fmt.Sprintf("- WAKE: %s\n", wakePath))
 	b.WriteString(fmt.Sprintf("- HANDOFF: %s\n\n", handoffPath))
 	b.WriteString("Feature context loading:\n")
-	b.WriteString("- Chef is refreshed immediately because Chef is the entry point.\n")
+	b.WriteString("- chef-seat remains the /feature-start authority.\n")
+	b.WriteString("- chef-seat and chef-flash-seat are refreshed immediately when both are active.\n")
 	b.WriteString("- Other seats are marked stale-for-this-feature and will be refreshed lazily on first actual use, mention, or relay.\n")
 	b.WriteString("- Lazy refresh must attach this feature context to the first real task; it must not create a standalone task for unused seats.\n")
 	b.WriteString(fmt.Sprintf("- refreshed seats: %s\n", strings.Join(refreshed, ", ")))

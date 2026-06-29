@@ -348,6 +348,7 @@ func TestCmdFeatureStartFanoutCreatesOneBoardItem(t *testing.T) {
 	rm := NewRelayManager("")
 	seatNames := []string{
 		featureChefSeat,
+		featureChefFlashSeat,
 		featureImplSeat,
 		"dev-swift",
 		featureCounselSeat,
@@ -357,12 +358,16 @@ func TestCmdFeatureStartFanoutCreatesOneBoardItem(t *testing.T) {
 	platforms := make(map[string]*stubPlatformEngine)
 	engines := make(map[string]*Engine)
 	var chefSession *resultAgentSession
+	var chefFlashSession *resultAgentSession
 	for _, seat := range seatNames {
 		p := &stubPlatformEngine{n: "telegram"}
 		platforms[seat] = p
 		session := newResultAgentSession("feature scoped")
 		if seat == featureChefSeat {
 			chefSession = session
+		}
+		if seat == featureChefFlashSeat {
+			chefFlashSession = session
 		}
 		eng := NewEngine(seat, &resultAgent{session: session}, []Platform{p}, "", LangEnglish)
 		eng.dataDir = dataDir
@@ -400,7 +405,7 @@ func TestCmdFeatureStartFanoutCreatesOneBoardItem(t *testing.T) {
 			t.Fatalf("missing seat state for %s: %+v", seat, board.ActiveFeature.Seats)
 		}
 		want := "pending"
-		if seat == featureChefSeat {
+		if seat == featureChefSeat || seat == featureChefFlashSeat {
 			want = "refreshed"
 		}
 		if state.Status != want {
@@ -422,11 +427,20 @@ func TestCmdFeatureStartFanoutCreatesOneBoardItem(t *testing.T) {
 			}
 			continue
 		}
+		if seat == featureChefFlashSeat {
+			if len(sent) != 1 || !strings.Contains(sent[0], "feature scoped") {
+				t.Fatalf("chef-flash sent = %v, want one feature packet response", sent)
+			}
+			continue
+		}
 		if len(sent) != 0 {
 			t.Fatalf("non-Chef seat %s sent %v, want silent ignore", seat, sent)
 		}
 	}
 	if chefSession == nil || len(chefSession.sentPrompts) != 1 || !strings.Contains(chefSession.sentPrompts[0], "[FEATURE-START]") {
 		t.Fatalf("Chef prompts = %+v, want one [FEATURE-START] prompt", chefSession)
+	}
+	if chefFlashSession == nil || len(chefFlashSession.sentPrompts) != 1 || !strings.Contains(chefFlashSession.sentPrompts[0], "[FEATURE-START]") {
+		t.Fatalf("Chef flash prompts = %+v, want one [FEATURE-START] prompt", chefFlashSession)
 	}
 }
