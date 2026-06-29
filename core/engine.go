@@ -4970,11 +4970,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				break
 			}
 			if !e.display.ThinkingMessages && len(textParts) > segmentStart {
-				lastPart := ""
-				if len(textParts) > 0 {
-					lastPart = textParts[len(textParts)-1]
-				}
-				if lastPart != "" && !strings.HasSuffix(lastPart, "\n") && !strings.HasSuffix(lastPart, "\n\n") {
+				trimmed := strings.TrimRight(strings.Join(textParts, ""), " \t\r")
+				if trimmed != "" && !strings.HasSuffix(trimmed, "\n") && !strings.HasSuffix(trimmed, "\n\n") {
 					if e.display.Mode == "quiet" || progressStyleForTarget(p, replyCtx) == "single" {
 						if sp.canPreview() && sp.appendSeparator("\n\n") {
 							textParts = append(textParts, "\n\n")
@@ -5063,25 +5060,28 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			//   quiet/single: append separator to keep all text in one card
 			//   compact:      freeze+detach to split text into separate cards
 			if !e.display.ToolMessages && len(textParts) > segmentStart {
-				if e.display.Mode == "quiet" || progressStyleForTarget(p, replyCtx) == "single" {
-					if sp.canPreview() && sp.appendSeparator("\n\n") {
-						textParts = append(textParts, "\n\n")
-					}
-				} else {
-					if sp.canPreview() {
-						sp.freeze()
-						sp.detachPreview()
+				trimmed := strings.TrimRight(strings.Join(textParts, ""), " \t\r")
+				if trimmed != "" && !strings.HasSuffix(trimmed, "\n") && !strings.HasSuffix(trimmed, "\n\n") {
+					if e.display.Mode == "quiet" || progressStyleForTarget(p, replyCtx) == "single" {
+						if sp.canPreview() && sp.appendSeparator("\n\n") {
+							textParts = append(textParts, "\n\n")
+						}
 					} else {
-						segment := strings.Join(textParts[segmentStart:], "")
-						if segment != "" {
-							for _, chunk := range splitMessage(segment, maxPlatformMessageLen) {
-								sendWorkspace(p, replyCtx, chunk)
+						if sp.canPreview() {
+							sp.freeze()
+							sp.detachPreview()
+						} else {
+							segment := strings.Join(textParts[segmentStart:], "")
+							if segment != "" {
+								for _, chunk := range splitMessage(segment, maxPlatformMessageLen) {
+									sendWorkspace(p, replyCtx, chunk)
+								}
 							}
 						}
+						segmentStart = len(textParts)
 					}
-					segmentStart = len(textParts)
+					silentHold = false
 				}
-				silentHold = false
 			}
 			if e.display.ToolMessages {
 				// --- StreamingCard path ---
