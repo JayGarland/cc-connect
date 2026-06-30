@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -345,6 +346,9 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 
 	response, err := targetEngine.HandleRelay(relayCtx, req.From, req.SessionKey, req.Message)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timed out") || strings.Contains(err.Error(), "deadline exceeded") {
+			return nil, fmt.Errorf("relay execution timed out. The target bot %q might be busy, hung, or working slowly. You can query its daemon-internal status by running: cc-connect status --project %s", req.To, req.To)
+		}
 		return nil, fmt.Errorf("relay: %w", err)
 	}
 

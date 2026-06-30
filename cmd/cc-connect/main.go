@@ -288,6 +288,9 @@ func main() {
 		case "doctor":
 			runDoctor(tail)
 			return
+		case "status":
+			runStatus(tail)
+			return
 		case "web":
 			runWeb(tail)
 			return
@@ -1681,6 +1684,9 @@ Commands:
     show <id>        Show session messages (-n N for last N)
 
   agent-sid          Print the agent session ID for the current session
+
+  status             Show the daemon-internal status of a seat engine
+                     (-p <project>)
 
   relay              Cross-project message relay
     send             Send a message to another project and get the response

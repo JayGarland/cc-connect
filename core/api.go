@@ -105,6 +105,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 	s.mux.HandleFunc("/relay/send", s.handleRelaySend)
 	s.mux.HandleFunc("/relay/bind", s.handleRelayBind)
 	s.mux.HandleFunc("/relay/binding", s.handleRelayBinding)
+	s.mux.HandleFunc("/project/status", s.handleProjectStatus)
 
 	return s, nil
 }
@@ -830,4 +831,60 @@ func (s *APIServer) handleRelayBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apiJSON(w, http.StatusOK, binding)
+}
+
+func (s *APIServer) handleProjectStatus(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	project := r.URL.Query().Get("project")
+	if project == "" {
+		http.Error(w, "project query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	e, ok := s.engines[project]
+	if !ok {
+		http.Error(w, fmt.Sprintf("project %q not found", project), http.StatusNotFound)
+		return
+	}
+
+	isBusy := false
+	processAlive := false
+	activeSessionsCount := 0
+
+	e.interactiveMu.Lock()
+	for _, state := range e.interactiveStates {
+		activeSessionsCount++
+		state.mu.Lock()
+		if state.agentSession != nil {
+			if state.agentSession.Alive() {
+				processAlive = true
+			}
+		}
+		state.mu.Unlock()
+	}
+	e.interactiveMu.Unlock()
+
+	if e.sessions != nil {
+		for _, sess := range e.sessions.AllSessions() {
+			if sess.Busy() {
+				isBusy = true
+				break
+			}
+		}
+	}
+
+	statusStr := "idle"
+	if isBusy {
+		statusStr = "busy"
+	}
+
+	res := map[string]any{
+		"project":         project,
+		"status":          statusStr,
+		"process_alive":   processAlive,
+		"active_sessions": activeSessionsCount,
+	}
+	apiJSON(w, http.StatusOK, res)
 }

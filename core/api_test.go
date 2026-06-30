@@ -537,3 +537,39 @@ func TestSetMaxAttachmentSize_ConcurrentSafe(t *testing.T) {
 	}
 	<-done
 }
+
+func TestHandleProjectStatus(t *testing.T) {
+	engine := NewEngine("test", &stubAgent{}, []Platform{&stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}}, "", LangEnglish)
+	engine.interactiveStates["session-1"] = &interactiveState{
+		platform: &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}},
+		replyCtx: "reply-ctx",
+	}
+
+	api := &APIServer{engines: map[string]*Engine{"test": engine}}
+
+	req := httptest.NewRequest(http.MethodGet, "/project/status?project=test", nil)
+	rec := httptest.NewRecorder()
+	api.handleProjectStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if res["project"] != "test" {
+		t.Errorf("got project %v, want test", res["project"])
+	}
+	if res["status"] != "idle" {
+		t.Errorf("got status %v, want idle", res["status"])
+	}
+	if res["process_alive"] != false {
+		t.Errorf("got process_alive %v, want false", res["process_alive"])
+	}
+	if res["active_sessions"].(float64) != 1 {
+		t.Errorf("got active_sessions %v, want 1", res["active_sessions"])
+	}
+}
