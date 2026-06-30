@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -606,3 +607,66 @@ func TestSaveImagesToTempDir(t *testing.T) {
 		}
 	}
 }
+
+func TestSession_SendSkipsPersonaWhenAgentArgSet(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	
+	// Write a persona file
+	personaContent := "MY_SECRET_PERSONA"
+	err := os.WriteFile(filepath.Join(tmpDir, "test-project.md"), []byte(personaContent), 0644)
+	if err != nil {
+		t.Fatalf("failed to write persona file: %v", err)
+	}
+
+	// 1. Test case 1: hasAgentArg = false -> persona should be injected!
+	{
+		var buf bytes.Buffer
+		cs := &copilotSession{
+			events:      make(chan core.Event, 10),
+			ctx:         ctx,
+			cancel:      cancel,
+			workDir:     tmpDir,
+			rpc:         newRPCClient(&buf),
+			sessionEnv:  []string{"CC_PROJECT=test-project", "CC_PERSONAS_DIR=" + tmpDir},
+			hasAgentArg: false,
+		}
+		cs.alive.Store(true)
+		cs.sessionID.Store("test-session")
+
+		_ = cs.Send("please review", nil, nil)
+		
+		// Injected prompt should contain the persona content
+		output := buf.String()
+		if !strings.Contains(output, personaContent) {
+			t.Fatalf("expected output to contain persona content %q, got: %s", personaContent, output)
+		}
+	}
+
+	// 2. Test case 2: hasAgentArg = true -> persona should NOT be injected!
+	{
+		var buf bytes.Buffer
+		cs := &copilotSession{
+			events:      make(chan core.Event, 10),
+			ctx:         ctx,
+			cancel:      cancel,
+			workDir:     tmpDir,
+			rpc:         newRPCClient(&buf),
+			sessionEnv:  []string{"CC_PROJECT=test-project", "CC_PERSONAS_DIR=" + tmpDir},
+			hasAgentArg: true,
+		}
+		cs.alive.Store(true)
+		cs.sessionID.Store("test-session")
+
+		_ = cs.Send("please review", nil, nil)
+		
+		// Injected prompt should NOT contain the persona content
+		output := buf.String()
+		if strings.Contains(output, personaContent) {
+			t.Fatalf("expected output to NOT contain persona content %q, got: %s", personaContent, output)
+		}
+	}
+}
+

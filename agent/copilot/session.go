@@ -59,6 +59,9 @@ type copilotSession struct {
 	// identityInjected tracks whether identity/relay/cc-connect-send instructions
 	// have been prepended to a prompt. Set to true after the first Send() call.
 	identityInjected atomic.Bool
+
+	// hasAgentArg is true if "--agent" was passed in extraArgs to the session
+	hasAgentArg bool
 }
 
 type copilotWireProviderConfig struct {
@@ -126,6 +129,14 @@ func newCopilotSession(ctx context.Context, workDir, cliBin string, extraArgs []
 		return nil, fmt.Errorf("copilotSession: start: %w", err)
 	}
 
+	hasAgentArg := false
+	for _, arg := range extraArgs {
+		if arg == "--agent" {
+			hasAgentArg = true
+			break
+		}
+	}
+
 	cs := &copilotSession{
 		cmd:                child,
 		rpc:                newRPCClient(stdin),
@@ -141,6 +152,7 @@ func newCopilotSession(ctx context.Context, workDir, cliBin string, extraArgs []
 		pendingPermissions: make(map[string]json.RawMessage),
 		eventPermissions:   make(map[string]struct{}),
 		sessionEnv:         sessionEnv,
+		hasAgentArg:        hasAgentArg,
 	}
 	cs.alive.Store(true)
 	cs.autoApprove.Store(mode == "bypassPermissions")
@@ -788,7 +800,7 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 		// Load seat-specific persona file from CC_PERSONAS_DIR (e.g. data/personas/chef-seat.md).
 		// Falls back to {workDir}/{project}.md for backwards compatibility.
 		// File is optional — silently skipped if absent.
-		if project != "" {
+		if project != "" && !cs.hasAgentArg {
 			personaFile := ""
 			if ccPersonasDir != "" {
 				personaFile = filepath.Join(ccPersonasDir, project+".md")
