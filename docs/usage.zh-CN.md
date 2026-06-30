@@ -1172,3 +1172,20 @@ proxy_password = ""
 
 完整说明见 [docs/telegram.md](./telegram.md#21-optional-use-a-proxy)（英文原文，
 `docs/telegram.md` 目前只有英文版）。该配置由 PR #389 引入。
+
+### 并发与同会话消息队列 (Same-Session Message Queueing)
+
+当用户在机器人正在处理消息 A 时发送后续消息 B：
+- **消息入队**：消息 B 不会被丢弃，而是保存在该会话内存中的 FIFO 待处理队列（`pendingMessages`）中。
+- **入队提示**：用户会收到消息已入队的通知：
+  `📬 Message received — will process after the current task finishes.`（或对应语言的翻译）。
+- **自动出队**：一旦消息 A 的当前 Turn 执行完毕，`drainPendingMessages` 会自动取出消息 B 并进行处理。
+- **过期过滤**：仅当队列中消息的发送时间戳 `UserMessageTimeMs` 早于正在执行或已执行完的最新 Turn 时间戳时（由 `isQueuedUserMessageStaleForDrainLocked` 判定），该消息才会被视为过期并跳过。如果平台未提供时间戳（时间戳 <= 0），则永不过期。
+- **斜杠命令 (Slash Commands)**：
+  - **内置斜杠命令**（如 `/status`, `/cancel`, `/help`, `/stop`）会故意绕过会话锁，立即执行。
+  - **未识别/自定义斜杠命令** 行为与普通消息一致，在会话繁忙时正常入队排队。
+- **中转消息 (Relay Messages)**：跨项目的中转请求（`HandleRelay`）不使用该队列。它们会以轮询方式等待会话解锁，超时未解锁则同步返回繁忙/超时错误。
+
+该行为已通过集成测试验证：
+- 测试用例：`core/engine_test.go` 中的 `TestInteractiveSessionQueueing_SequentialProcessing`
+- 相关提交：`958d384f Add TestInteractiveSessionQueueing_SequentialProcessing integration test`

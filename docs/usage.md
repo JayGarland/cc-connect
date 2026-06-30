@@ -1267,3 +1267,20 @@ tunneled through it.
 
 Full reference: [docs/telegram.md](./telegram.md#21-optional-use-a-proxy).
 This option was added in PR #389.
+
+### Concurrency and same-session message queueing
+
+When a user sends a follow-up message B while the session is currently busy processing message A:
+- **Queueing**: The message B is not dropped. It is queued in memory in a FIFO list (`pendingMessages`) for that session.
+- **Acknowledgement**: The user receives a queued status alert:
+  `📬 Message received — will process after the current task finishes.`
+- **Automatic Dequeue**: Once turn A completes successfully, `drainPendingMessages` pops B and processes it automatically.
+- **Staleness Filtering**: Queued messages are only skipped/dropped if their timestamp `UserMessageTimeMs` is older than the current in-flight turn or last completed turn (determined by `isQueuedUserMessageStaleForDrainLocked`). If the platform does not provide a watermark/timestamp (timestamp <= 0), they are never skipped.
+- **Slash Commands**:
+  - **Built-in slash commands** (such as `/status`, `/cancel`, `/help`, `/stop`) bypass the session lock check intentionally and execute immediately.
+  - **Unrecognized/custom slash commands** behave like regular messages and will be queued if the session is busy.
+- **Relay Messages**: Cross-project relay requests (`HandleRelay`) do not use this message queue; they poll/wait for the session lock and return a synchronous timeout/busy error if it is not released.
+
+Verification is covered by the integration test:
+- Test: `TestInteractiveSessionQueueing_SequentialProcessing` in `core/engine_test.go`
+- Commit: `958d384f Add TestInteractiveSessionQueueing_SequentialProcessing integration test`
