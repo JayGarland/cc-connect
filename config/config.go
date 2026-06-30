@@ -253,13 +253,22 @@ type RoleConfig struct {
 	RateLimit        *RateLimitConfig `toml:"rate_limit,omitempty"` // nil = inherit global
 }
 
+// RelayBindingConfig defines static bot-to-bot relay bindings.
+type RelayBindingConfig struct {
+	Platform string            `toml:"platform"`
+	ChatID   string            `toml:"chat_id"`
+	Bots     map[string]string `toml:"bots"`
+}
+
 // RelayConfig controls bot-to-bot relay behavior.
 type RelayConfig struct {
-	TimeoutSecs     *int   `toml:"timeout_secs"`                // max seconds to wait for relay response; 0 = disabled; default 60
-	Visibility      string `toml:"visibility,omitempty"`        // "full" (default), "summary", or "none" for group visibility echoes
-	BurstWindowSecs *int   `toml:"burst_window_secs,omitempty"` // rolling window for the per-source loop guard; default 60
-	BurstMax        *int   `toml:"burst_max,omitempty"`         // max relays per source per window; 0 = disabled; default 10
+	TimeoutSecs     *int                 `toml:"timeout_secs"`                // max seconds to wait for relay response; 0 = disabled; default 60
+	Visibility      string               `toml:"visibility,omitempty"`        // "full" (default), "summary", or "none" for group visibility echoes
+	BurstWindowSecs *int                 `toml:"burst_window_secs,omitempty"` // rolling window for the per-source loop guard; default 60
+	BurstMax        *int                 `toml:"burst_max,omitempty"`         // max relays per source per window; 0 = disabled; default 10
+	Bindings        []RelayBindingConfig `toml:"bindings,omitempty"`          // static bindings
 }
+
 
 // SpeechConfig configures speech-to-text for voice messages.
 type SpeechConfig struct {

@@ -1920,6 +1920,55 @@ func TestLoadRelayTimeoutConfig(t *testing.T) {
 	}
 }
 
+const relayBindingsConfigFixture = `
+[relay]
+timeout_secs = 300
+visibility = "none"
+
+[[relay.bindings]]
+platform = "telegram"
+chat_id = "-1003917051393"
+bots = { chef-seat = "resonova_chef_bot", dev-deepseek = "dev_deepseek_bot" }
+
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/alpha"
+
+[[projects.platforms]]
+type = "telegram"
+
+[projects.platforms.options]
+bot_token = "token_xxx"
+`
+
+func TestLoadRelayBindingsConfig(t *testing.T) {
+	configPath := writeConfigFixture(t, relayBindingsConfigFixture)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Relay.Bindings) != 1 {
+		t.Fatalf("len(cfg.Relay.Bindings) = %d, want 1", len(cfg.Relay.Bindings))
+	}
+	binding := cfg.Relay.Bindings[0]
+	if binding.Platform != "telegram" {
+		t.Errorf("binding.Platform = %q, want telegram", binding.Platform)
+	}
+	if binding.ChatID != "-1003917051393" {
+		t.Errorf("binding.ChatID = %q, want -1003917051393", binding.ChatID)
+	}
+	if len(binding.Bots) != 2 || binding.Bots["chef-seat"] != "resonova_chef_bot" || binding.Bots["dev-deepseek"] != "dev_deepseek_bot" {
+		t.Errorf("binding.Bots = %v, want map[chef-seat:resonova_chef_bot dev-deepseek:dev_deepseek_bot]", binding.Bots)
+	}
+}
+
+
 func TestLoadRejectsNegativeRelayTimeout(t *testing.T) {
 	configPath := writeConfigFixture(t, relayConfigNegativeFixture)
 

@@ -1375,6 +1375,12 @@ func main() {
 			}
 			relayMgr.SetBurstLimit(window, maxN)
 		}
+
+		// Apply static bindings configured in config.toml
+		for _, b := range cfg.Relay.Bindings {
+			relayMgr.Bind(b.Platform, b.ChatID, b.Bots)
+		}
+
 		apiSrv.SetRelayManager(relayMgr)
 
 		// Create shared DirHistory for all engines
