@@ -538,7 +538,17 @@ func TestSetMaxAttachmentSize_ConcurrentSafe(t *testing.T) {
 	<-done
 }
 
+type livenessStubAgentSession struct {
+	stubAgentSession
+	alive bool
+}
+
+func (s *livenessStubAgentSession) Alive() bool {
+	return s.alive
+}
+
 func TestHandleProjectStatus(t *testing.T) {
+	// 1. Idle status (no busy sessions)
 	engine := NewEngine("test", &stubAgent{}, []Platform{&stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}}, "", LangEnglish)
 	engine.interactiveStates["session-1"] = &interactiveState{
 		platform: &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}},
@@ -571,5 +581,49 @@ func TestHandleProjectStatus(t *testing.T) {
 	}
 	if res["active_sessions"].(float64) != 1 {
 		t.Errorf("got active_sessions %v, want 1", res["active_sessions"])
+	}
+
+	// 2. Working status (busy session + process alive)
+	session := engine.sessions.GetOrCreateActive("session-1")
+	session.TryLock() // lock it to make it busy
+	engine.interactiveStates["session-1"].agentSession = &livenessStubAgentSession{alive: true}
+
+	rec2 := httptest.NewRecorder()
+	api.handleProjectStatus(rec2, req)
+	if err := json.Unmarshal(rec2.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response 2: %v", err)
+	}
+	if res["status"] != "working" {
+		t.Errorf("got status %v, want working", res["status"])
+	}
+	if res["process_alive"] != true {
+		t.Errorf("got process_alive %v, want true", res["process_alive"])
+	}
+
+	// 3. Crashed status (busy session + process not alive)
+	engine.interactiveStates["session-1"].agentSession = &livenessStubAgentSession{alive: false}
+	rec3 := httptest.NewRecorder()
+	api.handleProjectStatus(rec3, req)
+	if err := json.Unmarshal(rec3.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response 3: %v", err)
+	}
+	if res["status"] != "crashed" {
+		t.Errorf("got status %v, want crashed", res["status"])
+	}
+	if res["process_alive"] != false {
+		t.Errorf("got process_alive %v, want false", res["process_alive"])
+	}
+
+	// 4. Hung status (busy session + process alive + time since UpdatedAt > timeoutLimit)
+	engine.interactiveStates["session-1"].agentSession = &livenessStubAgentSession{alive: true}
+	session.UpdatedAt = time.Now().Add(-5 * time.Minute) // set UpdatedAt to 5 minutes ago to trigger timeout
+
+	rec4 := httptest.NewRecorder()
+	api.handleProjectStatus(rec4, req)
+	if err := json.Unmarshal(rec4.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response 4: %v", err)
+	}
+	if res["status"] != "hung" {
+		t.Errorf("got status %v, want hung", res["status"])
 	}
 }

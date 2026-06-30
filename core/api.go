@@ -852,6 +852,7 @@ func (s *APIServer) handleProjectStatus(w http.ResponseWriter, r *http.Request) 
 	isBusy := false
 	processAlive := false
 	activeSessionsCount := 0
+	var busySession *Session
 
 	e.interactiveMu.Lock()
 	for _, state := range e.interactiveStates {
@@ -870,6 +871,7 @@ func (s *APIServer) handleProjectStatus(w http.ResponseWriter, r *http.Request) 
 		for _, sess := range e.sessions.AllSessions() {
 			if sess.Busy() {
 				isBusy = true
+				busySession = sess
 				break
 			}
 		}
@@ -877,7 +879,22 @@ func (s *APIServer) handleProjectStatus(w http.ResponseWriter, r *http.Request) 
 
 	statusStr := "idle"
 	if isBusy {
-		statusStr = "busy"
+		timeoutLimit := 60 * time.Second
+		if s.relay != nil {
+			s.relay.mu.RLock()
+			if s.relay.timeout > 0 {
+				timeoutLimit = s.relay.timeout
+			}
+			s.relay.mu.RUnlock()
+		}
+
+		if !processAlive {
+			statusStr = "crashed"
+		} else if busySession != nil && time.Since(busySession.UpdatedAt) > timeoutLimit {
+			statusStr = "hung"
+		} else {
+			statusStr = "working"
+		}
 	}
 
 	res := map[string]any{

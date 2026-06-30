@@ -255,7 +255,7 @@ type RoleConfig struct {
 
 // RelayConfig controls bot-to-bot relay behavior.
 type RelayConfig struct {
-	TimeoutSecs     *int   `toml:"timeout_secs"`                // max seconds to wait for relay response; 0 = disabled; default 120
+	TimeoutSecs     *int   `toml:"timeout_secs"`                // max seconds to wait for relay response; 0 = disabled; default 60
 	Visibility      string `toml:"visibility,omitempty"`        // "full" (default), "summary", or "none" for group visibility echoes
 	BurstWindowSecs *int   `toml:"burst_window_secs,omitempty"` // rolling window for the per-source loop guard; default 60
 	BurstMax        *int   `toml:"burst_max,omitempty"`         // max relays per source per window; 0 = disabled; default 10

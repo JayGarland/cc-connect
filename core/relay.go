@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const relayTimeout = 120 * time.Second
+const relayTimeout = 60 * time.Second
 
 // Default safety limits to prevent runaway relay loops (e.g. when an agent
 // misinterprets a normal reply as a relay command, or when two agents
