@@ -15474,3 +15474,124 @@ func TestHandleRelay_SessionLocking(t *testing.T) {
 		t.Errorf("expected response 'different result', got %q", diffResp)
 	}
 }
+
+func TestInteractiveSessionQueueing_SequentialProcessing(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newQueuingSession("queue-session")
+	agent := &controllableAgent{nextSession: sess}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:user1"
+	
+	// Send Message A. This will run in a goroutine and start processing.
+	msgA := &Message{SessionKey: key, Content: "msgA", ReplyCtx: "ctx-msgA", UserMessageTimeMs: 1000}
+	e.ReceiveMessage(p, msgA)
+
+	// Wait up to 500ms for message A to lock the session and start processing.
+	var state *interactiveState
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		e.interactiveMu.Lock()
+		state = e.interactiveStates[key]
+		e.interactiveMu.Unlock()
+		if state != nil {
+			state.mu.Lock()
+			hasSession := state.agentSession != nil
+			state.mu.Unlock()
+			if hasSession {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for interactive state A to initialize")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Send Message B while A is running.
+	msgB := &Message{SessionKey: key, Content: "msgB", ReplyCtx: "ctx-msgB", UserMessageTimeMs: 2000}
+	e.ReceiveMessage(p, msgB)
+
+	// Verify that Message B was immediately queued and a queued message was sent.
+	state.mu.Lock()
+	queueLen := len(state.pendingMessages)
+	state.mu.Unlock()
+	if queueLen != 1 {
+		t.Fatalf("expected 1 queued message, got %d", queueLen)
+	}
+
+	// Message B should have triggered the busy/queued reply.
+	sent := p.getSent()
+	hasQueuedReply := false
+	expectedText := e.i18n.T(MsgMessageQueued)
+	for _, msg := range sent {
+		if strings.Contains(msg, expectedText) {
+			hasQueuedReply = true
+			break
+		}
+	}
+	if !hasQueuedReply {
+		t.Fatalf("expected busy queued reply to be sent, got: %v", sent)
+	}
+
+	// Clear the sent buffer for easier verification.
+	p.clearSent()
+
+	// Simulate Agent completing Turn A by emitting events.
+	sess.events <- Event{Type: EventText, Content: "reply to A"}
+	sess.events <- Event{Type: EventResult, Content: "", Done: true}
+
+	// Wait up to 1 second for the engine to drain B and start processing it.
+	deadline = time.Now().Add(1 * time.Second)
+	for {
+		sess.sendMu.Lock()
+		hasB := false
+		for _, call := range sess.sendCalls {
+			if strings.Contains(call, "msgB") {
+				hasB = true
+				break
+			}
+		}
+		sess.sendMu.Unlock()
+		if hasB {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for message B to be sent to agent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Complete Turn B.
+	sess.events <- Event{Type: EventText, Content: "reply to B"}
+	sess.events <- Event{Type: EventResult, Content: "", Done: true}
+
+	// Wait for Turn B to complete.
+	deadline = time.Now().Add(1 * time.Second)
+	for {
+		state.mu.Lock()
+		inFlightTime := state.currentTurnUserMessageTimeMs
+		completedTime := state.lastCompletedUserMessageTimeMs
+		state.mu.Unlock()
+		if completedTime >= 2000 && inFlightTime == completedTime {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for turn B to complete")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify that the reply for B was sent to the platform.
+	sent = p.getSent()
+	hasReplyB := false
+	for _, msg := range sent {
+		if strings.Contains(msg, "reply to B") {
+			hasReplyB = true
+			break
+		}
+	}
+	if !hasReplyB {
+		t.Fatalf("expected reply to B to be sent to platform, got: %v", sent)
+	}
+}
