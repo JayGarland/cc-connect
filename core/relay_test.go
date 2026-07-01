@@ -722,3 +722,32 @@ func TestParseSessionKeyParts_TopicThreadSupport(t *testing.T) {
 	}
 }
 
+func TestNormalizeChatID(t *testing.T) {
+	tests := []struct {
+		name   string
+		chatID string
+		want   string
+	}{
+		{
+			name:   "Base Chat ID without thread",
+			chatID: "-1003917051393",
+			want:   "-1003917051393",
+		},
+		{
+			name:   "Chat ID with thread ID",
+			chatID: "-1003917051393:553",
+			want:   "-1003917051393",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeChatID(tt.chatID)
+			if got != tt.want {
+				t.Errorf("normalizeChatID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+

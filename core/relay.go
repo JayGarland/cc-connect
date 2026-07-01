@@ -146,6 +146,7 @@ func (rm *RelayManager) SetVisibility(mode string) {
 // Bind establishes a relay binding between bots in a group chat.
 // If a binding already exists, it will be replaced.
 func (rm *RelayManager) Bind(platform, chatID string, bots map[string]string) {
+	chatID = normalizeChatID(chatID)
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	rm.bindings[chatID] = &RelayBinding{
@@ -159,6 +160,7 @@ func (rm *RelayManager) Bind(platform, chatID string, bots map[string]string) {
 
 // AddToBind adds a project to an existing binding, or creates a new one.
 func (rm *RelayManager) AddToBind(platform, chatID, projectName string) {
+	chatID = normalizeChatID(chatID)
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
@@ -180,6 +182,7 @@ func (rm *RelayManager) AddToBind(platform, chatID, projectName string) {
 // RemoveFromBind removes a project from an existing binding.
 // Returns true if the project was removed, false if not found.
 func (rm *RelayManager) RemoveFromBind(chatID, projectName string) bool {
+	chatID = normalizeChatID(chatID)
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
@@ -204,6 +207,7 @@ func (rm *RelayManager) RemoveFromBind(chatID, projectName string) bool {
 
 // GetBinding returns the binding for a chat, or nil if none.
 func (rm *RelayManager) GetBinding(chatID string) *RelayBinding {
+	chatID = normalizeChatID(chatID)
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 	return rm.bindings[chatID]
@@ -211,6 +215,7 @@ func (rm *RelayManager) GetBinding(chatID string) *RelayBinding {
 
 // Unbind removes the relay binding for a chat.
 func (rm *RelayManager) Unbind(chatID string) {
+	chatID = normalizeChatID(chatID)
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	delete(rm.bindings, chatID)
@@ -246,6 +251,7 @@ func (rm *RelayManager) ListEngineNames() []string {
 
 // ListBoundBots returns the other bots bound in the same chat as the given project.
 func (rm *RelayManager) ListBoundBots(chatID, selfProject string) map[string]string {
+	chatID = normalizeChatID(chatID)
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
@@ -282,15 +288,17 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 		return nil, fmt.Errorf("relay: invalid session key: %w", err)
 	}
 
+	baseChatID := normalizeChatID(chatID)
+
 	// Loop-defense: reject when the source has burst past the per-window budget.
 	// Runs before any binding/engine resolution so loops can't waste lookups.
-	if err := rm.checkBurst(chatID, req.From, time.Now()); err != nil {
-		slog.Warn("relay: burst rejected", "from", req.From, "to", req.To, "chat_id", chatID, "error", err)
+	if err := rm.checkBurst(baseChatID, req.From, time.Now()); err != nil {
+		slog.Warn("relay: burst rejected", "from", req.From, "to", req.To, "chat_id", baseChatID, "error", err)
 		return nil, err
 	}
 
 	rm.mu.RLock()
-	binding := rm.bindings[chatID]
+	binding := rm.bindings[baseChatID]
 	targetEngine := rm.engines[req.To]
 	sourceEngine := rm.engines[req.From]
 	visibility := rm.visibility
@@ -486,6 +494,13 @@ func parseSessionKeyParts(sessionKey string) (platform, chatID string, err error
 
 	// Default fallback: return platform name and parts[1] (base chat ID)
 	return parts[0], parts[1], nil
+}
+
+func normalizeChatID(chatID string) string {
+	if i := strings.IndexByte(chatID, ':'); i >= 0 {
+		return chatID[:i]
+	}
+	return chatID
 }
 
 // ── Persistence ─────────────────────────────────────────────
