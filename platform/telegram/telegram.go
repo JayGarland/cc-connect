@@ -497,7 +497,7 @@ func (p *Platform) handleMessage(ctx context.Context, msg *models.Message) {
 	// a user replies to a specific message — so we ignore it there.
 	isGroup := msg.Chat.Type == models.ChatTypeGroup || msg.Chat.Type == models.ChatTypeSupergroup
 	threadID := 0
-	if msg.Chat.IsForum || !isGroup {
+	if !isGroup || msg.MessageThreadID != 0 {
 		threadID = msg.MessageThreadID
 	}
 	sessionKey := p.buildSessionKey(msg.Chat.ID, threadID, msg.From.ID)

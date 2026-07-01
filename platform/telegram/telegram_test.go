@@ -895,6 +895,51 @@ func TestHandleMessageWithForumTopic(t *testing.T) {
 	}
 }
 
+func TestHandleMessageSupergroupNonForumTopicUsesThreadID(t *testing.T) {
+	handled := make(chan *core.Message, 1)
+	p := &Platform{
+		token:         "token",
+		httpClient:    &http.Client{},
+		groupReplyAll: true,
+	}
+	p.handler = func(_ core.Platform, msg *core.Message) {
+		handled <- msg
+	}
+	stubBot := newStubTelegramBot()
+	p.bot = stubBot
+	p.selfUser = &models.User{ID: 42, Username: "mybot"}
+
+	msg := &models.Message{
+		ID:              10,
+		MessageThreadID: 55,
+		Text:            "hello from topic (non-forum type in update)",
+		Date:            int(time.Now().Unix()),
+		From:            &models.User{ID: 7, Username: "alice"},
+		Chat: models.Chat{
+			ID:      100,
+			Type:    models.ChatTypeSupergroup,
+			Title:   "Test Group",
+			IsForum: false, // Omitted/false in raw Telegram update payload
+		},
+	}
+
+	p.handleMessage(context.Background(), msg)
+
+	select {
+	case got := <-handled:
+		if got.SessionKey != "telegram:100:55:7" {
+			t.Fatalf("SessionKey = %q, want %q", got.SessionKey, "telegram:100:55:7")
+		}
+		rc := got.ReplyCtx.(replyContext)
+		if rc.threadID != 55 {
+			t.Fatalf("threadID = %d, want 55", rc.threadID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message not handled")
+	}
+}
+
+
 func TestHandleMessagePrivateTopicUsesThreadID(t *testing.T) {
 	handled := make(chan *core.Message, 1)
 	p := &Platform{
