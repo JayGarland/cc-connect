@@ -1206,6 +1206,7 @@ var privilegedCommands = map[string]bool{
 	"web":           true,
 	"diff":          true,
 	"feature-start": true,
+	"prune":         true,
 }
 
 // isAdmin checks whether the given user ID is authorized for privileged commands.
@@ -6328,6 +6329,7 @@ var builtinCommands = []struct {
 	{[]string{"compress", "compact"}, "compress"},
 	{[]string{"stop"}, "stop"},
 	{[]string{"cancel"}, "cancel"},
+	{[]string{"prune"}, "prune"},
 	{[]string{"help"}, "help"},
 	{[]string{"version"}, "version"},
 	{[]string{"commands", "command", "cmd"}, "commands"},
@@ -6550,6 +6552,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdStop(p, msg)
 	case "cancel":
 		e.cmdCancel(p, msg)
+	case "prune":
+		e.cmdPrune(p, msg, args)
 	case "help":
 		e.cmdHelp(p, msg)
 	case "start":
@@ -17191,3 +17195,89 @@ func restoreActiveProviderFromSession(agent Agent, session *Session) {
 	slog.Info("restored active provider from session",
 		"session_id", session.ID, "provider", want)
 }
+
+func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
+	if e.workspacePattern == "" {
+		e.reply(p, msg.ReplyCtx, "No workspace pattern configured for this project.")
+		return
+	}
+
+	var baseRepo string
+	if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
+		baseRepo = wd.GetWorkDir()
+	}
+	if baseRepo == "" {
+		e.reply(p, msg.ReplyCtx, "Could not resolve base repository directory.")
+		return
+	}
+
+	e.interactiveMu.Lock()
+	activeThreads := make(map[string]bool)
+	for key, state := range e.interactiveStates {
+		if state.platform != nil {
+			threadID := extractThreadIDFromSessionKey(key)
+			if threadID != "" {
+				activeThreads[threadID] = true
+			}
+		}
+	}
+	e.interactiveMu.Unlock()
+
+	// Run git worktree list
+	gitArgs := []string{"-C", baseRepo, "worktree", "list", "--porcelain"}
+	cmd := exec.Command("git", gitArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to list worktrees: %v", err))
+		return
+	}
+
+	lines := strings.Split(string(output), "\n")
+	var currentPath string
+	var pruned []string
+	var failed []string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		} else if strings.HasPrefix(line, "branch refs/heads/") && currentPath != "" {
+			branch := strings.TrimPrefix(line, "branch refs/heads/")
+			threadID := extractThreadIDFromPath(e.workspacePattern, currentPath)
+			if threadID != "" && strings.HasPrefix(branch, "task-") {
+				if !activeThreads[threadID] {
+					// Prune! Only delete the worktree, KEEP the branch.
+					rmCmd := exec.Command("git", "-C", baseRepo, "worktree", "remove", currentPath)
+					if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
+						slog.Error("prune: failed to remove worktree", "path", currentPath, "error", rmErr, "output", string(rmOut))
+						failed = append(failed, fmt.Sprintf("%s (%v)", currentPath, rmErr))
+					} else {
+						slog.Info("prune: successfully removed worktree", "path", currentPath)
+						pruned = append(pruned, currentPath)
+					}
+				}
+			}
+			currentPath = ""
+		}
+	}
+
+	var response strings.Builder
+	if len(pruned) > 0 {
+		response.WriteString(fmt.Sprintf("Successfully pruned %d abandoned worktrees:\n", len(pruned)))
+		for _, pPath := range pruned {
+			response.WriteString(fmt.Sprintf("- %s\n", pPath))
+		}
+	} else {
+		response.WriteString("No abandoned worktrees found to prune.\n")
+	}
+
+	if len(failed) > 0 {
+		response.WriteString(fmt.Sprintf("\nFailed to prune %d worktrees:\n", len(failed)))
+		for _, fPath := range failed {
+			response.WriteString(fmt.Sprintf("- %s\n", fPath))
+		}
+	}
+
+	e.reply(p, msg.ReplyCtx, response.String())
+}
+
