@@ -2469,30 +2469,20 @@ func TestEngine_DisabledCommandsWithSlash(t *testing.T) {
 	}
 }
 
-func TestEngine_DisabledCommands_FeatureStart(t *testing.T) {
+func TestEngine_DisabledCommands_Inline(t *testing.T) {
 	e := newTestEngine()
-	e.SetDisabledCommands([]string{"feature-start", "whoami", "web", "ps"})
+	e.SetDisabledCommands([]string{"whoami", "web", "ps"})
 
 	p := &stubPlatformEngine{n: "telegram"}
 	msg := &Message{Platform: "telegram", SessionKey: "telegram:chat:user", ReplyCtx: "reply"}
 
-	// Test feature-start
-	blocked := e.handleCommand(p, msg, "/feature-start Smoke test")
-	if !blocked {
-		t.Error("expected feature-start to be blocked")
-	}
-	sent := p.getSent()
-	if len(sent) != 1 || !strings.Contains(sent[0], "disabled") {
-		t.Errorf("expected disabled message for feature-start, got: %v", sent)
-	}
-
 	// Test whoami
 	p.sent = nil
-	blocked = e.handleCommand(p, msg, "/whoami")
+	blocked := e.handleCommand(p, msg, "/whoami")
 	if !blocked {
 		t.Error("expected whoami to be blocked")
 	}
-	sent = p.getSent()
+	sent := p.getSent()
 	if len(sent) != 1 || !strings.Contains(sent[0], "disabled") {
 		t.Errorf("expected disabled message for whoami, got: %v", sent)
 	}
