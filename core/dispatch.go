@@ -357,6 +357,17 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	if e.relayManager == nil {
 		return "", fmt.Errorf("relay manager is not configured")
 	}
+	// Map protocol role keys to config project names (B2)
+	alias := map[string]string{
+		"architect":        "architect-claude",
+		"reviewer":         "reviewer-seat",
+		"counsel":          "counsel-seat",
+		"researcher":       "researcher-seat",
+		"security-auditor": "security-auditor-seat",
+	}
+	if mapped, ok := alias[req.To]; ok {
+		req.To = mapped
+	}
 	target := e.relayManager.Engine(req.To)
 	if target == nil {
 		return "", fmt.Errorf("target seat %q is not running", req.To)
