@@ -734,3 +734,90 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 }
+
+func TestClaudeSession_LoadsPersona(t *testing.T) {
+	// Create a temp directory for personas and config
+	tmpDir, err := os.MkdirTemp("", "claudecode-persona-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write a mock persona file
+	project := "test-chef"
+	personaContent := "TEST_PERSONA_INSTRUCTIONS_HERE"
+	err = os.WriteFile(filepath.Join(tmpDir, project+".md"), []byte(personaContent), 0644)
+	if err != nil {
+		t.Fatalf("failed to write persona file: %v", err)
+	}
+
+	// Prepare extraEnv with CC_PROJECT and CC_PERSONAS_DIR
+	extraEnv := []string{
+		"CC_PROJECT=" + project,
+		"CC_PERSONAS_DIR=" + tmpDir,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use helperCommand with stdin-eof-exit to mock the process execution
+	helperCmd := helperCommand(ctx, "stdin-eof-exit")
+
+	// Call newClaudeSession using the helper command path
+	s, err := newClaudeSession(
+		ctx,
+		tmpDir,              // workDir
+		helperCmd.Path,      // cliBin
+		helperCmd.Args[1:],  // cliExtraArgs
+		"",                  // cmdArgsFlag
+		"mock-model",        // model
+		"",                  // effort
+		"",                  // sessionID
+		"auto",              // mode
+		"",                  // systemPrompt
+		"user-append",       // appendSystemPrompt
+		nil,                 // allowedTools
+		nil,                 // disallowedTools
+		nil,                 // pluginDirs
+		extraEnv,            // extraEnv
+		"platform-prompt",   // platformPrompt
+		true,                // disableVerbose
+		core.SpawnOptions{}, // spawnOpts
+		0,                   // maxContextTokens
+		tmpDir,              // ccDataDir
+	)
+	if err != nil {
+		t.Fatalf("newClaudeSession failed: %v", err)
+	}
+	defer s.Close()
+
+	// Find the --append-system-prompt-file argument in cmd.Args
+	var promptFilePath string
+	for i, arg := range s.cmd.Args {
+		if arg == "--append-system-prompt-file" && i+1 < len(s.cmd.Args) {
+			promptFilePath = s.cmd.Args[i+1]
+			break
+		}
+	}
+
+	if promptFilePath == "" {
+		t.Fatalf("expected --append-system-prompt-file argument in command line, args: %v", s.cmd.Args)
+	}
+
+	// Read the generated system prompt file
+	data, err := os.ReadFile(promptFilePath)
+	if err != nil {
+		t.Fatalf("failed to read prompt file %s: %v", promptFilePath, err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, personaContent) {
+		t.Errorf("expected prompt file to contain persona content %q, got:\n%s", personaContent, content)
+	}
+	if !strings.Contains(content, "user-append") {
+		t.Errorf("expected prompt file to contain user-append, got:\n%s", content)
+	}
+	if !strings.Contains(content, "platform-prompt") {
+		t.Errorf("expected prompt file to contain platform-prompt, got:\n%s", content)
+	}
+}

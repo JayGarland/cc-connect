@@ -28,7 +28,7 @@ func TestWorkspacePatternHelpers(t *testing.T) {
 	}
 
 	// Test extractThreadIDFromPath
-	pattern := `F:\nexus\worktrees\task-${THREAD_ID}`
+	pattern := `F:\nexus\worktrees\task-{{THREAD_ID}}`
 	if got := extractThreadIDFromPath(pattern, `F:\nexus\worktrees\task-123`); got != "123" {
 		t.Errorf("extractThreadIDFromPath(F:\\nexus\\worktrees\\task-123) = %q, want %q", got, "123")
 	}
@@ -39,7 +39,7 @@ func TestWorkspacePatternRouting(t *testing.T) {
 	p := &stubPlatformEngine{n: "telegram"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 
-	e.SetWorkspacePattern(`F:\nexus\worktrees\task-${THREAD_ID}`)
+	e.SetWorkspacePattern(`F:\nexus\worktrees\task-{{THREAD_ID}}`)
 
 	msg := &Message{
 		SessionKey: "telegram:-1003917051393:123:7664413698",

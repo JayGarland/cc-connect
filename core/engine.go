@@ -2901,11 +2901,22 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	} else if e.multiWorkspace {
 		channelID := effectiveChannelID(msg)
 		channelKey := effectiveWorkspaceChannelKey(msg)
-		workspace, channelName, err := e.resolveWorkspace(p, channelID)
-		if err != nil {
-			slog.Error("workspace resolution failed", "err", err)
-			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
-			return
+		var workspace string
+		var channelName string
+		var err error
+		if e.workspacePattern != "" {
+			threadID := extractThreadID(channelID)
+			if threadID != "" {
+				workspace = strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
+			}
+		}
+		if workspace == "" {
+			workspace, channelName, err = e.resolveWorkspace(p, channelID)
+			if err != nil {
+				slog.Error("workspace resolution failed", "err", err)
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+				return
+			}
 		}
 		if workspace == "" {
 			// No workspace — handle init flow (unless it's a /workspace command)
@@ -16411,12 +16422,12 @@ func extractThreadIDFromSessionKey(sessionKey string) string {
 }
 
 func extractThreadIDFromPath(pattern, path string) string {
-	idx := strings.Index(pattern, "${THREAD_ID}")
+	idx := strings.Index(pattern, "{{THREAD_ID}}")
 	if idx == -1 {
 		return ""
 	}
 	prefix := pattern[:idx]
-	suffix := pattern[idx+len("${THREAD_ID}"):]
+	suffix := pattern[idx+len("{{THREAD_ID}}"):]
 
 	val := path
 	if strings.HasPrefix(val, prefix) {
@@ -16436,7 +16447,7 @@ func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *
 		channelID := effectiveChannelID(msg)
 		threadID := extractThreadID(channelID)
 		if threadID != "" {
-			workspace := strings.ReplaceAll(e.workspacePattern, "${THREAD_ID}", threadID)
+			workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
 			agent, sessions, interactiveKey, effectiveDir, err := e.workspaceContext(workspace, msg.SessionKey)
 			if err != nil {
 				return nil, nil, "", "", err
@@ -16477,7 +16488,7 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 	if e.workspacePattern != "" {
 		threadID := extractThreadIDFromSessionKey(sessionKey)
 		if threadID != "" {
-			workspace := strings.ReplaceAll(e.workspacePattern, "${THREAD_ID}", threadID)
+			workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
 			if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
 				return wsAgent, wsSessions
 			}

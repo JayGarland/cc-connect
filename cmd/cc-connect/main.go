@@ -273,6 +273,9 @@ func main() {
 		case "sessions":
 			runSessions(tail)
 			return
+		case "worktree":
+			runWorktree(tail)
+			return
 		case "agent-sid":
 			runAgentSID(tail)
 			return
@@ -1696,6 +1699,9 @@ Commands:
   sessions           Browse session history
     list             List all sessions (pipe-friendly)
     show <id>        Show session messages (-n N for last N)
+
+  worktree           Manage task worktrees
+    prune            Prune abandoned task worktrees
 
   agent-sid          Print the agent session ID for the current session
 

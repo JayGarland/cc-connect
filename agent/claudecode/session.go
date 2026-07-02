@@ -207,6 +207,35 @@ func buildAppendSystemPrompt(agentPrompt, platformPrompt, userAppend string) str
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ccDataDir string) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
+	// Extract project and ccPersonasDir from extraEnv
+	var project, ccPersonasDir string
+	for _, env := range extraEnv {
+		if idx := strings.Index(env, "="); idx >= 0 {
+			switch env[:idx] {
+			case "CC_PROJECT":
+				project = env[idx+1:]
+			case "CC_PERSONAS_DIR":
+				ccPersonasDir = env[idx+1:]
+			}
+		}
+	}
+
+	// Load seat-specific persona if present
+	var personaContent string
+	if project != "" {
+		personaFile := ""
+		if ccPersonasDir != "" {
+			personaFile = filepath.Join(ccPersonasDir, project+".md")
+		} else if workDir != "" {
+			personaFile = filepath.Join(workDir, project+".md")
+		}
+		if personaFile != "" {
+			if data, err := os.ReadFile(personaFile); err == nil {
+				personaContent = strings.TrimSpace(string(data))
+			}
+		}
+	}
+
 	// Claude Code rejects bypassPermissions when running as root.
 	// Downgrade to "auto" which auto-approves internally in cc-connect.
 	var rootDowngradeWarning string
@@ -276,8 +305,12 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// shared file is safe under concurrent spawns.
 	var promptFilePath string
 	var promptFileIsShared bool
-	if appended := buildAppendSystemPrompt(core.AgentSystemPrompt(), platformPrompt, appendSystemPrompt); appended != "" {
-		if platformPrompt == "" && appendSystemPrompt == "" {
+	basePrompt := core.AgentSystemPrompt()
+	if personaContent != "" {
+		basePrompt += "\n\n" + personaContent + "\n"
+	}
+	if appended := buildAppendSystemPrompt(basePrompt, platformPrompt, appendSystemPrompt); appended != "" {
+		if platformPrompt == "" && appendSystemPrompt == "" && personaContent == "" {
 			path, err := ensureSharedSystemPromptFile(ccDataDir, appended)
 			if err != nil {
 				cancel()
