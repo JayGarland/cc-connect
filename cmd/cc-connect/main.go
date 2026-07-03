@@ -522,6 +522,9 @@ func main() {
 				engine.SetOnMentionContextN(nv)
 			}
 		}
+		if cfg, ok := parseContextGuardConfig(proj.Agent.Options["context_guard"]); ok {
+			engine.SetContextGuardConfig(cfg)
+		}
 		if absCfg, err := filepath.Abs(configPath); err == nil {
 			engine.SetConfigPath(absCfg)
 		} else {
@@ -2022,6 +2025,37 @@ func buildAgentOptions(dataDir string, proj config.ProjectConfig) map[string]any
 	opts["cc_data_dir"] = dataDir
 	opts["cc_project"] = proj.Name
 	return opts
+}
+
+func parseContextGuardConfig(raw any) (core.ContextGuardConfig, bool) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return core.ContextGuardConfig{}, false
+	}
+	cfg := core.ContextGuardConfig{}
+	if v, ok := m["enabled"].(bool); ok {
+		cfg.Enabled = v
+	}
+	cfg.ThresholdTokens = intOption(m, "threshold_tokens")
+	cfg.KeepRecentTurns = intOption(m, "keep_recent_turns")
+	cfg.SummaryMaxTokens = intOption(m, "summary_max_tokens")
+	if v, ok := m["rotate_session_on_compact"].(bool); ok {
+		cfg.RotateSessionOnCompact = v
+	}
+	return cfg, cfg.Enabled
+}
+
+func intOption(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
 }
 
 func wireAgentProviders(agent core.Agent, agentCfg config.AgentConfig) providerWiringResult {
