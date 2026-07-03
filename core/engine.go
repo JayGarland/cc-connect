@@ -395,6 +395,7 @@ type Engine struct {
 	autoCompressEnabled   bool
 	autoCompressMaxTokens int
 	autoCompressMinGap    time.Duration
+	contextGuard          ContextGuardConfig
 	resetOnIdle           time.Duration
 
 	// Reply footer composition flags. The footer renders up to two lines:
@@ -933,6 +934,11 @@ func (e *Engine) SetAutoCompressConfig(enabled bool, maxTokens int, minGap time.
 		minGap = 30 * time.Minute
 	}
 	e.autoCompressMinGap = minGap
+}
+
+// SetContextGuardConfig configures pre-turn context overflow protection.
+func (e *Engine) SetContextGuardConfig(cfg ContextGuardConfig) {
+	e.contextGuard = normalizeContextGuardConfig(cfg)
 }
 
 // SetResetOnIdle configures automatic session rotation after prolonged inactivity.
@@ -3110,6 +3116,11 @@ sessionLocked:
 	if rotated := e.maybeAutoResetSessionOnIdle(p, msg, sessions, interactiveKey, session); rotated != nil {
 		session = rotated
 	}
+
+	if summary := e.applyContextGuardBeforeTurn(interactiveKey, agent, session, sessions, msg.Content); summary != "" {
+		msg.Content = prependContextGuardSummary(summary, msg.Content)
+	}
+
 	// Record that a real user message is being processed. This keeps
 	// LastUserActivity separate from UpdatedAt (bumped by every Unlock), so
 	// reset_on_idle_mins is not defeated by heartbeats or unsolicited agent
