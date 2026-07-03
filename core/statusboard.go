@@ -212,7 +212,7 @@ func (sb *StatusBoard) render(ctx context.Context) {
 		Text:      text,
 	})
 	if err != nil {
-		slog.Warn("statusboard: edit failed, posting new message", "error", err)
+		slog.Warn("statusboard: edit failed, posting new message", "chat_id", chatID, "message_id", messageID, "error", err)
 		sb.mu.Lock()
 		sb.messageID = 0
 		sb.mu.Unlock()
@@ -226,7 +226,7 @@ func (sb *StatusBoard) post(ctx context.Context, chatID int64, text string) {
 		Text:   text,
 	})
 	if err != nil {
-		slog.Error("statusboard: failed to post board message", "error", err)
+		slog.Error("statusboard: failed to post board message", "chat_id", chatID, "error", err)
 		return
 	}
 	sb.mu.Lock()

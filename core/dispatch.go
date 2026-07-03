@@ -184,20 +184,46 @@ func parseDispatchBlock(content string) (dispatchRequest, bool, error) {
 		return req, false, nil
 	}
 	lines := strings.Split(text, "\n")
-	if strings.TrimSpace(lines[0]) != "[DISPATCH]" {
+	dispatchIdx := -1
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		trimmed := strings.Trim(line, "`*")
+		if trimmed == "[DISPATCH]" {
+			dispatchIdx = i
+			break
+		}
+	}
+	if dispatchIdx == -1 {
 		return req, false, nil
 	}
-	for _, raw := range lines[1:] {
+	for _, raw := range lines[dispatchIdx+1:] {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
+		// If we encounter a code fence line, we stop parsing the dispatch block
+		if strings.HasPrefix(line, "```") {
+			break
+		}
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
-			return req, true, fmt.Errorf("invalid dispatch line %q", line)
+			// If we encounter a line that does not contain a colon, we treat it as
+			// the end of the dispatch block (or not part of it).
+			break
 		}
+		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
-		switch strings.ToLower(strings.TrimSpace(key)) {
+
+		isDispatchField := false
+		switch key {
+		case "to", "letter", "thread", "path":
+			isDispatchField = true
+		}
+		if !isDispatchField {
+			break
+		}
+
+		switch key {
 		case "to":
 			req.To = value
 		case "letter":
@@ -206,8 +232,6 @@ func parseDispatchBlock(content string) (dispatchRequest, bool, error) {
 			req.Thread = value
 		case "path":
 			req.Path = value
-		default:
-			return req, true, fmt.Errorf("unknown dispatch field %q", key)
 		}
 	}
 	if req.To == "" || req.Letter == "" || req.Thread == "" || req.Path == "" {
