@@ -38,7 +38,7 @@ func printWorktreeUsage() {
   cc-connect worktree <command> [args]
 
 Commands:
-  prune      Prune abandoned task worktrees (checks active daemon sessions)
+  prune      Prune abandoned dynamic worktrees (checks active daemon sessions)
 `)
 }
 
@@ -95,7 +95,7 @@ func runWorktreePrune(args []string) {
 			fmt.Fprintf(os.Stderr, "Error: cc-connect daemon is not running (socket not found: %s).\nUse --force to prune worktrees offline (assumes no active sessions).\n", sockPath)
 			os.Exit(1)
 		}
-		fmt.Println("Warning: daemon is offline. Pruning all task worktrees in offline mode...")
+		fmt.Println("Warning: daemon is offline. Pruning all dynamic worktrees in offline mode...")
 	}
 
 	activeThreads := make(map[string]bool)
@@ -147,6 +147,13 @@ func runWorktreePrune(args []string) {
 		if pattern == "" {
 			continue
 		}
+		letterByTopic := loadDispatchLettersByTopic(dataDir, proj.Name)
+		activeLetters := make(map[string]bool)
+		for threadID := range activeThreads {
+			if letterID := letterByTopic[threadID]; letterID != "" {
+				activeLetters[letterID] = true
+			}
+		}
 
 		// Read base work_dir / base repo
 		workDir, _ := proj.Agent.Options["work_dir"].(string)
@@ -175,13 +182,23 @@ func runWorktreePrune(args []string) {
 				currentPath = strings.TrimPrefix(line, "worktree ")
 			} else if strings.HasPrefix(line, "branch refs/heads/") && currentPath != "" {
 				branch := strings.TrimPrefix(line, "branch refs/heads/")
-				
-				// Check if the worktree folder or branch matches task-<thread_id>
+
+				// Check if the worktree folder or branch matches the configured pattern.
 				threadID := extractThreadIDFromPath(pattern, currentPath)
+				letterID := extractLetterIDFromPath(pattern, currentPath)
+				shouldPrune := false
+				activeLabel := ""
 				if threadID != "" && strings.HasPrefix(branch, "task-") {
 					// Check if active
-					if activeThreads[threadID] {
-						fmt.Printf("[%s] Skipping active worktree: %s (thread %s)\n", proj.Name, currentPath, threadID)
+					shouldPrune = !activeThreads[threadID]
+					activeLabel = "thread " + threadID
+				} else if letterID != "" && branch == "letter/"+letterID {
+					shouldPrune = !activeLetters[letterID]
+					activeLabel = "letter " + letterID
+				}
+				if activeLabel != "" {
+					if !shouldPrune {
+						fmt.Printf("[%s] Skipping active worktree: %s (%s)\n", proj.Name, currentPath, activeLabel)
 					} else {
 						// Prune!
 						fmt.Printf("[%s] Found abandoned worktree: %s (branch: %s)\n", proj.Name, currentPath, branch)
@@ -240,6 +257,45 @@ func extractThreadID(sessionKey string) string {
 	return ""
 }
 
+type dispatchPruneLedger struct {
+	Expectations []dispatchPruneExpectation `json:"expectations"`
+}
+
+type dispatchPruneExpectation struct {
+	Letter          string `json:"letter"`
+	To              string `json:"to"`
+	TopicID         string `json:"topic_id,omitempty"`
+	TopicSessionKey string `json:"topic_session_key,omitempty"`
+}
+
+func loadDispatchLettersByTopic(dataDir, projectName string) map[string]string {
+	out := make(map[string]string)
+	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(projectName) == "" {
+		return out
+	}
+	path := filepath.Join(dataDir, "dispatch_expectations.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var ledger dispatchPruneLedger
+	if err := json.Unmarshal(data, &ledger); err != nil {
+		return out
+	}
+	for _, exp := range ledger.Expectations {
+		if !strings.EqualFold(exp.To, projectName) || strings.TrimSpace(exp.Letter) == "" {
+			continue
+		}
+		if strings.TrimSpace(exp.TopicID) != "" {
+			out[exp.TopicID] = exp.Letter
+		}
+		if threadID := extractThreadID(exp.TopicSessionKey); threadID != "" {
+			out[threadID] = exp.Letter
+		}
+	}
+	return out
+}
+
 func extractThreadIDFromPath(pattern, path string) string {
 	// Normalize slashes
 	pattern = filepath.ToSlash(pattern)
@@ -263,3 +319,30 @@ func extractThreadIDFromPath(pattern, path string) string {
 	return ""
 }
 
+func extractLetterIDFromPath(pattern, path string) string {
+	return extractLiteralPlaceholderFromPath(pattern, path, "{{LETTER_ID}}")
+}
+
+func extractLiteralPlaceholderFromPath(pattern, path, placeholder string) string {
+	pattern = filepath.ToSlash(pattern)
+	path = filepath.ToSlash(path)
+
+	idx := strings.Index(pattern, placeholder)
+	if idx == -1 {
+		return ""
+	}
+	prefix := pattern[:idx]
+	suffix := pattern[idx+len(placeholder):]
+
+	val := path
+	if strings.HasPrefix(val, prefix) {
+		val = strings.TrimPrefix(val, prefix)
+	}
+	if suffix != "" && strings.HasSuffix(val, suffix) {
+		val = strings.TrimSuffix(val, suffix)
+	}
+	if val == path && (prefix != "" || suffix != "") {
+		return ""
+	}
+	return val
+}

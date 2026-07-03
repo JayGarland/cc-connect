@@ -1,6 +1,7 @@
 package core
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -8,6 +9,46 @@ func init() {
 	RegisterAgent("stub", func(opts map[string]any) (Agent, error) {
 		return &stubAgent{}, nil
 	})
+}
+
+func TestWorkspacePatternResolvesLetterIDFromDispatchLedger(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
+
+	if err := e.ensureDispatchStore().upsert(DispatchExpectation{
+		Letter:          "L-0158",
+		To:              "dev-pro",
+		TopicID:         "1091",
+		TopicSessionKey: "telegram:-1003917051393:1091:7664413698",
+		State:           dispatchStateDispatched,
+	}); err != nil {
+		t.Fatalf("upsert dispatch expectation: %v", err)
+	}
+
+	want := filepath.Join(root, "worktrees", "letter-L-0158")
+	if got := e.resolveWorkspacePattern("1091"); got != want {
+		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
+	}
+	if got := e.branchNameForWorkspace(want); got != "letter/L-0158" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "letter/L-0158")
+	}
+}
+
+func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
+
+	want := filepath.Join(root, "worktrees", "letter-task-2222")
+	if got := e.resolveWorkspacePattern("2222"); got != want {
+		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
+	}
+	if got := e.branchNameForWorkspace(want); got != "task-2222" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "task-2222")
+	}
 }
 
 func TestWorkspacePatternHelpers(t *testing.T) {

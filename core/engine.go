@@ -2914,9 +2914,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		var err error
 		if e.workspacePattern != "" {
 			threadID := extractThreadID(channelID)
-			if threadID != "" {
-				workspace = strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
-			}
+			workspace = e.resolveWorkspacePattern(threadID)
 		}
 		if workspace == "" {
 			workspace, channelName, err = e.resolveWorkspace(p, channelID)
@@ -3982,17 +3980,28 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 				baseRepo = wd.GetWorkDir()
 			}
 			if baseRepo != "" {
-				threadID := extractThreadIDFromPath(e.workspacePattern, workspace)
-				if threadID != "" {
-					branchName := "task-" + threadID
+				branchName := e.branchNameForWorkspace(workspace)
+				if branchName != "" {
+					// Refresh remote-tracking refs so a newly pushed letter/L-XXXX
+					// branch can be checked out immediately after dispatch.
+					fetchCmd := exec.Command("git", "-C", baseRepo, "fetch", "origin")
+					if output, err := fetchCmd.CombinedOutput(); err != nil {
+						slog.Warn("pre-flight sync: failed to fetch origin", "base_repo", baseRepo, "error", err, "output", string(output))
+					}
+
 					// Verify if branch exists
 					checkCmd := exec.Command("git", "-C", baseRepo, "show-ref", "--verify", "refs/heads/"+branchName)
 					branchExists := checkCmd.Run() == nil
+					checkRemoteCmd := exec.Command("git", "-C", baseRepo, "show-ref", "--verify", "refs/remotes/origin/"+branchName)
+					remoteBranchExists := checkRemoteCmd.Run() == nil
 
 					var gitArgs []string
 					if branchExists {
 						// Use existing branch
 						gitArgs = []string{"-C", baseRepo, "worktree", "add", workspace, branchName}
+					} else if remoteBranchExists {
+						// Create a local tracking branch from the remote branch.
+						gitArgs = []string{"-C", baseRepo, "worktree", "add", "--track", "-b", branchName, workspace, "origin/" + branchName}
 					} else {
 						// Pre-flight sync: Pull origin main into baseRepo before branching off main.
 						// This runs instantly since the origin is a local Git directory path.
@@ -15857,7 +15866,10 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 	// bindings — resolveWorkspace only knows about DB bindings and conventions.
 	if e.workspacePattern != "" {
 		if threadID := extractThreadIDFromSessionKey(sourceSessionKey); threadID != "" {
-			workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
+			workspace := e.resolveWorkspacePattern(threadID)
+			if workspace == "" {
+				return nil, nil, "", fmt.Errorf("resolve relay workspace from thread %q", threadID)
+			}
 			agent, sessions, err := e.getOrCreateWorkspaceAgent(workspace)
 			if err != nil {
 				return nil, nil, "", fmt.Errorf("get relay workspace agent: %w", err)
@@ -16569,12 +16581,23 @@ func extractThreadIDFromSessionKey(sessionKey string) string {
 }
 
 func extractThreadIDFromPath(pattern, path string) string {
-	idx := strings.Index(pattern, "{{THREAD_ID}}")
+	return extractPlaceholderFromPath(pattern, path, "{{THREAD_ID}}")
+}
+
+func extractLetterIDFromPath(pattern, path string) string {
+	return extractPlaceholderFromPath(pattern, path, "{{LETTER_ID}}")
+}
+
+func extractPlaceholderFromPath(pattern, path, placeholder string) string {
+	pattern = filepath.ToSlash(pattern)
+	path = filepath.ToSlash(path)
+
+	idx := strings.Index(pattern, placeholder)
 	if idx == -1 {
 		return ""
 	}
 	prefix := pattern[:idx]
-	suffix := pattern[idx+len("{{THREAD_ID}}"):]
+	suffix := pattern[idx+len(placeholder):]
 
 	val := path
 	if strings.HasPrefix(val, prefix) {
@@ -16583,7 +16606,68 @@ func extractThreadIDFromPath(pattern, path string) string {
 	if suffix != "" && strings.HasSuffix(val, suffix) {
 		val = strings.TrimSuffix(val, suffix)
 	}
+	if val == path && (prefix != "" || suffix != "") {
+		return ""
+	}
 	return val
+}
+
+func (e *Engine) findLetterIDByTopic(topicID string) string {
+	topicID = strings.TrimSpace(topicID)
+	if topicID == "" {
+		return ""
+	}
+	store := e.ensureDispatchStore()
+	if store == nil {
+		return ""
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	ledger, err := store.loadLocked()
+	if err != nil {
+		slog.Warn("workspace pattern: failed to load dispatch ledger", "project", e.name, "topic_id", topicID, "error", err)
+		return ""
+	}
+	for _, exp := range ledger.Expectations {
+		if !strings.EqualFold(exp.To, e.name) {
+			continue
+		}
+		if exp.TopicID == topicID || extractThreadIDFromSessionKey(exp.TopicSessionKey) == topicID {
+			return exp.Letter
+		}
+	}
+	return ""
+}
+
+func (e *Engine) resolveWorkspacePattern(threadID string) string {
+	if e.workspacePattern == "" || strings.TrimSpace(threadID) == "" {
+		return ""
+	}
+	workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
+	if strings.Contains(workspace, "{{LETTER_ID}}") {
+		letterID := e.findLetterIDByTopic(threadID)
+		if letterID == "" {
+			letterID = "task-" + threadID
+		}
+		workspace = strings.ReplaceAll(workspace, "{{LETTER_ID}}", letterID)
+	}
+	return workspace
+}
+
+func (e *Engine) branchNameForWorkspace(workspace string) string {
+	if strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
+		letterID := extractLetterIDFromPath(e.workspacePattern, workspace)
+		if letterID != "" {
+			if dispatchLetterRe.MatchString(letterID) {
+				return "letter/" + letterID
+			}
+			return letterID
+		}
+	}
+	if threadID := extractThreadIDFromPath(e.workspacePattern, workspace); threadID != "" {
+		return "task-" + threadID
+	}
+	return ""
 }
 
 // commandContextWithWorkspace is like commandContext but additionally returns
@@ -16594,7 +16678,7 @@ func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *
 		channelID := effectiveChannelID(msg)
 		threadID := extractThreadID(channelID)
 		if threadID != "" {
-			workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
+			workspace := e.resolveWorkspacePattern(threadID)
 			agent, sessions, interactiveKey, effectiveDir, err := e.workspaceContext(workspace, msg.SessionKey)
 			if err != nil {
 				return nil, nil, "", "", err
@@ -16635,7 +16719,7 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 	if e.workspacePattern != "" {
 		threadID := extractThreadIDFromSessionKey(sessionKey)
 		if threadID != "" {
-			workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
+			workspace := e.resolveWorkspacePattern(threadID)
 			if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
 				return wsAgent, wsSessions
 			}
@@ -17356,11 +17440,15 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 
 	e.interactiveMu.Lock()
 	activeThreads := make(map[string]bool)
+	activeLetters := make(map[string]bool)
 	for key, state := range e.interactiveStates {
 		if state.platform != nil {
 			threadID := extractThreadIDFromSessionKey(key)
 			if threadID != "" {
 				activeThreads[threadID] = true
+				if letterID := e.findLetterIDByTopic(threadID); letterID != "" {
+					activeLetters[letterID] = true
+				}
 			}
 		}
 	}
@@ -17387,17 +17475,22 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 		} else if strings.HasPrefix(line, "branch refs/heads/") && currentPath != "" {
 			branch := strings.TrimPrefix(line, "branch refs/heads/")
 			threadID := extractThreadIDFromPath(e.workspacePattern, currentPath)
+			letterID := extractLetterIDFromPath(e.workspacePattern, currentPath)
+			shouldPrune := false
 			if threadID != "" && strings.HasPrefix(branch, "task-") {
-				if !activeThreads[threadID] {
-					// Prune! Only delete the worktree, KEEP the branch.
-					rmCmd := exec.Command("git", "-C", baseRepo, "worktree", "remove", currentPath)
-					if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
-						slog.Error("prune: failed to remove worktree", "path", currentPath, "error", rmErr, "output", string(rmOut))
-						failed = append(failed, fmt.Sprintf("%s (%v)", currentPath, rmErr))
-					} else {
-						slog.Info("prune: successfully removed worktree", "path", currentPath)
-						pruned = append(pruned, currentPath)
-					}
+				shouldPrune = !activeThreads[threadID]
+			} else if letterID != "" && branch == "letter/"+letterID {
+				shouldPrune = !activeLetters[letterID]
+			}
+			if shouldPrune {
+				// Prune! Only delete the worktree, KEEP the branch.
+				rmCmd := exec.Command("git", "-C", baseRepo, "worktree", "remove", currentPath)
+				if rmOut, rmErr := rmCmd.CombinedOutput(); rmErr != nil {
+					slog.Error("prune: failed to remove worktree", "path", currentPath, "error", rmErr, "output", string(rmOut))
+					failed = append(failed, fmt.Sprintf("%s (%v)", currentPath, rmErr))
+				} else {
+					slog.Info("prune: successfully removed worktree", "path", currentPath)
+					pruned = append(pruned, currentPath)
 				}
 			}
 			currentPath = ""
