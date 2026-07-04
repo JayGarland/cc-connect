@@ -833,10 +833,7 @@ func (p *Platform) CreateTaskTopic(ctx context.Context, dashboardSessionKey, tit
 		return nil, fmt.Errorf("telegram: create forum topic returned no thread ID")
 	}
 	newThreadID := topic.MessageThreadID
-	topicName := "letter-" + strconv.Itoa(newThreadID)
-	if slug := topicTitleSlug(content); slug != "" {
-		topicName += "-" + slug
-	}
+	topicName := topicTitle
 	if topicName != topic.Name {
 		if _, err := bot.EditForumTopic(ctx, &tgbot.EditForumTopicParams{
 			ChatID:          rc.chatID,
