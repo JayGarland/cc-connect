@@ -17488,7 +17488,7 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 			threadID := extractThreadIDFromPath(e.workspacePattern, currentPath)
 			letterID := extractLetterIDFromPath(e.workspacePattern, currentPath)
 			shouldPrune := false
-			if threadID != "" && (strings.HasPrefix(branch, "letter/") || strings.HasPrefix(branch, "task-")) {
+			if threadID != "" && isThreadWorktreeBranch(branch) {
 				shouldPrune = !activeThreads[threadID]
 			} else if letterID != "" && branch == "letter/"+letterID {
 				shouldPrune = !activeLetters[letterID]
@@ -17526,4 +17526,10 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 	}
 
 	e.reply(p, msg.ReplyCtx, response.String())
+}
+
+func isThreadWorktreeBranch(branch string) bool {
+	return strings.HasPrefix(branch, "letter-") ||
+		strings.HasPrefix(branch, "letter/") ||
+		strings.HasPrefix(branch, "task-")
 }
