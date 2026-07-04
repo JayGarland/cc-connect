@@ -188,7 +188,7 @@ func runWorktreePrune(args []string) {
 				letterID := extractLetterIDFromPath(pattern, currentPath)
 				shouldPrune := false
 				activeLabel := ""
-				if threadID != "" && strings.HasPrefix(branch, "task-") {
+				if threadID != "" && (strings.HasPrefix(branch, "letter/") || strings.HasPrefix(branch, "task-")) {
 					// Check if active
 					shouldPrune = !activeThreads[threadID]
 					activeLabel = "thread " + threadID

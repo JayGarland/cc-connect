@@ -729,7 +729,7 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 	}
 	topic, err := bot.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{
 		ChatID: msg.Chat.ID,
-		Name:   "task-new",
+		Name:   "letter-new",
 	})
 	if err != nil {
 		slog.Error("telegram: create forum topic failed", "chat", msg.Chat.ID, "msg_id", msg.ID, "error", err)
@@ -743,7 +743,7 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 	}
 
 	newThreadID := topic.MessageThreadID
-	topicName := "task-" + strconv.Itoa(newThreadID)
+	topicName := "letter-" + strconv.Itoa(newThreadID)
 	if slug := topicTitleSlug(text); slug != "" {
 		topicName += "-" + slug
 	}
@@ -820,7 +820,7 @@ func (p *Platform) CreateTaskTopic(ctx context.Context, dashboardSessionKey, tit
 	}
 	topicTitle := strings.TrimSpace(title)
 	if topicTitle == "" {
-		topicTitle = "task-new"
+		topicTitle = "letter-new"
 	}
 	topic, err := bot.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{
 		ChatID: rc.chatID,
@@ -833,7 +833,7 @@ func (p *Platform) CreateTaskTopic(ctx context.Context, dashboardSessionKey, tit
 		return nil, fmt.Errorf("telegram: create forum topic returned no thread ID")
 	}
 	newThreadID := topic.MessageThreadID
-	topicName := "task-" + strconv.Itoa(newThreadID)
+	topicName := "letter-" + strconv.Itoa(newThreadID)
 	if slug := topicTitleSlug(content); slug != "" {
 		topicName += "-" + slug
 	}

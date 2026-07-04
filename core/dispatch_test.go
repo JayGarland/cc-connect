@@ -35,7 +35,7 @@ func TestParseDispatchBlockRobust(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "explanation before and code fence with toml",
+			name:    "explanation before and code fence with toml",
 			content: "Boss has assigned this task:\n```toml\n[DISPATCH]\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\npath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n```\nPlease proceed.",
 			wantReq: dispatchRequest{
 				To:     "dev-pro",
@@ -47,7 +47,7 @@ func TestParseDispatchBlockRobust(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "markdown bold and trailing text",
+			name:    "markdown bold and trailing text",
 			content: "**[DISPATCH]**\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\npath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n\nSome extra remarks here.",
 			wantReq: dispatchRequest{
 				To:     "dev-pro",
@@ -59,14 +59,14 @@ func TestParseDispatchBlockRobust(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "not a dispatch block",
+			name:    "not a dispatch block",
 			content: "Hello dev-pro, we have a query for you.\nPlease do not confuse this with a [DISPATCH] command.",
 			wantReq: dispatchRequest{},
 			wantOk:  false,
 			wantErr: false,
 		},
 		{
-			name: "missing required field",
+			name:    "missing required field",
 			content: "```\n[DISPATCH]\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\n```",
 			wantReq: dispatchRequest{},
 			wantOk:  true,

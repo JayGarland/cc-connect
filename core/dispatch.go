@@ -420,7 +420,7 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 		if !ok {
 			return "", fmt.Errorf("platform %s cannot create task topics", p.Name())
 		}
-		topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, "task-new", "Task intake from [DISPATCH]:\n\n"+dispatchMessage)
+		topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, "letter-"+req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
 		if err != nil {
 			slog.Warn("failed to create task topic, falling back to virtual topic on General channel", "project", e.name, "letter", req.Letter, "error", err)
 
@@ -454,7 +454,7 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 			if replyCtx == nil {
 				replyCtx = dashboardSessionKey
 			}
-			topicName = "task-" + letterNum
+			topicName = "letter-" + letterNum
 		} else {
 			if topic == nil || strings.TrimSpace(topic.SessionKey) == "" {
 				return "", fmt.Errorf("create task topic returned no session key")

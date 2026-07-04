@@ -42,12 +42,12 @@ func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	want := filepath.Join(root, "worktrees", "letter-task-2222")
+	want := filepath.Join(root, "worktrees", "letter-L-2222")
 	if got := e.resolveWorkspacePattern("2222"); got != want {
 		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
 	}
-	if got := e.branchNameForWorkspace(want); got != "task-2222" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "task-2222")
+	if got := e.branchNameForWorkspace(want); got != "letter/L-2222" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "letter-2222")
 	}
 }
 
