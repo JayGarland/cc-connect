@@ -2175,12 +2175,13 @@ func convertCoreModels(ms []core.ModelOption) []config.ProviderModelConfig {
 
 func buildHeartbeatConfig(hc config.HeartbeatConfig) core.HeartbeatConfig {
 	cfg := core.HeartbeatConfig{
-		IntervalMins: 30,
-		OnlyWhenIdle: true,
-		Silent:       true,
-		TimeoutMins:  30,
-		SessionKey:   hc.SessionKey,
-		Prompt:       hc.Prompt,
+		IntervalMins:  30,
+		OnlyWhenIdle:  true,
+		Silent:        true,
+		TimeoutMins:   30,
+		SessionKey:    hc.SessionKey,
+		HeartbeatType: hc.HeartbeatType,
+		Prompt:        hc.Prompt,
 	}
 	if hc.Enabled != nil {
 		cfg.Enabled = *hc.Enabled

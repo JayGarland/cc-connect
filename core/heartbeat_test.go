@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -218,5 +219,126 @@ func TestHeartbeatScheduler_Persistence(t *testing.T) {
 	hs2.SetInterval("proj-b", 15) // back to original
 	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
 		t.Error("state file should be removed when no overrides remain")
+	}
+}
+
+type heartbeatTestPlatform struct {
+	stubPlatformEngine
+	reconstructCalls int
+}
+
+func (p *heartbeatTestPlatform) ReconstructReplyCtx(sessionKey string) (any, error) {
+	p.reconstructCalls++
+	return "reply:" + sessionKey, nil
+}
+
+type heartbeatCountingAgent struct {
+	startCalls int
+}
+
+func (a *heartbeatCountingAgent) Name() string { return "heartbeat-counting" }
+
+func (a *heartbeatCountingAgent) StartSession(_ context.Context, _ string) (AgentSession, error) {
+	a.startCalls++
+	return &stubAgentSession{}, nil
+}
+
+func (a *heartbeatCountingAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
+	return nil, nil
+}
+
+func (a *heartbeatCountingAgent) Stop() error { return nil }
+
+func TestExecuteHeartbeatPingDoesNotStartAgentOrSend(t *testing.T) {
+	platform := &heartbeatTestPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	agent := &heartbeatCountingAgent{}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+
+	if err := engine.ExecuteHeartbeatPing("test:chat:user", true); err != nil {
+		t.Fatalf("ExecuteHeartbeatPing returned error: %v", err)
+	}
+
+	if agent.startCalls != 0 {
+		t.Fatalf("ping heartbeat started agent %d times; want 0", agent.startCalls)
+	}
+	if got := platform.getSent(); len(got) != 0 {
+		t.Fatalf("silent ping sent messages: %v", got)
+	}
+	if platform.reconstructCalls != 1 {
+		t.Fatalf("reconstruct calls = %d, want 1", platform.reconstructCalls)
+	}
+	if engine.sessions.GetOrCreateActive("test:chat:user").Busy() {
+		t.Fatal("ping heartbeat left session busy")
+	}
+}
+
+func TestHeartbeatSchedulerExecutePingSkipsBusySession(t *testing.T) {
+	platform := &heartbeatTestPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	agent := &heartbeatCountingAgent{}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	session := engine.sessions.GetOrCreateActive("test:chat:user")
+	if !session.TryLock() {
+		t.Fatal("pre-lock session")
+	}
+	defer session.UnlockWithoutUpdate()
+
+	hs := NewHeartbeatScheduler("")
+	hs.Register("proj", HeartbeatConfig{
+		Enabled:       true,
+		SessionKey:    "test:chat:user",
+		HeartbeatType: HeartbeatTypePing,
+		OnlyWhenIdle:  true,
+		Silent:        true,
+		TimeoutMins:   1,
+	}, engine, "")
+	entry := hs.entries["proj"]
+	if entry == nil {
+		t.Fatal("expected heartbeat entry")
+	}
+
+	hs.execute(entry)
+
+	st := hs.Status("proj")
+	if st.SkippedBusy != 1 {
+		t.Fatalf("skipped busy = %d, want 1", st.SkippedBusy)
+	}
+	if st.ErrorCount != 0 {
+		t.Fatalf("error count = %d, want 0 (busy should be a skip)", st.ErrorCount)
+	}
+	if st.RunCount != 0 {
+		t.Fatalf("run count = %d, want 0 for skipped heartbeat", st.RunCount)
+	}
+	if agent.startCalls != 0 {
+		t.Fatalf("ping heartbeat started agent %d times; want 0", agent.startCalls)
+	}
+}
+
+func TestHeartbeatSchedulerDefaultsToPingType(t *testing.T) {
+	platform := &heartbeatTestPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	agent := &heartbeatCountingAgent{}
+	engine := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+
+	hs := NewHeartbeatScheduler("")
+	hs.Register("proj", HeartbeatConfig{
+		Enabled:    true,
+		SessionKey: "test:chat:user",
+		Silent:     true,
+	}, engine, "")
+	entry := hs.entries["proj"]
+	if entry == nil {
+		t.Fatal("expected heartbeat entry")
+	}
+
+	hs.execute(entry)
+
+	st := hs.Status("proj")
+	if st.RunCount != 1 {
+		t.Fatalf("run count = %d, want 1", st.RunCount)
+	}
+	if st.ErrorCount != 0 {
+		t.Fatalf("error count = %d, want 0: %s", st.ErrorCount, st.LastError)
+	}
+	if agent.startCalls != 0 {
+		t.Fatalf("default heartbeat type started agent %d times; want ping path", agent.startCalls)
 	}
 }

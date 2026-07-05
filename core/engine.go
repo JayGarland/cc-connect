@@ -2225,9 +2225,7 @@ func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sy
 	return nil
 }
 
-// ExecuteHeartbeat runs a heartbeat check by injecting a synthetic message
-// into the main session, similar to cron but designed for periodic awareness.
-func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error {
+func (e *Engine) resolveHeartbeatTarget(sessionKey string) (Platform, string, string, any, error) {
 	platformName := ""
 	if idx := strings.Index(sessionKey, ":"); idx > 0 {
 		platformName = sessionKey[:idx]
@@ -2255,17 +2253,49 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 		}
 	}
 	if targetPlatform == nil {
-		return fmt.Errorf("platform %q not found for session %q", platformName, sessionKey)
+		return nil, "", "", nil, fmt.Errorf("platform %q not found for session %q", platformName, sessionKey)
 	}
 
 	rc, ok := targetPlatform.(ReplyContextReconstructor)
 	if !ok {
-		return fmt.Errorf("platform %q does not support proactive messaging (heartbeat)", platformName)
+		return nil, "", "", nil, fmt.Errorf("platform %q does not support proactive messaging (heartbeat)", platformName)
 	}
 
 	replyCtx, err := rc.ReconstructReplyCtx(sessionKey)
 	if err != nil {
-		return fmt.Errorf("reconstruct reply context: %w", err)
+		return nil, "", "", nil, fmt.Errorf("reconstruct reply context: %w", err)
+	}
+
+	return targetPlatform, platformName, sessionKey, replyCtx, nil
+}
+
+// ExecuteHeartbeatPing verifies the heartbeat target without invoking the agent
+// pipeline, persona injection, tools, history writes, or preview cards.
+func (e *Engine) ExecuteHeartbeatPing(sessionKey string, silent bool) error {
+	targetPlatform, _, sessionKey, replyCtx, err := e.resolveHeartbeatTarget(sessionKey)
+	if err != nil {
+		return err
+	}
+
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	if !session.TryLock() {
+		return fmt.Errorf("%w: session %q", ErrHeartbeatSessionBusy, sessionKey)
+	}
+	defer session.UnlockWithoutUpdate()
+
+	if !silent {
+		e.send(targetPlatform, replyCtx, "💓 heartbeat")
+	}
+
+	return nil
+}
+
+// ExecuteHeartbeat runs a heartbeat check by injecting a synthetic message
+// into the main session. Prefer ExecuteHeartbeatPing for routine health checks.
+func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error {
+	targetPlatform, platformName, sessionKey, replyCtx, err := e.resolveHeartbeatTarget(sessionKey)
+	if err != nil {
+		return err
 	}
 
 	if !silent {
@@ -2284,7 +2314,7 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	if !session.TryLock() {
-		return fmt.Errorf("session %q is busy", sessionKey)
+		return fmt.Errorf("%w: session %q", ErrHeartbeatSessionBusy, sessionKey)
 	}
 
 	effectivePlatform := targetPlatform
