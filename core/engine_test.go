@@ -1111,7 +1111,7 @@ func TestProcessInteractiveEvents_StripsAgentFooterWhenEnabled(t *testing.T) {
 
 	agentSession.events <- Event{Type: EventText, Content: "answer\n\n*claude-opus-4-8[1m] · out 788 · in 442 cw 0 cr 395.1k · ctx 40%*"}
 	agentSession.events <- Event{Type: EventResult, Done: true}
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer", time.Now(), nil, nil, state.replyCtx)
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer", time.Now(), nil, nil, state.replyCtx, false)
 
 	sent := p.getSent()
 	if len(sent) != 1 {
@@ -1142,7 +1142,7 @@ func TestProcessInteractiveEvents_KeepsAgentFooterByDefault(t *testing.T) {
 	body := "answer\n\n*claude-opus-4-8[1m] · out 788 · in 442 cw 0 cr 395.1k · ctx 40%*"
 	agentSession.events <- Event{Type: EventText, Content: body}
 	agentSession.events <- Event{Type: EventResult, Done: true}
-	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer-default", time.Now(), nil, nil, state.replyCtx)
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-agent-footer-default", time.Now(), nil, nil, state.replyCtx, false)
 
 	sent := p.getSent()
 	if len(sent) != 1 {
