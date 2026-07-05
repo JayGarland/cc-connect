@@ -16658,7 +16658,7 @@ func (e *Engine) resolveWorkspacePattern(threadID string) string {
 	if strings.Contains(workspace, "{{LETTER_ID}}") {
 		letterID := e.findLetterIDByTopic(threadID)
 		if letterID == "" {
-			letterID = "task-" + threadID
+			letterID = "L-" + threadID
 		}
 		workspace = strings.ReplaceAll(workspace, "{{LETTER_ID}}", letterID)
 	}
@@ -16676,7 +16676,7 @@ func (e *Engine) branchNameForWorkspace(workspace string) string {
 		}
 	}
 	if threadID := extractThreadIDFromPath(e.workspacePattern, workspace); threadID != "" {
-		return "task-" + threadID
+		return "letter-" + threadID
 	}
 	return ""
 }
@@ -17488,7 +17488,7 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 			threadID := extractThreadIDFromPath(e.workspacePattern, currentPath)
 			letterID := extractLetterIDFromPath(e.workspacePattern, currentPath)
 			shouldPrune := false
-			if threadID != "" && strings.HasPrefix(branch, "task-") {
+			if threadID != "" && isThreadWorktreeBranch(branch) {
 				shouldPrune = !activeThreads[threadID]
 			} else if letterID != "" && branch == "letter/"+letterID {
 				shouldPrune = !activeLetters[letterID]
@@ -17526,4 +17526,10 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 	}
 
 	e.reply(p, msg.ReplyCtx, response.String())
+}
+
+func isThreadWorktreeBranch(branch string) bool {
+	return strings.HasPrefix(branch, "letter-") ||
+		strings.HasPrefix(branch, "letter/") ||
+		strings.HasPrefix(branch, "task-")
 }

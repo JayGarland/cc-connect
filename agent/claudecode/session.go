@@ -888,6 +888,12 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		}
 		cs.usageMu.Unlock()
 	}
+	contextWindow := claudeContextWindow(cs.GetModel())
+	cs.usageMu.Lock()
+	if cs.lastUsage != nil && cs.lastUsage.ContextWindow > 0 {
+		contextWindow = cs.lastUsage.ContextWindow
+	}
+	cs.usageMu.Unlock()
 
 	evt := core.Event{
 		Type:                     core.EventResult,
@@ -898,6 +904,7 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
+		ContextWindow:            contextWindow,
 	}
 	select {
 	case cs.events <- evt:
@@ -1257,8 +1264,8 @@ func (cs *claudeSession) Close() error {
 	// descendants (e.g. MCP server bridges) a second chance to run cleanup
 	// handlers that respond to signals but not stdin EOF.
 	if err := signalProcessGroup(cs.cmd, syscall.SIGTERM); err != nil {
-			slog.Warn("claudeSession: signal SIGTERM", "error", err)
-		}
+		slog.Warn("claudeSession: signal SIGTERM", "error", err)
+	}
 
 	select {
 	case <-cs.done:
@@ -1319,12 +1326,12 @@ func shellJoinArgs(args []string) string {
 func claudeContextWindow(model string) int {
 	lower := strings.ToLower(strings.TrimSpace(model))
 	if lower == "" {
-		return 200_000
+		return 666_000
 	}
 	if strings.Contains(lower, "[1m]") {
 		return 1_000_000
 	}
-	return 200_000
+	return 666_000
 }
 
 // filterEnv returns a copy of env with entries matching the given key removed.

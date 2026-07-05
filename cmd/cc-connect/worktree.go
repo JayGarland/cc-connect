@@ -188,7 +188,7 @@ func runWorktreePrune(args []string) {
 				letterID := extractLetterIDFromPath(pattern, currentPath)
 				shouldPrune := false
 				activeLabel := ""
-				if threadID != "" && strings.HasPrefix(branch, "task-") {
+				if threadID != "" && isThreadWorktreeBranch(branch) {
 					// Check if active
 					shouldPrune = !activeThreads[threadID]
 					activeLabel = "thread " + threadID
@@ -245,6 +245,12 @@ Flags:
   -d, --dry-run         Print abandoned worktrees without deleting them
   -f, --force           Prune offline (ignore missing/failed API socket connection)
 `)
+}
+
+func isThreadWorktreeBranch(branch string) bool {
+	return strings.HasPrefix(branch, "letter-") ||
+		strings.HasPrefix(branch, "letter/") ||
+		strings.HasPrefix(branch, "task-")
 }
 
 func extractThreadID(sessionKey string) string {

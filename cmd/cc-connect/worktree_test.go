@@ -43,3 +43,20 @@ func TestLoadDispatchLettersByTopic(t *testing.T) {
 		t.Fatal("dev-pro mapping included dev-swift topic 1092")
 	}
 }
+
+func TestIsThreadWorktreeBranch(t *testing.T) {
+	cases := []struct {
+		branch string
+		want   bool
+	}{
+		{"letter-824", true},
+		{"letter/L-0158", true},
+		{"task-824", true},
+		{"feature/foo", false},
+	}
+	for _, tc := range cases {
+		if got := isThreadWorktreeBranch(tc.branch); got != tc.want {
+			t.Fatalf("isThreadWorktreeBranch(%q) = %v, want %v", tc.branch, got, tc.want)
+		}
+	}
+}

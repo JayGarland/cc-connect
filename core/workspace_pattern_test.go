@@ -42,12 +42,12 @@ func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	want := filepath.Join(root, "worktrees", "letter-task-2222")
+	want := filepath.Join(root, "worktrees", "letter-L-2222")
 	if got := e.resolveWorkspacePattern("2222"); got != want {
 		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
 	}
-	if got := e.branchNameForWorkspace(want); got != "task-2222" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "task-2222")
+	if got := e.branchNameForWorkspace(want); got != "letter/L-2222" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "letter-2222")
 	}
 }
 
@@ -96,5 +96,22 @@ func TestWorkspacePatternRouting(t *testing.T) {
 	wantDir := `F:\nexus\worktrees\task-123`
 	if effectiveDir != wantDir {
 		t.Errorf("effectiveDir = %q, want %q", effectiveDir, wantDir)
+	}
+}
+
+func TestIsThreadWorktreeBranch(t *testing.T) {
+	cases := []struct {
+		branch string
+		want   bool
+	}{
+		{"letter-824", true},
+		{"letter/L-0158", true},
+		{"task-824", true},
+		{"feature/foo", false},
+	}
+	for _, tc := range cases {
+		if got := isThreadWorktreeBranch(tc.branch); got != tc.want {
+			t.Fatalf("isThreadWorktreeBranch(%q) = %v, want %v", tc.branch, got, tc.want)
+		}
 	}
 }
