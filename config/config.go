@@ -86,6 +86,7 @@ var ConfigPath string
 type Config struct {
 	DataDir        string `toml:"data_dir"` // session store directory, default ~/.cc-connect
 	AttachmentSend string `toml:"attachment_send"`
+	ContextWindow  *int   `toml:"context_window,omitempty"` // fallback model context window for heuristic ctx %, default 666000
 	// Quiet is legacy: when true and [display] does not set thinking_messages / tool_messages,
 	// engines behave as if those flags were false. Per-project quiet overrides when set.
 	Quiet              *bool                   `toml:"quiet,omitempty"`
@@ -274,7 +275,6 @@ type RelayConfig struct {
 	BurstMax        *int                 `toml:"burst_max,omitempty"`         // max relays per source per window; 0 = disabled; default 10
 	Bindings        []RelayBindingConfig `toml:"bindings,omitempty"`          // static bindings
 }
-
 
 // StatusBoardConfig configures the optional standing status-board message.
 // Ships disabled by default; the bot token must be registered separately
@@ -942,6 +942,14 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 	}
 
 	return
+}
+
+// EffectiveContextWindow returns the configured fallback model context window.
+func EffectiveContextWindow(cfg *Config) int {
+	if cfg != nil && cfg.ContextWindow != nil && *cfg.ContextWindow > 0 {
+		return *cfg.ContextWindow
+	}
+	return 666_000
 }
 
 // EffectiveHistoryMaxLen returns the per-entry /history truncation length.

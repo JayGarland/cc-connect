@@ -36,18 +36,30 @@ func normalizeContextGuardConfig(cfg ContextGuardConfig) ContextGuardConfig {
 }
 
 // EstimateContextGuardTokens estimates the prompt-side token load for a turn.
-// It intentionally uses the same cheap heuristic as reply-footer context
-// estimation: roughly one token per four runes.
+// CJK text is denser than the old one-token-per-four-runes heuristic, so count
+// common Chinese ideographs as roughly 1.5 tokens each and other runes as 1/4.
 func EstimateContextGuardTokens(history []HistoryEntry, incoming string) int {
-	count := 0
+	quarterTokens := 0
 	for _, h := range history {
-		count += len([]rune(h.Content))
+		quarterTokens += estimateContextGuardQuarterTokens(h.Content)
 	}
-	count += len([]rune(incoming))
-	if count == 0 {
+	quarterTokens += estimateContextGuardQuarterTokens(incoming)
+	if quarterTokens == 0 {
 		return 0
 	}
-	return (count + 3) / 4
+	return (quarterTokens + 3) / 4
+}
+
+func estimateContextGuardQuarterTokens(s string) int {
+	total := 0
+	for _, r := range s {
+		if r >= '\u4e00' && r <= '\u9fff' {
+			total += 6 // 1.5 tokens expressed in quarter-token units.
+		} else {
+			total++
+		}
+	}
+	return total
 }
 
 type contextGuardResult struct {

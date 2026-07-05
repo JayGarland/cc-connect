@@ -1242,7 +1242,7 @@ func TestProcessInteractiveEvents_AppendsContextIndicatorInsideReplyFooter(t *te
 	if len(sent) != 1 {
 		t.Fatalf("sent = %#v, want one final reply", sent)
 	}
-	want := "answer\n\n*[ctx: ~14%] · glm-5.1 · " + compactReplyFooterPath(workDir) + "*"
+	want := "answer\n\n*[ctx: ~4%] · glm-5.1 · " + compactReplyFooterPath(workDir) + "*"
 	if sent[0] != want {
 		t.Fatalf("final reply = %q, want %q", sent[0], want)
 	}
@@ -1284,7 +1284,7 @@ func TestProcessInteractiveEvents_ToolSegmentsKeepFinalFooter(t *testing.T) {
 		t.Fatal("sent = nil, want final reply")
 	}
 	final := sent[len(sent)-1]
-	want := "已处理完成。\n\n*[ctx: ~14%] · glm-5.1 · " + compactReplyFooterPath(workDir) + "*"
+	want := "已处理完成。\n\n*[ctx: ~4%] · glm-5.1 · " + compactReplyFooterPath(workDir) + "*"
 	if final != want {
 		t.Fatalf("final reply = %q, want %q\nall sent = %#v", final, want, sent)
 	}
@@ -2509,8 +2509,6 @@ func TestEngine_DisabledCommands_Inline(t *testing.T) {
 		t.Errorf("expected disabled message for ps, got: %v", sent)
 	}
 }
-
-
 
 func TestResolveDisabledCmds_Wildcard(t *testing.T) {
 	m := resolveDisabledCmds([]string{"*"})
@@ -15569,7 +15567,7 @@ func TestInteractiveSessionQueueing_SequentialProcessing(t *testing.T) {
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 
 	key := "test:user1"
-	
+
 	// Send Message A. This will run in a goroutine and start processing.
 	msgA := &Message{SessionKey: key, Content: "msgA", ReplyCtx: "ctx-msgA", UserMessageTimeMs: 1000}
 	e.ReceiveMessage(p, msgA)
