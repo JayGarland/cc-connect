@@ -10,6 +10,27 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestHeartbeatConfigParsesHeartbeatType(t *testing.T) {
+	var cfg Config
+	if _, err := toml.Decode(`
+[[projects]]
+name = "agent-seat"
+
+[projects.heartbeat]
+enabled = true
+session_key = "telegram:chat:user"
+heartbeat_type = "agent"
+`, &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(cfg.Projects))
+	}
+	if got := cfg.Projects[0].Heartbeat.HeartbeatType; got != "agent" {
+		t.Fatalf("heartbeat_type = %q, want agent", got)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1967,7 +1988,6 @@ func TestLoadRelayBindingsConfig(t *testing.T) {
 		t.Errorf("binding.Bots = %v, want map[chef-seat:resonova_chef_bot dev-deepseek:dev_deepseek_bot]", binding.Bots)
 	}
 }
-
 
 func TestLoadRejectsNegativeRelayTimeout(t *testing.T) {
 	configPath := writeConfigFixture(t, relayConfigNegativeFixture)

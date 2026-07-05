@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,30 +12,39 @@ import (
 	"time"
 )
 
+const (
+	HeartbeatTypePing  = "ping"
+	HeartbeatTypeAgent = "agent"
+)
+
+var ErrHeartbeatSessionBusy = errors.New("heartbeat session busy")
+
 // HeartbeatConfig holds runtime heartbeat settings for a single project.
 type HeartbeatConfig struct {
-	Enabled      bool
-	IntervalMins int
-	OnlyWhenIdle bool
-	SessionKey   string
-	Prompt       string // explicit prompt; empty = read HEARTBEAT.md
-	Silent       bool   // suppress "💓" notification
-	TimeoutMins  int
+	Enabled       bool
+	IntervalMins  int
+	OnlyWhenIdle  bool
+	SessionKey    string
+	HeartbeatType string
+	Prompt        string // explicit prompt; empty = read HEARTBEAT.md
+	Silent        bool   // suppress "💓" notification
+	TimeoutMins   int
 }
 
 // HeartbeatStatus is returned by the /heartbeat command.
 type HeartbeatStatus struct {
-	Enabled      bool
-	Paused       bool
-	IntervalMins int
-	OnlyWhenIdle bool
-	SessionKey   string
-	Silent       bool
-	RunCount     int
-	ErrorCount   int
-	SkippedBusy  int
-	LastRun      time.Time
-	LastError    string
+	Enabled       bool
+	Paused        bool
+	IntervalMins  int
+	OnlyWhenIdle  bool
+	SessionKey    string
+	HeartbeatType string
+	Silent        bool
+	RunCount      int
+	ErrorCount    int
+	SkippedBusy   int
+	LastRun       time.Time
+	LastError     string
 }
 
 // heartbeatPersisted is the JSON-serialisable per-project state.
@@ -93,6 +103,7 @@ func (hs *HeartbeatScheduler) Register(project string, cfg HeartbeatConfig, engi
 	if cfg.TimeoutMins <= 0 {
 		cfg.TimeoutMins = 30
 	}
+	cfg.HeartbeatType = normalizeHeartbeatType(cfg.HeartbeatType)
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -175,17 +186,18 @@ func (hs *HeartbeatScheduler) Status(project string) *HeartbeatStatus {
 		return nil
 	}
 	return &HeartbeatStatus{
-		Enabled:      entry.config.Enabled,
-		Paused:       entry.paused,
-		IntervalMins: entry.config.IntervalMins,
-		OnlyWhenIdle: entry.config.OnlyWhenIdle,
-		SessionKey:   entry.config.SessionKey,
-		Silent:       entry.config.Silent,
-		RunCount:     entry.runCount,
-		ErrorCount:   entry.errorCount,
-		SkippedBusy:  entry.skippedBusy,
-		LastRun:      entry.lastRun,
-		LastError:    entry.lastError,
+		Enabled:       entry.config.Enabled,
+		Paused:        entry.paused,
+		IntervalMins:  entry.config.IntervalMins,
+		OnlyWhenIdle:  entry.config.OnlyWhenIdle,
+		SessionKey:    entry.config.SessionKey,
+		HeartbeatType: entry.config.HeartbeatType,
+		Silent:        entry.config.Silent,
+		RunCount:      entry.runCount,
+		ErrorCount:    entry.errorCount,
+		SkippedBusy:   entry.skippedBusy,
+		LastRun:       entry.lastRun,
+		LastError:     entry.lastError,
 	}
 }
 
@@ -336,33 +348,29 @@ func (hs *HeartbeatScheduler) run(entry *heartbeatEntry) {
 
 func (hs *HeartbeatScheduler) execute(entry *heartbeatEntry) {
 	cfg := entry.config
+	heartbeatType := normalizeHeartbeatType(cfg.HeartbeatType)
 
-	if cfg.OnlyWhenIdle {
-		session := entry.engine.sessions.GetOrCreateActive(cfg.SessionKey)
-		if !session.TryLock() {
-			slog.Debug("heartbeat: session busy, skipping", "project", entry.project, "session_key", cfg.SessionKey)
-			hs.mu.Lock()
-			entry.skippedBusy++
-			hs.mu.Unlock()
-			return
+	prompt := ""
+	if heartbeatType == HeartbeatTypeAgent {
+		prompt = cfg.Prompt
+		if prompt == "" {
+			prompt = readHeartbeatMD(entry.workDir)
 		}
-		session.Unlock()
+		if prompt == "" {
+			prompt = defaultHeartbeatPrompt
+		}
 	}
 
-	prompt := cfg.Prompt
-	if prompt == "" {
-		prompt = readHeartbeatMD(entry.workDir)
-	}
-	if prompt == "" {
-		prompt = defaultHeartbeatPrompt
-	}
-
-	slog.Info("heartbeat: executing", "project", entry.project, "session_key", cfg.SessionKey, "prompt_len", len(prompt))
+	slog.Info("heartbeat: executing", "project", entry.project, "session_key", cfg.SessionKey, "type", heartbeatType, "prompt_len", len(prompt))
 
 	timeout := time.Duration(cfg.TimeoutMins) * time.Minute
 	done := make(chan error, 1)
 	go func() {
-		done <- entry.engine.ExecuteHeartbeat(cfg.SessionKey, prompt, cfg.Silent)
+		if heartbeatType == HeartbeatTypeAgent {
+			done <- entry.engine.ExecuteHeartbeat(cfg.SessionKey, prompt, cfg.Silent)
+			return
+		}
+		done <- entry.engine.ExecuteHeartbeatPing(cfg.SessionKey, cfg.Silent)
 	}()
 
 	var err error
@@ -370,6 +378,14 @@ func (hs *HeartbeatScheduler) execute(entry *heartbeatEntry) {
 	case err = <-done:
 	case <-time.After(timeout):
 		err = fmt.Errorf("heartbeat timed out after %v", timeout)
+	}
+
+	if cfg.OnlyWhenIdle && errors.Is(err, ErrHeartbeatSessionBusy) {
+		slog.Debug("heartbeat: session busy, skipping", "project", entry.project, "session_key", cfg.SessionKey)
+		hs.mu.Lock()
+		entry.skippedBusy++
+		hs.mu.Unlock()
+		return
 	}
 
 	hs.mu.Lock()
@@ -384,6 +400,18 @@ func (hs *HeartbeatScheduler) execute(entry *heartbeatEntry) {
 		slog.Info("heartbeat: execution completed", "project", entry.project)
 	}
 	hs.mu.Unlock()
+}
+
+func normalizeHeartbeatType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", HeartbeatTypePing:
+		return HeartbeatTypePing
+	case HeartbeatTypeAgent:
+		return HeartbeatTypeAgent
+	default:
+		slog.Warn("heartbeat: unknown heartbeat_type, defaulting to ping", "heartbeat_type", v)
+		return HeartbeatTypePing
+	}
 }
 
 const defaultHeartbeatPrompt = `This is a periodic heartbeat check. Please briefly review:

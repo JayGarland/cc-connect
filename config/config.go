@@ -461,13 +461,14 @@ func expandUserPath(path string) string {
 
 // HeartbeatConfig controls periodic heartbeat for a project.
 type HeartbeatConfig struct {
-	Enabled      *bool  `toml:"enabled"`                  // default false
-	IntervalMins *int   `toml:"interval_mins,omitempty"`  // minutes between heartbeats; default 30
-	OnlyWhenIdle *bool  `toml:"only_when_idle,omitempty"` // only fire when the session is not busy; default true
-	SessionKey   string `toml:"session_key,omitempty"`    // target session key (e.g. "telegram:123:123"); required
-	Prompt       string `toml:"prompt,omitempty"`         // explicit prompt; if empty, reads HEARTBEAT.md from work_dir
-	Silent       *bool  `toml:"silent,omitempty"`         // suppress heartbeat notification; default true
-	TimeoutMins  *int   `toml:"timeout_mins,omitempty"`   // max execution time; default 30
+	Enabled       *bool  `toml:"enabled"`                  // default false
+	IntervalMins  *int   `toml:"interval_mins,omitempty"`  // minutes between heartbeats; default 30
+	OnlyWhenIdle  *bool  `toml:"only_when_idle,omitempty"` // only fire when the session is not busy; default true
+	SessionKey    string `toml:"session_key,omitempty"`    // target session key (e.g. "telegram:123:123"); required
+	HeartbeatType string `toml:"heartbeat_type,omitempty"` // "ping" skips agent startup; "agent" preserves legacy prompt execution
+	Prompt        string `toml:"prompt,omitempty"`         // explicit prompt; if empty, reads HEARTBEAT.md from work_dir
+	Silent        *bool  `toml:"silent,omitempty"`         // suppress heartbeat notification; default true
+	TimeoutMins   *int   `toml:"timeout_mins,omitempty"`   // max execution time; default 30
 }
 
 // AutoCompressConfig controls automatic context compression for a project.

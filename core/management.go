@@ -667,10 +667,11 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		if m.heartbeatScheduler != nil {
 			if st := m.heartbeatScheduler.Status(name); st != nil {
 				data["heartbeat"] = map[string]any{
-					"enabled":       st.Enabled,
-					"paused":        st.Paused,
-					"interval_mins": st.IntervalMins,
-					"session_key":   st.SessionKey,
+					"enabled":        st.Enabled,
+					"paused":         st.Paused,
+					"interval_mins":  st.IntervalMins,
+					"heartbeat_type": st.HeartbeatType,
+					"session_key":    st.SessionKey,
 				}
 			}
 		}
@@ -1399,6 +1400,7 @@ func (m *ManagementServer) handleProjectHeartbeat(w http.ResponseWriter, r *http
 			"enabled":        st.Enabled,
 			"paused":         st.Paused,
 			"interval_mins":  st.IntervalMins,
+			"heartbeat_type": st.HeartbeatType,
 			"only_when_idle": st.OnlyWhenIdle,
 			"session_key":    st.SessionKey,
 			"silent":         st.Silent,
