@@ -487,6 +487,7 @@ func main() {
 		}
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
+		engine.SetContextWindow(config.EffectiveContextWindow(cfg))
 		// Wire display settings including show_context_indicator and reply_footer
 		// Global [display] config can be overridden by project-level settings
 		_, _, _, _, _, showCtx, showFooter := config.EffectiveDisplay(cfg, &proj)
@@ -1865,6 +1866,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 	result.DisplayUpdated = true
 
 	// Wire show_context_indicator and reply_footer from display config
+	engine.SetContextWindow(config.EffectiveContextWindow(cfg))
 	engine.SetShowContextIndicator(showCtx)
 	showWorkdir := true
 	if proj.ShowWorkdirIndicator != nil {

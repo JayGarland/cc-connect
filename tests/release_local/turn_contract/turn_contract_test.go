@@ -690,7 +690,7 @@ func TestReplyMetadataConfigurationMatrix(t *testing.T) {
 			name:       "context_and_footer_on_share_one_line",
 			showCtx:    true,
 			showFooter: true,
-			want:       []string{"answer", "[ctx: ~14%] · glm-5.1 · /tmp/release-agent"},
+			want:       []string{"answer", "[ctx: ~4%] · glm-5.1 · /tmp/release-agent"},
 		},
 		{
 			name:       "context_off_footer_on_hides_legacy_footer",
@@ -764,7 +764,7 @@ func TestLongFinalResponseKeepsMetadataOnceAtTail(t *testing.T) {
 			if strings.Count(joined, "[ctx:") != 1 || strings.Count(joined, "glm-5.1") != 1 {
 				t.Fatalf("chunks = %#v, want metadata exactly once", texts)
 			}
-			if !strings.Contains(texts[len(texts)-1], "[ctx: ~14%] · glm-5.1") {
+			if !strings.Contains(texts[len(texts)-1], "[ctx: ~4%] · glm-5.1") {
 				t.Fatalf("last chunk = %q, want metadata at tail", texts[len(texts)-1])
 			}
 			return
@@ -864,7 +864,7 @@ func TestRichCardModeKeepsToolStepsAndFinalMetadataInOneCard(t *testing.T) {
 		t.Fatalf("rich lifecycle = texts:%#v starts:%#v updates:%#v deletes:%#v, want one editable rich card", texts, starts, updates, deletes)
 	}
 	final := updates[len(updates)-1]
-	for _, want := range []string{"status=done", "step=Bash", "rich output", "markdown=rich final", "[ctx: ~14%] · glm-5.1"} {
+	for _, want := range []string{"status=done", "step=Bash", "rich output", "markdown=rich final", "[ctx: ~4%] · glm-5.1"} {
 		if !strings.Contains(final, want) {
 			t.Fatalf("final rich card = %q, want contains %q", final, want)
 		}

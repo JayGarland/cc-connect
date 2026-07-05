@@ -61,6 +61,18 @@ func TestContextGuardDoesNothingBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestEstimateContextGuardTokensCountsChineseCharactersHigher(t *testing.T) {
+	history := []HistoryEntry{
+		{Role: "user", Content: "你好世界"},
+		{Role: "assistant", Content: "abcdefgh"},
+	}
+
+	got := EstimateContextGuardTokens(history, "")
+	if got != 8 {
+		t.Fatalf("EstimateContextGuardTokens = %d, want 8", got)
+	}
+}
+
 func TestContextGuardSummaryIsPrependedToNextPrompt(t *testing.T) {
 	got := prependContextGuardSummary("summary", "current task")
 	if got != "summary\n---\ncurrent task" {

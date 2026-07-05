@@ -406,6 +406,7 @@ type Engine struct {
 	showContextIndicator bool
 	showWorkdirIndicator bool
 	replyFooterEnabled   bool
+	contextWindow        int
 
 	// When true, /list etc. only show sessions tracked by cc-connect,
 	// hiding sessions created by direct CLI usage in the same work_dir.
@@ -742,6 +743,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		maxQueuedMessages:     defaultMaxQueuedMessages,
 		showContextIndicator:  true,
 		showWorkdirIndicator:  true,
+		contextWindow:         modelContextWindow,
 		shell:                 defaultShell(),
 		shellFlag:             defaultShellFlag(),
 		pendingRestartTimeout: defaultPendingRestartTimeout,
@@ -939,6 +941,15 @@ func (e *Engine) SetAutoCompressConfig(enabled bool, maxTokens int, minGap time.
 // SetContextGuardConfig configures pre-turn context overflow protection.
 func (e *Engine) SetContextGuardConfig(cfg ContextGuardConfig) {
 	e.contextGuard = normalizeContextGuardConfig(cfg)
+}
+
+// SetContextWindow configures the fallback context window used when an agent
+// result does not report its model-specific window.
+func (e *Engine) SetContextWindow(tokens int) {
+	if tokens <= 0 {
+		tokens = modelContextWindow
+	}
+	e.contextWindow = tokens
 }
 
 // SetResetOnIdle configures automatic session rotation after prolonged inactivity.
@@ -5728,7 +5739,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				footerContext := replyFooterContextText(replyFooterSessionContextUsage(state.agentSession), e.i18n)
 				if e.showContextIndicator {
 					if sdkPlausible {
-						if text := contextIndicatorText(event.InputTokens); text != "" {
+						contextWindow := contextWindowFromEventOrSession(event, state.agentSession, e.contextWindow)
+						if text := contextIndicatorText(event.InputTokens, contextWindow); text != "" {
 							footerContext = text
 						}
 					} else if selfPct > 0 {
@@ -17267,17 +17279,35 @@ func gitClone(repoURL, dest string) error {
 
 // ── Context usage indicator ──────────────────────────────────
 
-const modelContextWindow = 200_000 // generic fallback window for heuristic context estimates
+const modelContextWindow = 666_000 // generic fallback window for heuristic context estimates
 
-func contextIndicatorText(inputTokens int) string {
+func contextIndicatorText(inputTokens, contextWindow int) string {
 	if inputTokens <= 0 {
 		return ""
 	}
-	pct := inputTokens * 100 / modelContextWindow
+	if contextWindow <= 0 {
+		contextWindow = modelContextWindow
+	}
+	pct := inputTokens * 100 / contextWindow
 	if pct > 100 {
 		pct = 100
 	}
 	return fmt.Sprintf("[ctx: ~%d%%]", pct)
+}
+
+func contextWindowFromEventOrSession(event Event, session AgentSession, fallback int) int {
+	if event.ContextWindow > 0 {
+		return event.ContextWindow
+	}
+	if reporter, ok := session.(ContextUsageReporter); ok {
+		if usage := reporter.GetContextUsage(); usage != nil && usage.ContextWindow > 0 {
+			return usage.ContextWindow
+		}
+	}
+	if fallback <= 0 {
+		return modelContextWindow
+	}
+	return fallback
 }
 
 // ctxSelfReportRe matches agent self-reported context lines like "[ctx: ~42%]".
