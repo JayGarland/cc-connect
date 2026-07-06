@@ -1485,18 +1485,36 @@ func main() {
 		}
 	}
 
+	shutdownCh := make(chan struct{}, 1)
+	shutdownSrv := core.NewShutdownServer(os.Getenv("CC_CONNECT_SHUTDOWN_ADDR"), func() {
+		select {
+		case shutdownCh <- struct{}{}:
+		default:
+		}
+	})
+	if err := shutdownSrv.Start(); err != nil {
+		slog.Warn("shutdown endpoint unavailable", "addr", shutdownSrv.Addr(), "error", err)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	var restartReq *core.RestartRequest
 	select {
 	case <-sigCh:
+	case <-shutdownCh:
+		slog.Info("shutdown requested via local endpoint")
 	case req := <-core.RestartCh:
 		restartReq = &req
 		slog.Info("restart requested via /restart command", "session", req.SessionKey, "platform", req.Platform)
 	}
 
 	slog.Info("shutting down...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := shutdownSrv.Stop(shutdownCtx); err != nil {
+		slog.Debug("shutdown endpoint stop failed", "error", err)
+	}
+	shutdownCancel()
 	if mgmtSrv != nil {
 		mgmtSrv.Stop()
 	}

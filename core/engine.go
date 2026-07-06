@@ -2446,6 +2446,13 @@ func (e *Engine) Stop() error {
 	}
 	e.userRolesMu.Unlock()
 
+	if e.sessions != nil {
+		e.sessions.Save()
+	}
+	if e.projectState != nil {
+		e.projectState.Save()
+	}
+
 	if err := e.agent.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("stop agent %s: %w", e.agent.Name(), err))
 	}
