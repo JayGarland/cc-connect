@@ -503,6 +503,9 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+		if proj.DispatchTopicIsolation {
+			engine.SetDispatchTopicIsolation(true)
+		}
 		if hf, ok := proj.Agent.Options["handoff_file"].(string); ok && hf != "" {
 			engine.SetHandoffFile(hf)
 		}

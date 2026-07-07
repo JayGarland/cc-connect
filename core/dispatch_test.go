@@ -235,6 +235,104 @@ Type: QUERY
 	}
 }
 
+func TestExecuteDispatch_TopicIsolationWithoutWorkspacePattern(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "advisory-seat-isolation")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0318.query.md")
+	query := `---
+ID: L-0318
+Thread: advisory-seat-isolation
+Type: QUERY
+---
+
+## Query
+`
+	if err := os.WriteFile(queryPath, []byte(query), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workDirChan := make(chan string, 1)
+	RegisterAgent("topic-isolation-test-agent", func(opts map[string]any) (Agent, error) {
+		if wd, ok := opts["work_dir"].(string); ok {
+			workDirChan <- wd
+		}
+		return &orderingTestAgent{}, nil
+	})
+
+	createTopicCalls := 0
+	p := &mockTaskTopicPlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		createTaskTopicFunc: func(ctx context.Context, dashboardSessionKey, title, content string) (*TaskTopic, error) {
+			createTopicCalls++
+			return &TaskTopic{
+				SessionKey: "telegram:-1003917051393:3180:7664413698",
+				ReplyCtx:   "mock-reply-ctx",
+				ThreadID:   "3180",
+				Name:       "letter-L-0318",
+			}, nil
+		},
+		reconstructFunc: func(sessionKey string) (any, error) {
+			return "reconstructed-ctx", nil
+		},
+	}
+
+	targetEngine := NewEngine("researcher-seat", &orderingTestAgent{}, []Platform{p}, "", LangEnglish)
+	targetEngine.SetDispatchTopicIsolation(true)
+
+	sourceEngine := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sourceEngine.dataDir = root
+	sourceEngine.relayManager = NewRelayManager(root)
+	sourceEngine.relayManager.RegisterEngine("researcher-seat", targetEngine)
+	sourceEngine.relayManager.RegisterEngine("secretary-seat", sourceEngine)
+
+	sourceEngine.configureDispatch(DispatchConfig{
+		Enabled:             true,
+		SourceProject:       "secretary-seat",
+		DashboardSessionKey: "telegram:-1003917051393:7664413698",
+		PollInterval:        1 * time.Second,
+	})
+
+	req := dispatchRequest{
+		To:     "researcher-seat",
+		Letter: "L-0318",
+		Thread: "advisory-seat-isolation",
+		Path:   queryPath,
+	}
+
+	receipt, err := sourceEngine.executeDispatch(p, "telegram:-1003917051393:7664413698", req)
+	if err != nil {
+		t.Fatalf("executeDispatch failed: %v", err)
+	}
+	if receipt != "✅ Dispatched L-0318 to researcher-seat in Topic #3180" {
+		t.Errorf("unexpected receipt: %q", receipt)
+	}
+	if createTopicCalls != 1 {
+		t.Fatalf("expected CreateTaskTopic to be called once, got %d", createTopicCalls)
+	}
+
+	open, err := sourceEngine.dispatchStore.listOpen()
+	if err != nil {
+		t.Fatalf("listOpen failed: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open expectation, got %d", len(open))
+	}
+	exp := open[0]
+	if exp.TopicID != "3180" || exp.TopicSessionKey != "telegram:-1003917051393:3180:7664413698" {
+		t.Errorf("unexpected topic expectation: %+v", exp)
+	}
+
+	select {
+	case gotWorkDir := <-workDirChan:
+		t.Fatalf("topic-only isolation should not create a workspace agent, got work_dir %q", gotWorkDir)
+	case <-time.After(200 * time.Millisecond):
+		// Static work_dir path: the original agent/session handles the topic.
+	}
+}
+
 type orderingTestAgent struct {
 	stubAgent
 }
@@ -326,4 +424,3 @@ Type: QUERY
 		t.Fatal("timeout waiting for workspace agent creation")
 	}
 }
-
