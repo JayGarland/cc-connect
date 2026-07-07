@@ -339,11 +339,9 @@ Type: QUERY
 
 	select {
 	case gotWorkDir := <-workDirChan:
-		if gotWorkDir != "/mock/parent/workdir" {
-			t.Errorf("got work_dir %q, want %q", gotWorkDir, "/mock/parent/workdir")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected workspace agent to be created with inherited parent workdir")
+		t.Fatalf("topic-only isolation should not create a workspace agent, got work_dir %q", gotWorkDir)
+	case <-time.After(200 * time.Millisecond):
+		// Static work_dir path: the original agent/session handles the topic.
 	}
 }
 

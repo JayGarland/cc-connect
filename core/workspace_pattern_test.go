@@ -222,19 +222,21 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify that the workspace is L-0323 (derived from message hint)
-	if interactiveKey != "L-0323:telegram:-1003917051393:2793:7664413698" {
-		t.Errorf("unexpected interactiveKey: %q", interactiveKey)
+	// Verify that the interactive key is the topic session key directly (no L-XXXX prefix)
+	if interactiveKey != msg.SessionKey {
+		t.Errorf("unexpected interactiveKey: %q, want %q", interactiveKey, msg.SessionKey)
 	}
 
-	// The effective directory should NOT be the virtual workspace "L-0323"
-	// but the agent's workdir because "L-0323" is not an absolute path.
-	if effectiveDir != dummyWorkDir {
-		t.Errorf("effectiveDir = %q, want %q", effectiveDir, dummyWorkDir)
+	// The effective directory should be empty because there is no workspace pattern
+	if effectiveDir != "" {
+		t.Errorf("effectiveDir = %q, want empty", effectiveDir)
 	}
 
-	if wsAgent == nil || wsSessions == nil {
-		t.Fatalf("expected non-nil wsAgent and wsSessions")
+	if wsAgent != agent {
+		t.Errorf("expected wsAgent to be the global agent, got %v", wsAgent)
+	}
+	if wsSessions != e.sessions {
+		t.Errorf("expected wsSessions to be the global sessions manager, got %v", wsSessions)
 	}
 }
 
@@ -253,4 +255,58 @@ func (a *dummyAgentWithWorkDir) Name() string {
 
 func (a *dummyAgentWithWorkDir) GetWorkDir() string {
 	return a.workDir
+}
+
+func TestWorkspacePatternRouting_TopicIsolationWithoutWorkspacePattern_BypassesInitFlow(t *testing.T) {
+	root := t.TempDir()
+
+	dummyWorkDir := filepath.Join(root, "my_workdir")
+	agent := &dummyAgentWithWorkDir{
+		stubAgent: stubAgent{},
+		workDir:   dummyWorkDir,
+	}
+
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("reviewer-seat", agent, []Platform{p}, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetDispatchTopicIsolation(true)
+
+	// We simulate a message in threadID "2793" with content "process L-0323"
+	// This simulates a manual message in a Topic channel.
+	msg := &Message{
+		SessionKey: "telegram:-1003917051393:2793:7664413698",
+		ChannelKey: "-1003917051393:2793",
+		Platform:   "telegram",
+		Content:    "process L-0323",
+	}
+
+	// Process message
+	e.ReceiveMessage(p, msg)
+
+	// Verify that no workspace init flow/resolution errors were sent to the platform
+	sent := p.getSent()
+	for _, s := range sent {
+		if strings.Contains(s, "No workspace found") || strings.Contains(s, "Workspace resolution error") {
+			t.Errorf("unexpected error message sent to platform: %q", s)
+		}
+	}
+
+	// Resolve context and verify fallback
+	wsAgent, wsSessions, interactiveKey, effectiveDir, err := e.commandContextWithWorkspace(p, msg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if interactiveKey != msg.SessionKey {
+		t.Errorf("unexpected interactiveKey: %q, want %q", interactiveKey, msg.SessionKey)
+	}
+	if effectiveDir != "" {
+		t.Errorf("effectiveDir = %q, want empty", effectiveDir)
+	}
+	if wsAgent != agent {
+		t.Errorf("expected wsAgent to be global agent")
+	}
+	if wsSessions != e.sessions {
+		t.Errorf("expected wsSessions to be global sessions manager")
+	}
 }

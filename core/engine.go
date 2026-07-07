@@ -820,6 +820,11 @@ func (e *Engine) SetDispatchTopicIsolation(enabled bool) {
 	e.dispatchTopicIsolation = enabled
 	if enabled {
 		e.multiWorkspace = true
+		e.initFlowsMu.Lock()
+		if e.initFlows == nil {
+			e.initFlows = make(map[string]*workspaceInitFlow)
+		}
+		e.initFlowsMu.Unlock()
 		e.interactiveMu.Lock()
 		if e.workspacePool == nil {
 			e.workspacePool = newWorkspacePool(DefaultWorkspaceIdleTimeout)
@@ -3018,7 +3023,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		var workspace string
 		var channelName string
 		var err error
-		if e.workspacePattern != "" || e.dispatchTopicIsolation {
+		if e.workspacePattern != "" {
 			threadID := extractThreadID(channelID)
 			workspace = e.resolveWorkspacePattern(threadID, msg.Content)
 		}
@@ -3031,21 +3036,29 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 		}
 		if workspace == "" {
-			// No workspace — handle init flow (unless it's a /workspace command)
-			if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {
-				if e.handleWorkspaceInitFlow(p, msg, channelName) {
+			// If dispatch topic isolation is enabled and we are in a thread,
+			// we don't need a workspace (we use the global agent in static work_dir).
+			// So we bypass the init flow and proceed.
+			threadID := extractThreadID(channelID)
+			if e.dispatchTopicIsolation && threadID != "" {
+				// Bypass init flow, resolvedWorkspace remains ""
+			} else {
+				// No workspace — handle init flow (unless it's a /workspace command)
+				if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {
+					if e.handleWorkspaceInitFlow(p, msg, channelName) {
+						return
+					}
+				} else {
+					// Workspace command bypassed the init flow; clean up any stale flow
+					// so it doesn't interfere if the channel becomes unbound again later.
+					e.initFlowsMu.Lock()
+					delete(e.initFlows, channelKey)
+					e.initFlowsMu.Unlock()
+				}
+				// If init flow didn't consume, only workspace commands work
+				if !strings.HasPrefix(content, "/") {
 					return
 				}
-			} else {
-				// Workspace command bypassed the init flow; clean up any stale flow
-				// so it doesn't interfere if the channel becomes unbound again later.
-				e.initFlowsMu.Lock()
-				delete(e.initFlows, channelKey)
-				e.initFlowsMu.Unlock()
-			}
-			// If init flow didn't consume, only workspace commands work
-			if !strings.HasPrefix(content, "/") {
-				return
 			}
 		} else {
 			// Touch for idle tracking
@@ -16954,16 +16967,6 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 		return ""
 	}
 	if e.workspacePattern == "" {
-		if e.dispatchTopicIsolation {
-			letterID := e.findLetterIDByTopic(threadID)
-			if letterID == "" && messageHint != "" {
-				letterID = ExtractLetterIDFromText(messageHint)
-			}
-			if letterID == "" {
-				letterID = "L-" + threadID
-			}
-			return letterID
-		}
 		return ""
 	}
 	workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
@@ -17000,7 +17003,7 @@ func (e *Engine) branchNameForWorkspace(workspace string) string {
 // the resolved workspace path for callers that need to forward it to
 // processInteractiveMessageWith (idle reaper bookkeeping, reply footer, etc).
 func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *SessionManager, string, string, error) {
-	if e.workspacePattern != "" || e.dispatchTopicIsolation {
+	if e.workspacePattern != "" {
 		channelID := effectiveChannelID(msg)
 		threadID := extractThreadID(channelID)
 		if threadID != "" {
