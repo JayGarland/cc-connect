@@ -415,7 +415,7 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	var topicID, topicName string
 	var channelKey string
 
-	if target.UsesWorkspacePattern() {
+	if target.UsesWorkspacePattern() || target.UsesDispatchTopicIsolation() {
 		creator, ok := p.(TaskTopicCreator)
 		if !ok {
 			return "", fmt.Errorf("platform %s cannot create task topics", p.Name())
@@ -618,6 +618,10 @@ func (e *Engine) notifyDispatchResultReady(exp DispatchExpectation) {
 
 func (e *Engine) UsesWorkspacePattern() bool {
 	return strings.TrimSpace(e.workspacePattern) != ""
+}
+
+func (e *Engine) UsesDispatchTopicIsolation() bool {
+	return e.dispatchTopicIsolation
 }
 
 func (e *Engine) InjectSyntheticMessage(ctx context.Context, platformName, sessionKey, userID, userName, content string) error {

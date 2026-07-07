@@ -427,6 +427,7 @@ type Engine struct {
 	// Multi-workspace mode
 	multiWorkspace               bool
 	workspacePattern             string
+	dispatchTopicIsolation       bool
 	baseDir                      string
 	skipGit                      bool
 	workspaceInitAllowLocalPaths bool
@@ -811,6 +812,12 @@ func (e *Engine) SetMultiWorkspace(baseDir, bindingStorePath string) {
 // SetWorkspacePattern sets the template pattern for thread-scoped workspaces.
 func (e *Engine) SetWorkspacePattern(pattern string) {
 	e.workspacePattern = pattern
+}
+
+// SetDispatchTopicIsolation enables dispatch-created topic sessions without
+// enabling workspace_pattern's git worktree routing.
+func (e *Engine) SetDispatchTopicIsolation(enabled bool) {
+	e.dispatchTopicIsolation = enabled
 }
 
 // SetWorkspaceIdleTimeout overrides the workspace idle reaper timeout.
