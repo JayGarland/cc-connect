@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/chenhg5/cc-connect/config"
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func runWorktree(args []string) {
@@ -185,7 +186,7 @@ func runWorktreePrune(args []string) {
 
 				// Check if the worktree folder or branch matches the configured pattern.
 				threadID := extractThreadIDFromPath(pattern, currentPath)
-				letterID := extractLetterIDFromPath(pattern, currentPath)
+				letterID := core.ExtractLetterIDFromPath(pattern, currentPath)
 				shouldPrune := false
 				activeLabel := ""
 				if threadID != "" && isThreadWorktreeBranch(branch) {
@@ -325,30 +326,3 @@ func extractThreadIDFromPath(pattern, path string) string {
 	return ""
 }
 
-func extractLetterIDFromPath(pattern, path string) string {
-	return extractLiteralPlaceholderFromPath(pattern, path, "{{LETTER_ID}}")
-}
-
-func extractLiteralPlaceholderFromPath(pattern, path, placeholder string) string {
-	pattern = filepath.ToSlash(pattern)
-	path = filepath.ToSlash(path)
-
-	idx := strings.Index(pattern, placeholder)
-	if idx == -1 {
-		return ""
-	}
-	prefix := pattern[:idx]
-	suffix := pattern[idx+len(placeholder):]
-
-	val := path
-	if strings.HasPrefix(val, prefix) {
-		val = strings.TrimPrefix(val, prefix)
-	}
-	if suffix != "" && strings.HasSuffix(val, suffix) {
-		val = strings.TrimSuffix(val, suffix)
-	}
-	if val == path && (prefix != "" || suffix != "") {
-		return ""
-	}
-	return val
-}

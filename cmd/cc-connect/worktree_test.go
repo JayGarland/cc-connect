@@ -4,12 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func TestExtractLetterIDFromPath(t *testing.T) {
 	pattern := `F:\foundry\worktrees\letter-{{LETTER_ID}}`
-	if got := extractLetterIDFromPath(pattern, `F:\foundry\worktrees\letter-L-0158`); got != "L-0158" {
-		t.Fatalf("extractLetterIDFromPath() = %q, want %q", got, "L-0158")
+	if got := core.ExtractLetterIDFromPath(pattern, `F:\foundry\worktrees\letter-L-0158`); got != "L-0158" {
+		t.Fatalf("ExtractLetterIDFromPath() = %q, want %q", got, "L-0158")
 	}
 }
 

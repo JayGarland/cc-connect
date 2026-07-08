@@ -16912,7 +16912,7 @@ func extractThreadIDFromPath(pattern, path string) string {
 	return extractPlaceholderFromPath(pattern, path, "{{THREAD_ID}}")
 }
 
-func extractLetterIDFromPath(pattern, path string) string {
+func ExtractLetterIDFromPath(pattern, path string) string {
 	return extractPlaceholderFromPath(pattern, path, "{{LETTER_ID}}")
 }
 
@@ -16972,7 +16972,7 @@ func (e *Engine) resolveActiveLetterID(ccSessionKey, workspaceDir, messageConten
 		return letterID
 	}
 	if e.workspacePattern != "" && workspaceDir != "" {
-		if letterID := extractLetterIDFromPath(e.workspacePattern, workspaceDir); letterID != "" {
+		if letterID := ExtractLetterIDFromPath(e.workspacePattern, workspaceDir); letterID != "" {
 			return normalizeLetterID(letterID)
 		}
 	}
@@ -17060,8 +17060,12 @@ func (e *Engine) branchNameForWorkspace(workspace string) string {
 	if !e.dispatchBranchIsolation {
 		return "main"
 	}
+	// DEPRECATED (L-0328 / L-0345): the dispatchBranchIsolation=true path below
+	// is unreachable in the Nexus fleet.  DispatchBranchIsolation defaults to true
+	// so this block is kept for non-Nexus deployments, but new Nexus work should
+	// never rely on letter/L-XXXX branch naming.
 	if strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
-		letterID := extractLetterIDFromPath(e.workspacePattern, workspace)
+		letterID := ExtractLetterIDFromPath(e.workspacePattern, workspace)
 		if letterID != "" {
 			if dispatchLetterRe.MatchString(letterID) {
 				return "letter/" + letterID
@@ -17923,7 +17927,7 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 			return
 		}
 		threadID := extractThreadIDFromPath(e.workspacePattern, currentPath)
-		letterID := extractLetterIDFromPath(e.workspacePattern, currentPath)
+		letterID := ExtractLetterIDFromPath(e.workspacePattern, currentPath)
 		shouldPrune := false
 
 		if !e.dispatchBranchIsolation || isDetached {
