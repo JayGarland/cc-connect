@@ -31,6 +31,26 @@ heartbeat_type = "agent"
 	}
 }
 
+func TestProjectConfigParsesPersonaClass(t *testing.T) {
+	var cfg Config
+	if _, err := toml.Decode(`
+[[projects]]
+name = "secretary-seat"
+persona_class = "secretary"
+
+[projects.agent]
+type = "claudecode"
+`, &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(cfg.Projects))
+	}
+	if got := cfg.Projects[0].PersonaClass; got != "secretary" {
+		t.Fatalf("persona_class = %q, want secretary", got)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,6 +96,43 @@ func TestConfigValidate(t *testing.T) {
 				},
 			},
 			wantErr: `projects[0] needs at least one [[projects.platforms]]`,
+		},
+		{
+			name: "rejects unsupported persona class",
+			cfg: Config{
+				Projects: []ProjectConfig{
+					func() ProjectConfig {
+						p := validProject("demo")
+						p.PersonaClass = "read"
+						return p
+					}(),
+				},
+			},
+			wantErr: `projects[0].persona_class must be "write" or "secretary"`,
+		},
+		{
+			name: "accepts explicit write persona class",
+			cfg: Config{
+				Projects: []ProjectConfig{
+					func() ProjectConfig {
+						p := validProject("demo")
+						p.PersonaClass = "write"
+						return p
+					}(),
+				},
+			},
+		},
+		{
+			name: "accepts explicit secretary persona class",
+			cfg: Config{
+				Projects: []ProjectConfig{
+					func() ProjectConfig {
+						p := validProject("secretary-seat")
+						p.PersonaClass = "secretary"
+						return p
+					}(),
+				},
+			},
 		},
 		{
 			name: "requires platform type",

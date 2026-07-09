@@ -518,14 +518,13 @@ func TestEstimateTokenCount(t *testing.T) {
 
 func TestRehydrationBudgetForPersonaClass(t *testing.T) {
 	write := RehydrationBudgetForPersonaClass(PersonaClassWrite)
-	read := RehydrationBudgetForPersonaClass(PersonaClassRead)
 	secretary := RehydrationBudgetForPersonaClass(PersonaClassSecretary)
 
-	if write.MaxTokens <= read.MaxTokens {
-		t.Fatalf("write budget should exceed read budget: write=%d read=%d", write.MaxTokens, read.MaxTokens)
+	if write.Name != "write-heavy" {
+		t.Fatalf("write budget name = %q, want write-heavy", write.Name)
 	}
-	if secretary.OpenSummaryEntries <= read.OpenSummaryEntries {
-		t.Fatalf("secretary should keep more open rows than read seats")
+	if secretary.OpenSummaryEntries <= write.OpenSummaryEntries {
+		t.Fatalf("secretary should keep more open rows than write seats")
 	}
 }
 
@@ -590,4 +589,3 @@ func TestNormalizeLetterID(t *testing.T) {
 		})
 	}
 }
-

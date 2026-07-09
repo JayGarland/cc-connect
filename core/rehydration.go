@@ -59,20 +59,11 @@ type RehydrationConfig struct {
 }
 
 // RehydrationBudgetForPersonaClass returns the default digest budget for a
-// seat class. This is the L-0251 OQ1 policy:
-// write-class seats get enough archive context to resume implementation;
-// secretary gets broad coordination context; read-only/flash specialists get
-// a smaller digest that still includes current letter + recent blockers.
+// seat class. This is the L-0251 OQ1 policy after L-0366: write-class seats
+// get enough archive context to resume implementation; secretary gets broad
+// coordination context.
 func RehydrationBudgetForPersonaClass(class PersonaClass) RehydrationBudget {
 	switch class {
-	case PersonaClassWrite:
-		return RehydrationBudget{
-			Name:               "write-heavy",
-			MaxTokens:          6000,
-			IndexTailLines:     80,
-			ParentChainDepth:   2,
-			OpenSummaryEntries: 30,
-		}
 	case PersonaClassSecretary:
 		return RehydrationBudget{
 			Name:               "secretary-coordination",
@@ -83,18 +74,18 @@ func RehydrationBudgetForPersonaClass(class PersonaClass) RehydrationBudget {
 		}
 	default:
 		return RehydrationBudget{
-			Name:               "read-flash",
-			MaxTokens:          3000,
-			IndexTailLines:     40,
-			ParentChainDepth:   1,
-			OpenSummaryEntries: 20,
+			Name:               "write-heavy",
+			MaxTokens:          6000,
+			IndexTailLines:     80,
+			ParentChainDepth:   2,
+			OpenSummaryEntries: 30,
 		}
 	}
 }
 
 func (c RehydrationConfig) fillDefaults() RehydrationConfig {
 	out := c
-	budget := RehydrationBudgetForPersonaClass(PersonaClassRead)
+	budget := RehydrationBudgetForPersonaClass(PersonaClassWrite)
 	if out.IndexTailLines <= 0 {
 		out.IndexTailLines = budget.IndexTailLines
 	}

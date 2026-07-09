@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ type PersonaClass string
 
 const (
 	PersonaClassWrite     PersonaClass = "write"
-	PersonaClassRead      PersonaClass = "read"
 	PersonaClassSecretary PersonaClass = "secretary"
 )
 
@@ -22,19 +22,33 @@ const (
 // this one-line truth (L-0216 P1, fail-loud-not-fail-stop per L-0215).
 const archiveFirstFallback = "你是无状态的壳。F:\\nexus\\docs\\archive\\ 是 Nexus 唯一的持久记忆与心脏。"
 
+// ParsePersonaClass validates an explicit persona_class config value.
+func ParsePersonaClass(value string) (PersonaClass, error) {
+	switch normalized := strings.ToLower(strings.TrimSpace(value)); normalized {
+	case "":
+		return "", nil
+	case string(PersonaClassWrite):
+		return PersonaClassWrite, nil
+	case string(PersonaClassSecretary):
+		return PersonaClassSecretary, nil
+	default:
+		return "", fmt.Errorf("persona_class must be %q or %q, got %q",
+			PersonaClassWrite, PersonaClassSecretary, value)
+	}
+}
+
 // ResolvePersonaClass determines which archive-first preamble variant a seat
-// gets. secretary-seat is the sole read-side seat with archive write
-// authority (L-0216 Query). Everything else follows the workspace_pattern
-// split already used for v1.2 execution-seat classification (L-0123): seats
-// with a workspace pattern are "write" (execution seats), the rest are "read".
-func ResolvePersonaClass(projectName string, hasWorkspacePattern bool) PersonaClass {
-	if projectName == "secretary-seat" {
-		return PersonaClassSecretary
+// gets. Explicit persona_class config wins. Empty config falls back to the
+// old workspace_pattern transition rule, but read-class seats no longer
+// exist: all non-secretary seats receive the write preamble.
+func ResolvePersonaClass(configured string, hasWorkspacePattern bool) (PersonaClass, error) {
+	if class, err := ParsePersonaClass(configured); err != nil || class != "" {
+		return class, err
 	}
 	if hasWorkspacePattern {
-		return PersonaClassWrite
+		return PersonaClassWrite, nil
 	}
-	return PersonaClassRead
+	return PersonaClassWrite, nil
 }
 
 // ComposePersona prepends the archive-first preamble (selected by class) to

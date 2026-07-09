@@ -396,6 +396,7 @@ type Engine struct {
 	dirHistory                   *DirHistory
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
+	personaClass                 PersonaClass
 
 	// Auto-compress settings
 	autoCompressEnabled   bool
@@ -738,32 +739,32 @@ func (pp *pendingPermission) resolve() {
 func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath string, lang Language) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		name:                  name,
-		agent:                 ag,
-		platforms:             platforms,
-		sessions:              NewSessionManager(sessionStorePath),
-		ctx:                   ctx,
-		cancel:                cancel,
-		i18n:                  NewI18n(lang),
-		attachmentSendEnabled: true,
-		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
-		commands:              NewCommandRegistry(),
-		skills:                NewSkillRegistry(),
-		aliases:               make(map[string]string),
-		interactiveStates:     make(map[string]*interactiveState),
-		sendWorkDirs:          make(map[string]string),
-		platformReady:         make(map[Platform]bool),
-		startedAt:             time.Now(),
-		streamPreview:         DefaultStreamPreviewCfg(),
-		references:            DefaultReferenceRenderCfg(),
-		eventIdleTimeout:      defaultEventIdleTimeout,
-		maxQueuedMessages:     defaultMaxQueuedMessages,
-		showContextIndicator:  true,
-		showWorkdirIndicator:  true,
-		contextWindow:         modelContextWindow,
-		shell:                 defaultShell(),
-		shellFlag:             defaultShellFlag(),
-		pendingRestartTimeout: defaultPendingRestartTimeout,
+		name:                    name,
+		agent:                   ag,
+		platforms:               platforms,
+		sessions:                NewSessionManager(sessionStorePath),
+		ctx:                     ctx,
+		cancel:                  cancel,
+		i18n:                    NewI18n(lang),
+		attachmentSendEnabled:   true,
+		display:                 DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
+		commands:                NewCommandRegistry(),
+		skills:                  NewSkillRegistry(),
+		aliases:                 make(map[string]string),
+		interactiveStates:       make(map[string]*interactiveState),
+		sendWorkDirs:            make(map[string]string),
+		platformReady:           make(map[Platform]bool),
+		startedAt:               time.Now(),
+		streamPreview:           DefaultStreamPreviewCfg(),
+		references:              DefaultReferenceRenderCfg(),
+		eventIdleTimeout:        defaultEventIdleTimeout,
+		maxQueuedMessages:       defaultMaxQueuedMessages,
+		showContextIndicator:    true,
+		showWorkdirIndicator:    true,
+		contextWindow:           modelContextWindow,
+		shell:                   defaultShell(),
+		shellFlag:               defaultShellFlag(),
+		pendingRestartTimeout:   defaultPendingRestartTimeout,
 		dispatchBranchIsolation: true,
 	}
 
@@ -815,6 +816,23 @@ func (e *Engine) SetMultiWorkspace(baseDir, bindingStorePath string) {
 // SetWorkspacePattern sets the template pattern for thread-scoped workspaces.
 func (e *Engine) SetWorkspacePattern(pattern string) {
 	e.workspacePattern = pattern
+}
+
+// SetPersonaClass sets the archive-first preamble/rehydration class resolved
+// from config at startup.
+func (e *Engine) SetPersonaClass(class PersonaClass) {
+	e.personaClass = class
+}
+
+func (e *Engine) resolvedPersonaClass() PersonaClass {
+	if e.personaClass != "" {
+		return e.personaClass
+	}
+	class, err := ResolvePersonaClass("", e.UsesWorkspacePattern())
+	if err != nil {
+		return PersonaClassWrite
+	}
+	return class
 }
 
 // SetDispatchTopicIsolation enables dispatch-created topic sessions without
@@ -4407,7 +4425,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		if e.dataDir != "" {
 			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
-			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
+			personaClass := e.resolvedPersonaClass()
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
 			messageContent := ""
 			if hist := session.GetHistory(1); len(hist) > 0 {
@@ -16279,7 +16297,7 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 		if e.dataDir != "" {
 			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
-			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
+			personaClass := e.resolvedPersonaClass()
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
 			envVars = e.appendRehydrationEnv(envVars, sourceSessionKey, "", message, personaClass)
 		}

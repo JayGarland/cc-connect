@@ -10,21 +10,34 @@ import (
 func TestResolvePersonaClass(t *testing.T) {
 	cases := []struct {
 		name                string
-		project             string
+		configured          string
 		hasWorkspacePattern bool
 		want                PersonaClass
 	}{
-		{"secretary always secretary", "secretary-seat", false, PersonaClassSecretary},
-		{"secretary with workspace pattern still secretary", "secretary-seat", true, PersonaClassSecretary},
-		{"execution seat with workspace pattern is write", "dev-pro", true, PersonaClassWrite},
-		{"non-execution seat is read", "reviewer-seat", false, PersonaClassRead},
+		{"explicit secretary", "secretary", false, PersonaClassSecretary},
+		{"explicit write", "write", false, PersonaClassWrite},
+		{"empty config with workspace pattern falls back to write", "", true, PersonaClassWrite},
+		{"empty config without workspace pattern still falls back to write", "", false, PersonaClassWrite},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ResolvePersonaClass(tc.project, tc.hasWorkspacePattern); got != tc.want {
-				t.Errorf("ResolvePersonaClass(%q, %v) = %q, want %q", tc.project, tc.hasWorkspacePattern, got, tc.want)
+			got, err := ResolvePersonaClass(tc.configured, tc.hasWorkspacePattern)
+			if err != nil {
+				t.Fatalf("ResolvePersonaClass(%q, %v) returned error: %v", tc.configured, tc.hasWorkspacePattern, err)
+			}
+			if got != tc.want {
+				t.Errorf("ResolvePersonaClass(%q, %v) = %q, want %q", tc.configured, tc.hasWorkspacePattern, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolvePersonaClassRejectsInvalidConfiguredValue(t *testing.T) {
+	if _, err := ResolvePersonaClass("read", false); err == nil {
+		t.Fatal("expected read persona_class to be rejected")
+	}
+	if _, err := ResolvePersonaClass("admin", true); err == nil {
+		t.Fatal("expected unknown persona_class to be rejected")
 	}
 }
 
@@ -53,7 +66,7 @@ func TestComposePersona_UsesPreambleFile(t *testing.T) {
 func TestComposePersona_FallsBackWhenPreambleMissing(t *testing.T) {
 	tmpDir := t.TempDir() // no _preamble dir at all
 
-	got := ComposePersona(tmpDir, PersonaClassRead, "PERSONA_BODY")
+	got := ComposePersona(tmpDir, PersonaClassWrite, "PERSONA_BODY")
 	if !strings.HasPrefix(got, archiveFirstFallback) {
 		t.Errorf("expected hardcoded fallback at head, got:\n%s", got)
 	}
@@ -63,7 +76,7 @@ func TestComposePersona_FallsBackWhenPreambleMissing(t *testing.T) {
 }
 
 func TestComposePersona_EmptyPersonaContentReturnsOnlyPreamble(t *testing.T) {
-	got := ComposePersona("", PersonaClassRead, "")
+	got := ComposePersona("", PersonaClassWrite, "")
 	if got != archiveFirstFallback {
 		t.Errorf("expected bare fallback preamble, got:\n%s", got)
 	}

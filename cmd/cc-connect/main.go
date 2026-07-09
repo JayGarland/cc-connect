@@ -487,6 +487,12 @@ func main() {
 		}
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
+		personaClass, err := core.ResolvePersonaClass(proj.PersonaClass, proj.WorkspacePattern != "")
+		if err != nil {
+			slog.Error("invalid persona_class", "project", proj.Name, "persona_class", proj.PersonaClass, "error", err)
+			os.Exit(1)
+		}
+		engine.SetPersonaClass(personaClass)
 		engine.SetContextWindow(config.EffectiveContextWindow(cfg))
 		// Wire display settings including show_context_indicator and reply_footer
 		// Global [display] config can be overridden by project-level settings

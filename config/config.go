@@ -496,11 +496,12 @@ type ReferenceConfig struct {
 
 // ProjectConfig binds one agent (with a specific work_dir) to one or more platforms.
 type ProjectConfig struct {
-	Name     string `toml:"name"`
-	Disabled bool   `toml:"disabled,omitempty"` // set true to skip this project at startup (keeps config in place)
-	Mode     string `toml:"mode,omitempty"`     // "" or "multi-workspace"
-	BaseDir  string `toml:"base_dir,omitempty"` // parent dir for workspaces
-	SkipGit  *bool  `toml:"skip_git,omitempty"`
+	Name         string `toml:"name"`
+	PersonaClass string `toml:"persona_class,omitempty"` // "write" (default) or "secretary"; controls archive-first preamble/rehydration policy
+	Disabled     bool   `toml:"disabled,omitempty"`      // set true to skip this project at startup (keeps config in place)
+	Mode         string `toml:"mode,omitempty"`          // "" or "multi-workspace"
+	BaseDir      string `toml:"base_dir,omitempty"`      // parent dir for workspaces
+	SkipGit      *bool  `toml:"skip_git,omitempty"`
 	// WorkspaceInitAllowLocalPaths allows /workspace init and the conversational
 	// init flow to bind existing local directories. Default false keeps init
 	// limited to git URLs; use /workspace bind or /workspace route for explicit
@@ -540,11 +541,11 @@ type ProjectConfig struct {
 	ShowWorkdirIndicator *bool `toml:"show_workdir_indicator,omitempty"`
 	// ReplyFooter: nil/true = render the reply footer; false = disable it
 	// entirely (the per-line indicator flags above become no-ops).
-	ReplyFooter            *bool        `toml:"reply_footer,omitempty"`
-	InjectSender           *bool        `toml:"inject_sender,omitempty"`            // prepend sender identity (platform + user ID) to each message sent to the agent
-	DisabledCommands       []string     `toml:"disabled_commands,omitempty"`        // commands to disable for this project (e.g. ["restart", "upgrade"])
-	WorkspacePattern       string       `toml:"workspace_pattern,omitempty"`        // template pattern for thread-scoped worktrees (e.g. "F:\\nexus\\worktrees\\task-${THREAD_ID}")
-	DispatchTopicIsolation bool         `toml:"dispatch_topic_isolation,omitempty"` // create a dispatch Topic/session without enabling git worktree routing
+	ReplyFooter            *bool    `toml:"reply_footer,omitempty"`
+	InjectSender           *bool    `toml:"inject_sender,omitempty"`            // prepend sender identity (platform + user ID) to each message sent to the agent
+	DisabledCommands       []string `toml:"disabled_commands,omitempty"`        // commands to disable for this project (e.g. ["restart", "upgrade"])
+	WorkspacePattern       string   `toml:"workspace_pattern,omitempty"`        // template pattern for thread-scoped worktrees (e.g. "F:\\nexus\\worktrees\\task-${THREAD_ID}")
+	DispatchTopicIsolation bool     `toml:"dispatch_topic_isolation,omitempty"` // create a dispatch Topic/session without enabling git worktree routing
 	// GeneralMentionStateless forces a fresh agent session (no --resume) at the
 	// start of every General-topic (threadID==0) @-mention turn for this
 	// project. Intended for advisory seats whose General @-mentions are
@@ -553,8 +554,8 @@ type ProjectConfig struct {
 	// sessions or workspace_pattern routing.
 	GeneralMentionStateless bool         `toml:"general_mention_stateless,omitempty"`
 	DispatchBranchIsolation *bool        `toml:"dispatch_branch_isolation,omitempty"` // if false, use main branch (detached) instead of letter/L-XXXX
-	AdminFrom              string       `toml:"admin_from,omitempty"`               // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
-	Users                  *UsersConfig `toml:"users,omitempty"`                    // per-user role config; nil = legacy behavior
+	AdminFrom               string       `toml:"admin_from,omitempty"`                // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
+	Users                   *UsersConfig `toml:"users,omitempty"`                     // per-user role config; nil = legacy behavior
 	// WorkspaceIdleTimeoutMinsLegacy is the deprecated per-project form of
 	// the workspace idle reaper timeout. New configs should set the top-level
 	// Config.WorkspaceIdleTimeoutMins instead. When the top-level field is
@@ -1085,6 +1086,11 @@ func (c *Config) validateInternal(permissive bool) error {
 		}
 		if proj.Agent.Type == "" {
 			return fmt.Errorf("config: %s.agent.type is required", prefix)
+		}
+		switch strings.ToLower(strings.TrimSpace(proj.PersonaClass)) {
+		case "", "write", "secretary":
+		default:
+			return fmt.Errorf("config: %s.persona_class must be \"write\" or \"secretary\"", prefix)
 		}
 		if len(proj.Platforms) == 0 && !permissive {
 			return fmt.Errorf("config: %s needs at least one [[projects.platforms]]", prefix)
