@@ -140,3 +140,19 @@ func (s *contextGuardCloseSession) Close() error {
 }
 
 var _ AgentSession = (*contextGuardCloseSession)(nil)
+
+func TestEstimateContextGuardTokensWithOverhead(t *testing.T) {
+	history := []HistoryEntry{
+		{Role: "user", Content: "hello"},
+	}
+	gotWithout := EstimateContextGuardTokens(history, "")
+	if gotWithout != 2 {
+		t.Fatalf("EstimateContextGuardTokens without overhead = %d, want 2", gotWithout)
+	}
+
+	gotWith := EstimateContextGuardTokens(history, "", 5000)
+	if gotWith != 5002 {
+		t.Fatalf("EstimateContextGuardTokens with overhead = %d, want 5002", gotWith)
+	}
+}
+

@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,16 +40,20 @@ func normalizeContextGuardConfig(cfg ContextGuardConfig) ContextGuardConfig {
 // EstimateContextGuardTokens estimates the prompt-side token load for a turn.
 // CJK text is denser than the old one-token-per-four-runes heuristic, so count
 // common Chinese ideographs as roughly 1.5 tokens each and other runes as 1/4.
-func EstimateContextGuardTokens(history []HistoryEntry, incoming string) int {
+func EstimateContextGuardTokens(history []HistoryEntry, incoming string, staticOverhead ...int) int {
 	quarterTokens := 0
 	for _, h := range history {
 		quarterTokens += estimateContextGuardQuarterTokens(h.Content)
 	}
 	quarterTokens += estimateContextGuardQuarterTokens(incoming)
-	if quarterTokens == 0 {
+	overhead := 0
+	if len(staticOverhead) > 0 {
+		overhead = staticOverhead[0]
+	}
+	if quarterTokens == 0 && overhead == 0 {
 		return 0
 	}
-	return (quarterTokens + 3) / 4
+	return (quarterTokens + 3) / 4 + overhead
 }
 
 func estimateContextGuardQuarterTokens(s string) int {
@@ -70,7 +76,7 @@ type contextGuardResult struct {
 	NewHistoryCount int
 }
 
-func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConfig, incoming string, now time.Time) contextGuardResult {
+func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConfig, incoming string, now time.Time, staticOverhead ...int) contextGuardResult {
 	cfg = normalizeContextGuardConfig(cfg)
 	if session == nil || !cfg.Enabled {
 		return contextGuardResult{}
@@ -79,7 +85,7 @@ func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConf
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	tokenEstimate := EstimateContextGuardTokens(session.History, incoming)
+	tokenEstimate := EstimateContextGuardTokens(session.History, incoming, staticOverhead...)
 	if tokenEstimate < cfg.ThresholdTokens {
 		return contextGuardResult{TokenEstimate: tokenEstimate}
 	}
@@ -189,13 +195,52 @@ func prependContextGuardSummary(summary, content string) string {
 	return summary + "\n---\n" + content
 }
 
+func (e *Engine) loadPersonaContent() string {
+	if e.dataDir == "" || e.name == "" {
+		return ""
+	}
+	ccPersonasDir := filepath.Join(e.dataDir, "personas")
+	personaFile := filepath.Join(ccPersonasDir, e.name+".md")
+	var rawPersona string
+	if data, err := os.ReadFile(personaFile); err == nil {
+		rawPersona = strings.TrimSpace(string(data))
+	} else {
+		if !os.IsNotExist(err) {
+			slog.Warn("failed to read persona file", "path", personaFile, "err", err)
+		}
+		return ""
+	}
+	personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
+	return ComposePersona(ccPersonasDir, personaClass, rawPersona)
+}
+
 func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent, session *Session, sessions *SessionManager, incoming string) string {
 	cfg := normalizeContextGuardConfig(e.contextGuard)
 	if !cfg.Enabled {
 		return ""
 	}
 
-	result := compactSessionHistoryForContextGuard(session, cfg, incoming, time.Now())
+	staticOverhead := 0
+	if agent != nil {
+		staticOverhead += (estimateContextGuardQuarterTokens(AgentSystemPrompt()) + 3) / 4
+		personaContent := e.loadPersonaContent()
+		if personaContent != "" {
+			staticOverhead += (estimateContextGuardQuarterTokens(personaContent) + 3) / 4
+		}
+		name := strings.ToLower(agent.Name())
+		switch {
+		case strings.Contains(name, "claudecode"):
+			staticOverhead += 6000
+		case strings.Contains(name, "copilot"):
+			staticOverhead += 4000
+		case strings.Contains(name, "codex"):
+			staticOverhead += 3000
+		default:
+			staticOverhead += 2000
+		}
+	}
+
+	result := compactSessionHistoryForContextGuard(session, cfg, incoming, time.Now(), staticOverhead)
 	if !result.Compacted {
 		return ""
 	}

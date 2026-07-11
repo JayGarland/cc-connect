@@ -197,3 +197,15 @@ func formatGroupContext(entries []aggregatedEntry, n int) string {
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
+
+// StripGroupContext removes any prepended group context block from the user message.
+func StripGroupContext(content string) string {
+	if !strings.HasPrefix(content, "[Group context (last ") {
+		return content
+	}
+	if idx := strings.Index(content, "\n---\n"); idx >= 0 {
+		return content[idx+len("\n---\n"):]
+	}
+	return ""
+}
+
