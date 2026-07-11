@@ -133,11 +133,34 @@ Type: QUERY
 	if err := os.WriteFile(resultPath, []byte("result"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(indexPath, []byte("| L-0130 | RESULT | topology-reframe | L-0128 | Done | 07-03 |\n"), 0o644); err != nil {
+	if !dispatchResultReady(DispatchExpectation{Letter: "L-0130", Thread: "topology-reframe", ResultPath: resultPath, IndexPath: indexPath}) {
+		t.Fatal("dispatchResultReady() = false after result exists (INDEX row should not be required)")
+	}
+}
+
+func TestDispatchResultReadyIsDir(t *testing.T) {
+	root := t.TempDir()
+	resultPath := filepath.Join(root, "L-0999.result.md")
+	indexPath := filepath.Join(root, "INDEX.md")
+
+	exp := DispatchExpectation{
+		Letter:     "L-0999",
+		Thread:     "test-thread",
+		ResultPath: resultPath,
+		IndexPath:  indexPath,
+	}
+
+	if dispatchResultReady(exp) {
+		t.Fatal("dispatchResultReady() = true before result.md exists")
+	}
+
+	// Create resultPath as a directory instead of a file
+	if err := os.Mkdir(resultPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if !dispatchResultReady(DispatchExpectation{Letter: "L-0130", Thread: "topology-reframe", ResultPath: resultPath, IndexPath: indexPath}) {
-		t.Fatal("dispatchResultReady() = false after result and INDEX row")
+
+	if dispatchResultReady(exp) {
+		t.Fatal("dispatchResultReady() = true when resultPath is a directory")
 	}
 }
 
