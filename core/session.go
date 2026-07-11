@@ -102,6 +102,9 @@ func (s *Session) unlock(update bool) {
 func (s *Session) AddHistory(role, content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if role == "user" {
+		content = StripGroupContext(content)
+	}
 	s.History = append(s.History, HistoryEntry{
 		Role:      role,
 		Content:   content,
