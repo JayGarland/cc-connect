@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,7 +27,7 @@ Path: F:\nexus\docs\archive\threads\topology-reframe\L-0130.query.md`)
 	}
 }
 
-func TestParseDispatchBlockRobust(t *testing.T) {
+func TestParseDispatchBlockRequiresStandaloneCompleteCommand(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
@@ -35,42 +36,63 @@ func TestParseDispatchBlockRobust(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "explanation before and code fence with toml",
-			content: "Boss has assigned this task:\n```toml\n[DISPATCH]\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\npath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n```\nPlease proceed.",
-			wantReq: dispatchRequest{
-				To:     "dev-pro",
-				Letter: "L-0154",
-				Thread: "topology-reframe",
-				Path:   `F:\nexus\docs\archive\threads\topology-reframe\L-0154.query.md`,
-			},
-			wantOk:  true,
-			wantErr: false,
-		},
-		{
-			name:    "markdown bold and trailing text",
-			content: "**[DISPATCH]**\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\npath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n\nSome extra remarks here.",
-			wantReq: dispatchRequest{
-				To:     "dev-pro",
-				Letter: "L-0154",
-				Thread: "topology-reframe",
-				Path:   `F:\nexus\docs\archive\threads\topology-reframe\L-0154.query.md`,
-			},
-			wantOk:  true,
-			wantErr: false,
-		},
-		{
-			name:    "not a dispatch block",
-			content: "Hello dev-pro, we have a query for you.\nPlease do not confuse this with a [DISPATCH] command.",
+			name:    "normal explanation mentions dispatch marker",
+			content: "A [DISPATCH] command requires all four fields; this is only an explanation.",
 			wantReq: dispatchRequest{},
 			wantOk:  false,
 			wantErr: false,
 		},
 		{
-			name:    "missing required field",
-			content: "```\n[DISPATCH]\nto: dev-pro\nletter: L-0154\nthread: topology-reframe\n```",
+			name:    "incomplete template is ordinary text",
+			content: "[DISPATCH]\nTo: dev-pro\nLetter: L-0154\nThread: topology-reframe",
 			wantReq: dispatchRequest{},
+			wantOk:  false,
+			wantErr: false,
+		},
+		{
+			name:    "fenced example with explanation is ordinary text",
+			content: "Use this format after approval:\n```\n[DISPATCH]\nTo: dev-pro\nLetter: L-0154\nThread: topology-reframe\nPath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n```",
+			wantReq: dispatchRequest{},
+			wantOk:  false,
+			wantErr: false,
+		},
+		{
+			name:    "quoted example is ordinary text",
+			content: "> [DISPATCH]\n> To: dev-pro\n> Letter: L-0154\n> Thread: topology-reframe\n> Path: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md",
+			wantReq: dispatchRequest{},
+			wantOk:  false,
+			wantErr: false,
+		},
+		{
+			name:    "natural language preamble is ordinary text",
+			content: "Dispatch this now:\n[DISPATCH]\nTo: dev-pro\nLetter: L-0154\nThread: topology-reframe\nPath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md",
+			wantReq: dispatchRequest{},
+			wantOk:  false,
+			wantErr: false,
+		},
+		{
+			name:    "standalone complete command",
+			content: "[DISPATCH]\nTo: dev-pro\nLetter: L-0154\nThread: topology-reframe\nPath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md",
+			wantReq: dispatchRequest{
+				To:     "dev-pro",
+				Letter: "L-0154",
+				Thread: "topology-reframe",
+				Path:   `F:\nexus\docs\archive\threads\topology-reframe\L-0154.query.md`,
+			},
 			wantOk:  true,
-			wantErr: true,
+			wantErr: false,
+		},
+		{
+			name:    "standalone fenced command",
+			content: "```\n[DISPATCH]\nTo: dev-pro\nLetter: L-0154\nThread: topology-reframe\nPath: F:\\nexus\\docs\\archive\\threads\\topology-reframe\\L-0154.query.md\n```",
+			wantReq: dispatchRequest{
+				To:     "dev-pro",
+				Letter: "L-0154",
+				Thread: "topology-reframe",
+				Path:   `F:\nexus\docs\archive\threads\topology-reframe\L-0154.query.md`,
+			},
+			wantOk:  true,
+			wantErr: false,
 		},
 	}
 
@@ -90,6 +112,23 @@ func TestParseDispatchBlockRobust(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMaybeHandleDispatchBlockRejectsWrongSourceProject(t *testing.T) {
+	e := NewEngine("other-project", &stubAgent{}, nil, "", LangEnglish)
+	e.configureDispatch(DispatchConfig{Enabled: true, SourceProject: "secretary-seat"})
+
+	handled, replacement := e.maybeHandleDispatchBlock(nil, "telegram:chat:user", `[DISPATCH]
+To: dev-pro
+Letter: L-0154
+Thread: topology-reframe
+Path: F:\nexus\docs\archive\threads\topology-reframe\L-0154.query.md`)
+	if !handled {
+		t.Fatal("complete command from a non-source project was not handled")
+	}
+	if !strings.Contains(replacement, "not allowed to emit") {
+		t.Fatalf("replacement = %q, want source-project rejection", replacement)
 	}
 }
 
