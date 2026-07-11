@@ -138,7 +138,7 @@ Type: QUERY
 	}
 }
 
-func TestDispatchResultReadyWithoutIndexRow(t *testing.T) {
+func TestDispatchResultReadyIsDir(t *testing.T) {
 	root := t.TempDir()
 	resultPath := filepath.Join(root, "L-0999.result.md")
 	indexPath := filepath.Join(root, "INDEX.md")
@@ -154,12 +154,13 @@ func TestDispatchResultReadyWithoutIndexRow(t *testing.T) {
 		t.Fatal("dispatchResultReady() = true before result.md exists")
 	}
 
-	if err := os.WriteFile(resultPath, []byte("some result content"), 0o644); err != nil {
+	// Create resultPath as a directory instead of a file
+	if err := os.Mkdir(resultPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	if !dispatchResultReady(exp) {
-		t.Fatal("dispatchResultReady() = false after result.md exists, even without INDEX.md row")
+	if dispatchResultReady(exp) {
+		t.Fatal("dispatchResultReady() = true when resultPath is a directory")
 	}
 }
 

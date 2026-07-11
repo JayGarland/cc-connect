@@ -307,35 +307,14 @@ func archiveRootFromLetterPath(path string) string {
 	return ""
 }
 
-func indexHasResultRow(indexPath, letter, thread string) bool {
-	if strings.TrimSpace(indexPath) == "" {
-		return false
-	}
-	data, err := os.ReadFile(indexPath)
-	if err != nil {
-		return false
-	}
-	for _, raw := range strings.Split(string(data), "\n") {
-		fields := strings.Split(raw, "|")
-		if len(fields) < 5 {
-			continue
-		}
-		if strings.TrimSpace(fields[1]) == letter &&
-			strings.TrimSpace(fields[2]) == "RESULT" &&
-			strings.TrimSpace(fields[3]) == thread {
-			return true
-		}
-	}
-	return false
-}
-
 func dispatchResultReady(exp DispatchExpectation) bool {
 	// Under C' protocol, result.md file creation or update is the primary delivery channel
 	// and does not require the INDEX RESULT row.
-	if _, err := os.Stat(exp.ResultPath); err != nil {
+	info, err := os.Stat(exp.ResultPath)
+	if err != nil {
 		return false
 	}
-	return true
+	return !info.IsDir()
 }
 
 func (e *Engine) configureDispatch(cfg DispatchConfig) {
