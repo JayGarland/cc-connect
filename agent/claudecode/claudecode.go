@@ -454,32 +454,39 @@ func (a *Agent) ValidateSessionID(_ context.Context, sessionID string) bool {
 	if sessionID == "" {
 		return false
 	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	// runtimeEnvLocked() transitively calls providerEnvLocked(), which can
+	// start/stop the provider proxy (mutates a.providerProxy/a.proxyLocalURL,
+	// opens/closes sockets) — that's a write, so this must hold the write
+	// lock, not RLock (Copilot review on PR #27).
+	a.mu.Lock()
+	workDir := a.workDir
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
 		return false
 	}
-	a.mu.RLock()
-	workDir := a.workDir
-	a.mu.RUnlock()
-	return validateSessionIDInProject(homeDir, workDir, sessionID)
+	return validateSessionIDInProject(claudeConfigDir, workDir, sessionID)
 }
 
 // validateSessionIDInProject checks whether sessionID has a .jsonl file
 // under the per-project directory that Claude Code derives from workDir.
-// Split out from (*Agent).ValidateSessionID so the logic can be unit
-// tested without touching the real $HOME.
-func validateSessionIDInProject(homeDir, workDir, sessionID string) bool {
+// claudeConfigDir must already be the effective Claude config root (see
+// claudeConfigDirFromEnv), not a bare home directory. Split out from
+// (*Agent).ValidateSessionID so the logic can be unit tested without
+// touching the real $HOME.
+func validateSessionIDInProject(claudeConfigDir, workDir, sessionID string) bool {
 	if sessionID == "" {
 		return false
 	}
-	if homeDir == "" || workDir == "" {
+	if claudeConfigDir == "" || workDir == "" {
 		return false
 	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return false
 	}
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return false
 	}
@@ -530,20 +537,20 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 }
 
 func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("claudecode: cannot determine home dir: %w", err)
-	}
-
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return nil, fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("claudecode: resolve work_dir: %w", err)
 	}
 
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return nil, nil
 	}
@@ -587,18 +594,19 @@ func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, erro
 }
 
 func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("claudecode: cannot determine home dir: %w", err)
-	}
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return fmt.Errorf("claudecode: resolve work_dir: %w", err)
 	}
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return fmt.Errorf("session not found")
 	}
@@ -670,15 +678,16 @@ func stripXMLTags(s string) string {
 
 // GetSessionHistory reads the Claude Code JSONL transcript and returns user/assistant messages.
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return nil, fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, _ := filepath.Abs(workDir)
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return nil, fmt.Errorf("claudecode: project dir not found")
 	}
@@ -994,6 +1003,36 @@ func claudeConfigHomeDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".claude")
+}
+
+// claudeConfigDirFromEnv resolves the effective Claude config root (the
+// directory containing "projects/", "settings.json", etc.) for a specific
+// spawn env slice, honoring a per-project CLAUDE_CONFIG_DIR override before
+// falling back to claudeConfigHomeDir() (process env / default ~/.claude).
+//
+// This exists because claudeConfigHomeDir() alone only sees cc-connect's
+// own process environment. Nexus sets CLAUDE_CONFIG_DIR per-project via
+// [projects.agent.options.env] — that value only ever reaches the spawned
+// Claude Code child process's env, never cc-connect's own os.Environ().
+// Before this fix, ValidateSessionID and transcriptPath always resolved
+// against the default ~/.claude regardless of a project's own
+// CLAUDE_CONFIG_DIR, so every respawn for a project with a custom
+// CLAUDE_CONFIG_DIR (5 seats in the Nexus fleet) saw its own valid session
+// ID as "not belonging to this project" and discarded it unconditionally
+// (L-0399).
+func claudeConfigDirFromEnv(env []string) string {
+	dir := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			if v = strings.TrimSpace(v); v != "" {
+				dir = v
+			}
+		}
+	}
+	if dir != "" {
+		return dir
+	}
+	return claudeConfigHomeDir()
 }
 
 func appendProjectClaudeSkillDirs(workDir, configHome string) []string {
@@ -1448,12 +1487,15 @@ func encodeClaudeProjectKey(absPath string) string {
 }
 
 // findProjectDir locates the Claude Code session directory for a given work dir.
-// Claude Code stores sessions at ~/.claude/projects/{projectKey}/ where projectKey
-// is derived from the absolute path. On Windows, the key format may vary (colon
-// handling, slash direction), so we try multiple key candidates and fall back to
-// scanning the projects directory.
-func findProjectDir(homeDir, absWorkDir string) string {
-	projectsBase := filepath.Join(homeDir, ".claude", "projects")
+// Claude Code stores sessions at <claudeConfigDir>/projects/{projectKey}/ where
+// projectKey is derived from the absolute path. claudeConfigDir must already be
+// the effective Claude config root (e.g. from claudeConfigDirFromEnv) — this
+// function does not append ".claude" itself, since a custom CLAUDE_CONFIG_DIR
+// value is already the config root, not a home directory that needs it appended.
+// On Windows, the key format may vary (colon handling, slash direction), so we
+// try multiple key candidates and fall back to scanning the projects directory.
+func findProjectDir(claudeConfigDir, absWorkDir string) string {
+	projectsBase := filepath.Join(claudeConfigDir, "projects")
 
 	// Build candidate keys: different ways Claude Code might encode the path.
 	// Primary encoding: Claude Code's actual algorithm (non-ASCII → "-")
