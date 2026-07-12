@@ -444,7 +444,8 @@ func TestFindProjectDir_NonASCIIPath(t *testing.T) {
 	// This test verifies that findProjectDir can handle non-ASCII paths
 	// by creating a mock projects directory structure
 	homeDir := t.TempDir()
-	projectsBase := filepath.Join(homeDir, ".claude", "projects")
+	claudeConfigDir := filepath.Join(homeDir, ".claude")
+	projectsBase := filepath.Join(claudeConfigDir, "projects")
 
 	// Test case: Chinese characters in path
 	chineseWorkDir := "/Users/test/Documents/项目文件夹"
@@ -457,16 +458,17 @@ func TestFindProjectDir_NonASCIIPath(t *testing.T) {
 	}
 
 	// Verify findProjectDir finds the directory
-	found := findProjectDir(homeDir, chineseWorkDir)
+	found := findProjectDir(claudeConfigDir, chineseWorkDir)
 	if found != mockProjectDir {
-		t.Errorf("findProjectDir(%q, %q) = %q, want %q", homeDir, chineseWorkDir, found, mockProjectDir)
+		t.Errorf("findProjectDir(%q, %q) = %q, want %q", claudeConfigDir, chineseWorkDir, found, mockProjectDir)
 	}
 }
 
 func TestFindProjectDir_ASCIIPath(t *testing.T) {
 	// Verify ASCII paths still work correctly
 	homeDir := t.TempDir()
-	projectsBase := filepath.Join(homeDir, ".claude", "projects")
+	claudeConfigDir := filepath.Join(homeDir, ".claude")
+	projectsBase := filepath.Join(claudeConfigDir, "projects")
 
 	asciiWorkDir := "/Users/test/Documents/project"
 	expectedKey := encodeClaudeProjectKey(asciiWorkDir)
@@ -476,18 +478,18 @@ func TestFindProjectDir_ASCIIPath(t *testing.T) {
 		t.Fatalf("failed to create mock project dir: %v", err)
 	}
 
-	found := findProjectDir(homeDir, asciiWorkDir)
+	found := findProjectDir(claudeConfigDir, asciiWorkDir)
 	if found != mockProjectDir {
-		t.Errorf("findProjectDir(%q, %q) = %q, want %q", homeDir, asciiWorkDir, found, mockProjectDir)
+		t.Errorf("findProjectDir(%q, %q) = %q, want %q", claudeConfigDir, asciiWorkDir, found, mockProjectDir)
 	}
 }
 
 func TestFindProjectDir_NotFound(t *testing.T) {
-	homeDir := t.TempDir()
+	claudeConfigDir := filepath.Join(t.TempDir(), ".claude")
 	// Don't create any project directories
 
 	workDir := "/Users/test/Documents/nonexistent"
-	found := findProjectDir(homeDir, workDir)
+	found := findProjectDir(claudeConfigDir, workDir)
 	if found != "" {
 		t.Errorf("findProjectDir for nonexistent project = %q, want empty string", found)
 	}
@@ -499,7 +501,8 @@ func TestFindProjectDir_ICloudPath(t *testing.T) {
 	// must match the on-disk project key that Claude Code CLI generates, which
 	// collapses both spaces and "~" to "-".
 	homeDir := t.TempDir()
-	projectsBase := filepath.Join(homeDir, ".claude", "projects")
+	claudeConfigDir := filepath.Join(homeDir, ".claude")
+	projectsBase := filepath.Join(claudeConfigDir, "projects")
 
 	iCloudWorkDir := "/Users/test/Library/Mobile Documents/com~apple~CloudDocs/my project"
 	// The on-disk key Claude Code CLI actually writes (spaces and "~" → "-").
@@ -510,9 +513,9 @@ func TestFindProjectDir_ICloudPath(t *testing.T) {
 		t.Fatalf("failed to create mock project dir: %v", err)
 	}
 
-	found := findProjectDir(homeDir, iCloudWorkDir)
+	found := findProjectDir(claudeConfigDir, iCloudWorkDir)
 	if found != mockProjectDir {
-		t.Errorf("findProjectDir(%q, %q) = %q, want %q", homeDir, iCloudWorkDir, found, mockProjectDir)
+		t.Errorf("findProjectDir(%q, %q) = %q, want %q", claudeConfigDir, iCloudWorkDir, found, mockProjectDir)
 	}
 }
 

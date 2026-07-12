@@ -454,10 +454,14 @@ func (a *Agent) ValidateSessionID(_ context.Context, sessionID string) bool {
 	if sessionID == "" {
 		return false
 	}
-	a.mu.RLock()
+	// runtimeEnvLocked() transitively calls providerEnvLocked(), which can
+	// start/stop the provider proxy (mutates a.providerProxy/a.proxyLocalURL,
+	// opens/closes sockets) — that's a write, so this must hold the write
+	// lock, not RLock (Copilot review on PR #27).
+	a.mu.Lock()
 	workDir := a.workDir
 	env := a.runtimeEnvLocked()
-	a.mu.RUnlock()
+	a.mu.Unlock()
 	claudeConfigDir := claudeConfigDirFromEnv(env)
 	if claudeConfigDir == "" {
 		return false
@@ -533,20 +537,20 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 }
 
 func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("claudecode: cannot determine home dir: %w", err)
-	}
-
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return nil, fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("claudecode: resolve work_dir: %w", err)
 	}
 
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return nil, nil
 	}
@@ -590,18 +594,19 @@ func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, erro
 }
 
 func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("claudecode: cannot determine home dir: %w", err)
-	}
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return fmt.Errorf("claudecode: resolve work_dir: %w", err)
 	}
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return fmt.Errorf("session not found")
 	}
@@ -673,15 +678,16 @@ func stripXMLTags(s string) string {
 
 // GetSessionHistory reads the Claude Code JSONL transcript and returns user/assistant messages.
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	a.mu.RLock()
+	a.mu.Lock()
 	workDir := a.workDir
-	a.mu.RUnlock()
+	env := a.runtimeEnvLocked()
+	a.mu.Unlock()
+	claudeConfigDir := claudeConfigDirFromEnv(env)
+	if claudeConfigDir == "" {
+		return nil, fmt.Errorf("claudecode: cannot determine claude config dir")
+	}
 	absWorkDir, _ := filepath.Abs(workDir)
-	projectDir := findProjectDir(homeDir, absWorkDir)
+	projectDir := findProjectDir(claudeConfigDir, absWorkDir)
 	if projectDir == "" {
 		return nil, fmt.Errorf("claudecode: project dir not found")
 	}
