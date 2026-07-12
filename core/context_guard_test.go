@@ -242,7 +242,7 @@ func TestApplyContextGuardBeforeTurn_UsesRealUsage(t *testing.T) {
 	e.SetContextGuardConfig(ContextGuardConfig{
 		Enabled:                true,
 		ThresholdTokens:        800,
-		KeepRecentTurns:        0,
+		KeepRecentTurns:        1,
 		SummaryMaxTokens:       100,
 		RotateSessionOnCompact: true,
 	})
@@ -251,7 +251,9 @@ func TestApplyContextGuardBeforeTurn_UsesRealUsage(t *testing.T) {
 	session := sessions.GetOrCreateActive("telegram:chat:user")
 	session.SetAgentSessionID("real-backend-session", agent.Name())
 	session.History = []HistoryEntry{
-		{Role: "user", Content: "short", Timestamp: time.Unix(1, 0)},
+		{Role: "user", Content: "old user 1", Timestamp: time.Unix(1, 0)},
+		{Role: "assistant", Content: "old assistant 1", Timestamp: time.Unix(2, 0)},
+		{Role: "user", Content: "old user 2", Timestamp: time.Unix(3, 0)},
 	}
 
 	closer := &contextGuardUsageSession{

@@ -86,10 +86,23 @@ func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConf
 	defer session.mu.Unlock()
 
 	var tokenEstimate int
-	if realUsage != nil && realUsage.UsedTokens > 0 {
+	realUsed := 0
+	if realUsage != nil {
+		realUsed = realUsage.UsedTokens
+		if realUsed <= 0 {
+			switch {
+			case realUsage.TotalTokens > 0:
+				realUsed = realUsage.TotalTokens
+			case realUsage.InputTokens > 0 || realUsage.OutputTokens > 0:
+				realUsed = realUsage.InputTokens + realUsage.OutputTokens
+			}
+		}
+	}
+
+	if realUsed > 0 {
 		incomingTokens := EstimateContextGuardTokens(nil, incoming)
-		tokenEstimate = realUsage.UsedTokens + incomingTokens
-		slog.Debug("context guard: using real agent session usage", "used_tokens", realUsage.UsedTokens, "incoming_tokens", incomingTokens, "total_estimate", tokenEstimate)
+		tokenEstimate = realUsed + incomingTokens
+		slog.Debug("context guard: using real agent session usage", "used_tokens", realUsed, "incoming_tokens", incomingTokens, "total_estimate", tokenEstimate)
 	} else {
 		tokenEstimate = EstimateContextGuardTokens(session.History, incoming, staticOverhead...)
 		slog.Debug("context guard: using history estimate", "estimate", tokenEstimate)
@@ -229,12 +242,17 @@ func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent,
 		return ""
 	}
 
-	var realUsage *ContextUsage
+	var agentSession AgentSession
 	e.interactiveMu.Lock()
 	if state, ok := e.interactiveStates[interactiveKey]; ok {
-		realUsage = replyFooterSessionContextUsage(state.agentSession)
+		agentSession = state.agentSession
 	}
 	e.interactiveMu.Unlock()
+
+	var realUsage *ContextUsage
+	if agentSession != nil {
+		realUsage = replyFooterSessionContextUsage(agentSession)
+	}
 
 	staticOverhead := 0
 	if agent != nil {
