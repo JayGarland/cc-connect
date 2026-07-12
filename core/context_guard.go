@@ -76,7 +76,7 @@ type contextGuardResult struct {
 	NewHistoryCount int
 }
 
-func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConfig, incoming string, now time.Time, staticOverhead ...int) contextGuardResult {
+func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConfig, incoming string, now time.Time, realUsage *ContextUsage, staticOverhead ...int) contextGuardResult {
 	cfg = normalizeContextGuardConfig(cfg)
 	if session == nil || !cfg.Enabled {
 		return contextGuardResult{}
@@ -85,7 +85,29 @@ func compactSessionHistoryForContextGuard(session *Session, cfg ContextGuardConf
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	tokenEstimate := EstimateContextGuardTokens(session.History, incoming, staticOverhead...)
+	var tokenEstimate int
+	realUsed := 0
+	if realUsage != nil {
+		realUsed = realUsage.UsedTokens
+		if realUsed <= 0 {
+			switch {
+			case realUsage.TotalTokens > 0:
+				realUsed = realUsage.TotalTokens
+			case realUsage.InputTokens > 0 || realUsage.OutputTokens > 0:
+				realUsed = realUsage.InputTokens + realUsage.OutputTokens
+			}
+		}
+	}
+
+	if realUsed > 0 {
+		incomingTokens := EstimateContextGuardTokens(nil, incoming)
+		tokenEstimate = realUsed + incomingTokens
+		slog.Debug("context guard: using real agent session usage", "used_tokens", realUsed, "incoming_tokens", incomingTokens, "total_estimate", tokenEstimate)
+	} else {
+		tokenEstimate = EstimateContextGuardTokens(session.History, incoming, staticOverhead...)
+		slog.Debug("context guard: using history estimate", "estimate", tokenEstimate)
+	}
+
 	if tokenEstimate < cfg.ThresholdTokens {
 		return contextGuardResult{TokenEstimate: tokenEstimate}
 	}
@@ -220,6 +242,18 @@ func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent,
 		return ""
 	}
 
+	var agentSession AgentSession
+	e.interactiveMu.Lock()
+	if state, ok := e.interactiveStates[interactiveKey]; ok {
+		agentSession = state.agentSession
+	}
+	e.interactiveMu.Unlock()
+
+	var realUsage *ContextUsage
+	if agentSession != nil {
+		realUsage = replyFooterSessionContextUsage(agentSession)
+	}
+
 	staticOverhead := 0
 	if agent != nil {
 		staticOverhead += (estimateContextGuardQuarterTokens(AgentSystemPrompt()) + 3) / 4
@@ -240,7 +274,7 @@ func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent,
 		}
 	}
 
-	result := compactSessionHistoryForContextGuard(session, cfg, incoming, time.Now(), staticOverhead)
+	result := compactSessionHistoryForContextGuard(session, cfg, incoming, time.Now(), realUsage, staticOverhead)
 	if !result.Compacted {
 		return ""
 	}
