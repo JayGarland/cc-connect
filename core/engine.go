@@ -536,7 +536,8 @@ type interactiveState struct {
 	stopCh                   chan struct{}
 	stopped                  bool
 	pending                  *pendingPermission
-	pendingMessages          []queuedMessage // messages queued while session was busy
+	pendingQueue             []*pendingPermission // background permission requests waiting for state.pending to free up (FIFO)
+	pendingMessages          []queuedMessage       // messages queued while session was busy
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	fromVoice                bool            // true if current turn originated from voice transcription
 	sideText                 string
@@ -697,6 +698,50 @@ type pendingPermission struct {
 	CurrentQuestion int            // index of the question currently being asked
 	Resolved        chan struct{}  // closed when user responds
 	resolveOnce     sync.Once
+}
+
+// maxPendingPermissionQueue bounds how many background permission requests
+// may wait behind the active one before new arrivals are denied outright.
+// Requests within this bound are never dropped or auto-denied — they are
+// queued FIFO and promoted to active as the one ahead of them resolves.
+const maxPendingPermissionQueue = 16
+
+// promoteNextPending pops the next queued permission request (if any) into
+// state.pending, so it becomes the active request awaiting a user response.
+// Returns nil if the queue was empty, or if state.pending was already
+// reclaimed by a concurrent arrival (the unsolicited reader can claim a freed
+// slot directly the instant it sees state.pending == nil) — in that case the
+// queued item is left in place and will be promoted on a later resolution.
+// Callers must invoke this immediately after clearing state.pending (i.e.
+// after a resolution), and must display the returned request's prompt.
+func (e *Engine) promoteNextPending(state *interactiveState) *pendingPermission {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.pending != nil || len(state.pendingQueue) == 0 {
+		return nil
+	}
+	next := state.pendingQueue[0]
+	state.pendingQueue = state.pendingQueue[1:]
+	state.pending = next
+	return next
+}
+
+// sendPendingPrompt displays the prompt for a newly active pending permission
+// request (either an AskUserQuestion card or a plain allow/deny prompt),
+// using the session's current platform/replyCtx.
+func (e *Engine) sendPendingPrompt(state *interactiveState, pending *pendingPermission) {
+	state.mu.Lock()
+	p := state.platform
+	replyCtx := state.replyCtx
+	state.mu.Unlock()
+
+	if len(pending.Questions) > 0 {
+		e.sendAskQuestionPrompt(p, replyCtx, pending.Questions, 0)
+		return
+	}
+	toolInput := truncateIf(pending.InputPreview, e.display.ToolMaxLen)
+	prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), pending.ToolName, toolInput)
+	e.sendPermissionPrompt(p, replyCtx, prompt, pending.ToolName, toolInput)
 }
 
 func (s *interactiveState) stopSignal() <-chan struct{} {
@@ -3681,6 +3726,9 @@ found:
 		state.pending = nil
 		state.mu.Unlock()
 		pending.resolve()
+		if next := e.promoteNextPending(state); next != nil {
+			e.sendPendingPrompt(state, next)
+		}
 		return true
 	}
 
@@ -3728,7 +3776,61 @@ found:
 	state.mu.Unlock()
 	pending.resolve()
 
+	if isApproveAllResponse(lower) {
+		e.drainPendingQueueApproved(state)
+	} else if next := e.promoteNextPending(state); next != nil {
+		e.sendPendingPrompt(state, next)
+	}
+
 	return true
+}
+
+// drainPendingQueueApproved is called once the user replies "allow all": every
+// non-AskUserQuestion request already queued behind the one just resolved is
+// approved immediately instead of continuing to prompt one at a time. An
+// AskUserQuestion cannot be blanket-approved (there is no answer to give it),
+// so encountering one stops the drain — it is promoted to active like a
+// normal resolution, and anything still behind it remains queued.
+//
+// Each item is popped and re-checked under lock rather than iterating a
+// snapshot, because the unsolicited reader can concurrently append to
+// state.pendingQueue (or claim a freed state.pending) while this drain is
+// in flight; operating on a stale snapshot could clobber that race.
+func (e *Engine) drainPendingQueueApproved(state *interactiveState) {
+	for {
+		state.mu.Lock()
+		if len(state.pendingQueue) == 0 {
+			state.mu.Unlock()
+			return
+		}
+		qp := state.pendingQueue[0]
+
+		if len(qp.Questions) > 0 {
+			if state.pending != nil {
+				// Active slot already claimed by something else (a concurrent
+				// background request) — leave this queued; it will be promoted
+				// normally once the slot frees up.
+				state.mu.Unlock()
+				return
+			}
+			state.pendingQueue = state.pendingQueue[1:]
+			state.pending = qp
+			state.mu.Unlock()
+			e.sendPendingPrompt(state, qp)
+			return
+		}
+
+		state.pendingQueue = state.pendingQueue[1:]
+		agentSession := state.agentSession
+		state.mu.Unlock()
+
+		if agentSession != nil {
+			if err := agentSession.RespondPermission(qp.RequestID, PermissionResult{Behavior: "allow", UpdatedInput: qp.ToolInput}); err != nil {
+				slog.Error("failed to auto-approve queued permission after allow-all", "error", err, "request_id", qp.RequestID)
+			}
+		}
+		qp.resolve()
+	}
 }
 
 // lookupPending returns the interactive state and its pending permission for
@@ -4623,10 +4725,13 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 		state.markStopped()
 
 		// Resolve any pending permission so the reader goroutine (or event
-		// loop) does not block on <-pending.Resolved forever.
+		// loop) does not block on <-pending.Resolved forever. Any queued
+		// background requests are dropped too — the session is going away,
+		// so there is no reader left to service them.
 		state.mu.Lock()
 		pending := state.pending
 		state.pending = nil
+		state.pendingQueue = nil
 		state.mu.Unlock()
 		if pending != nil {
 			pending.resolve()
@@ -4746,6 +4851,7 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	state.mu.Lock()
 	pending := state.pending
 	state.pending = nil
+	state.pendingQueue = nil
 	state.mu.Unlock()
 	if pending != nil {
 		pending.resolve()
@@ -5075,25 +5181,37 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				// Telegram can approve it instead of manufacturing a denial.
 				// AskUserQuestion must never be silently auto-approved, mirroring
 				// the foreground loop's isAskQuestion guard.
+				//
+				// A second (or third...) request arriving while one is already
+				// active must not be dropped or denied merely for arriving out
+				// of turn — Claude asked for multiple things and each one is
+				// queued FIFO behind the active request, promoted to active as
+				// the ones ahead of it resolve (see promoteNextPending). Only a
+				// queue that is genuinely full (maxPendingPermissionQueue) is
+				// denied, as real backpressure rather than an arbitrary cap of one.
 				isAskQuestion := event.ToolName == "AskUserQuestion" && len(event.Questions) > 0
 
 				state.mu.Lock()
 				autoApprove := state.approveAll && !isAskQuestion
 				var newPending *pendingPermission
-				overflow := false
+				queueOverflow := false
 				if !autoApprove {
-					if state.pending == nil {
-						newPending = &pendingPermission{
-							RequestID:    event.RequestID,
-							ToolName:     event.ToolName,
-							ToolInput:    event.ToolInputRaw,
-							InputPreview: event.ToolInput,
-							Questions:    event.Questions,
-							Resolved:     make(chan struct{}),
-						}
-						state.pending = newPending
-					} else {
-						overflow = true
+					candidate := &pendingPermission{
+						RequestID:    event.RequestID,
+						ToolName:     event.ToolName,
+						ToolInput:    event.ToolInputRaw,
+						InputPreview: event.ToolInput,
+						Questions:    event.Questions,
+						Resolved:     make(chan struct{}),
+					}
+					switch {
+					case state.pending == nil:
+						state.pending = candidate
+						newPending = candidate
+					case len(state.pendingQueue) < maxPendingPermissionQueue:
+						state.pendingQueue = append(state.pendingQueue, candidate)
+					default:
+						queueOverflow = true
 					}
 				}
 				state.mu.Unlock()
@@ -5120,12 +5238,8 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				switch {
 				case autoApprove:
 					respondAsync(PermissionResult{Behavior: "allow", UpdatedInput: event.ToolInputRaw}, "auto-approve")
-				case overflow:
-					// A different permission is already awaiting approval and the
-					// single-slot pending model has no room to queue this one.
-					// Deny it explicitly rather than leaving the agent blocked
-					// forever on an unanswered RespondPermission.
-					respondAsync(PermissionResult{Behavior: "deny", Message: "denied: another permission request is already pending"}, "overflow")
+				case queueOverflow:
+					respondAsync(PermissionResult{Behavior: "deny", Message: "denied: permission queue is full"}, "queue-full")
 				case newPending != nil:
 					if isAskQuestion {
 						e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
@@ -10637,6 +10751,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	state.mu.Lock()
 	pending := state.pending
 	state.pending = nil
+	state.pendingQueue = nil
 	agentSession := state.agentSession
 	state.mu.Unlock()
 
