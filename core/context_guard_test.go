@@ -21,7 +21,7 @@ func TestContextGuardCompactsOldHistoryAndKeepsRecentTurns(t *testing.T) {
 		ThresholdTokens:  1,
 		KeepRecentTurns:  2,
 		SummaryMaxTokens: 200,
-	}, "incoming", time.Unix(100, 0))
+	}, "incoming", time.Unix(100, 0), nil)
 
 	if !result.Compacted {
 		t.Fatal("expected context guard to compact")
@@ -50,7 +50,7 @@ func TestContextGuardDoesNothingBelowThreshold(t *testing.T) {
 		ThresholdTokens:  1000,
 		KeepRecentTurns:  1,
 		SummaryMaxTokens: 100,
-	}, "incoming", time.Now())
+	}, "incoming", time.Now(), nil)
 
 	if result.Compacted {
 		t.Fatal("did not expect compaction below threshold")
@@ -155,4 +155,118 @@ func TestEstimateContextGuardTokensWithOverhead(t *testing.T) {
 		t.Fatalf("EstimateContextGuardTokens with overhead = %d, want 5002", gotWith)
 	}
 }
+
+func TestContextGuardUsesRealUsage(t *testing.T) {
+	s := &Session{}
+	s.History = []HistoryEntry{
+		{Role: "user", Content: "short 1", Timestamp: time.Unix(1, 0)},
+		{Role: "assistant", Content: "short 2", Timestamp: time.Unix(2, 0)},
+		{Role: "user", Content: "short 3", Timestamp: time.Unix(3, 0)},
+		{Role: "assistant", Content: "short 4", Timestamp: time.Unix(4, 0)},
+	}
+
+	// Although History is extremely short (will not exceed threshold on its own),
+	// we pass a realUsage with UsedTokens = 900, which exceeds ThresholdTokens = 800.
+	realUsage := &ContextUsage{
+		UsedTokens:    900,
+		ContextWindow: 1000,
+	}
+
+	result := compactSessionHistoryForContextGuard(s, ContextGuardConfig{
+		Enabled:          true,
+		ThresholdTokens:  800,
+		KeepRecentTurns:  1,
+		SummaryMaxTokens: 100,
+	}, "incoming", time.Unix(100, 0), realUsage)
+
+	if !result.Compacted {
+		t.Fatal("expected compaction because real usage exceeds threshold")
+	}
+	if result.TokenEstimate < 900 {
+		t.Fatalf("expected token estimate to incorporate real usage, got %d", result.TokenEstimate)
+	}
+}
+
+func TestContextGuardFallbackToEstimate(t *testing.T) {
+	s := &Session{}
+	s.History = []HistoryEntry{
+		{Role: "user", Content: strings.Repeat("long history entry ", 100), Timestamp: time.Unix(1, 0)},
+		{Role: "assistant", Content: "short 2", Timestamp: time.Unix(2, 0)},
+		{Role: "user", Content: "short 3", Timestamp: time.Unix(3, 0)},
+		{Role: "assistant", Content: "short 4", Timestamp: time.Unix(4, 0)},
+	}
+
+	// 1. Nil realUsage
+	res1 := compactSessionHistoryForContextGuard(s, ContextGuardConfig{
+		Enabled:          true,
+		ThresholdTokens:  50,
+		KeepRecentTurns:  1,
+		SummaryMaxTokens: 100,
+	}, "incoming", time.Unix(100, 0), nil)
+	if !res1.Compacted {
+		t.Fatal("expected fallback estimation to trigger compaction")
+	}
+
+	// 2. RealUsage with UsedTokens = 0 (empty/invalid)
+	s.History = []HistoryEntry{
+		{Role: "user", Content: strings.Repeat("long history entry ", 100), Timestamp: time.Unix(1, 0)},
+		{Role: "assistant", Content: "short 2", Timestamp: time.Unix(2, 0)},
+		{Role: "user", Content: "short 3", Timestamp: time.Unix(3, 0)},
+		{Role: "assistant", Content: "short 4", Timestamp: time.Unix(4, 0)},
+	}
+	res2 := compactSessionHistoryForContextGuard(s, ContextGuardConfig{
+		Enabled:          true,
+		ThresholdTokens:  50,
+		KeepRecentTurns:  1,
+		SummaryMaxTokens: 100,
+	}, "incoming", time.Unix(100, 0), &ContextUsage{UsedTokens: 0})
+	if !res2.Compacted {
+		t.Fatal("expected fallback estimation to trigger compaction on empty UsedTokens")
+	}
+}
+
+type contextGuardUsageSession struct {
+	contextGuardCloseSession
+	usage ContextUsage
+}
+
+func (s *contextGuardUsageSession) GetContextUsage() *ContextUsage {
+	return &s.usage
+}
+
+var _ ContextUsageReporter = (*contextGuardUsageSession)(nil)
+
+func TestApplyContextGuardBeforeTurn_UsesRealUsage(t *testing.T) {
+	agent := &stubAgent{}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	e.SetContextGuardConfig(ContextGuardConfig{
+		Enabled:                true,
+		ThresholdTokens:        800,
+		KeepRecentTurns:        0,
+		SummaryMaxTokens:       100,
+		RotateSessionOnCompact: true,
+	})
+
+	sessions := NewSessionManager("")
+	session := sessions.GetOrCreateActive("telegram:chat:user")
+	session.SetAgentSessionID("real-backend-session", agent.Name())
+	session.History = []HistoryEntry{
+		{Role: "user", Content: "short", Timestamp: time.Unix(1, 0)},
+	}
+
+	closer := &contextGuardUsageSession{
+		usage: ContextUsage{UsedTokens: 900},
+	}
+	e.interactiveStates["telegram:chat:user"] = &interactiveState{agentSession: closer}
+
+	summary := e.applyContextGuardBeforeTurn("telegram:chat:user", agent, session, sessions, "incoming")
+	if !strings.HasPrefix(summary, contextGuardSummaryPrefix) {
+		t.Fatalf("expected compaction and summary prefix, got: %q", summary)
+	}
+	if got := session.GetAgentSessionID(); got != "" {
+		t.Fatalf("expected agent session id cleared, got %q", got)
+	}
+}
+
+
 
