@@ -535,12 +535,11 @@ type interactiveState struct {
 	mu                       sync.Mutex
 	stopCh                   chan struct{}
 	stopped                  bool
-	pending                      *pendingPermission
-	pendingQueue                 []*pendingPermission // background permission requests waiting for state.pending to free up (FIFO)
-	pendingQueueOverflowNotified bool                 // true once the user has been told the queue is full, until it drains
-	pendingMessages              []queuedMessage      // messages queued while session was busy
-	approveAll               bool            // when true, auto-approve all permission requests for this session
-	fromVoice                bool            // true if current turn originated from voice transcription
+	pending                  *pendingPermission
+	pendingQueue             []*pendingPermission // background permission requests waiting for state.pending to free up (FIFO)
+	pendingMessages          []queuedMessage      // messages queued while session was busy
+	approveAll               bool                 // when true, auto-approve all permission requests for this session
+	fromVoice                bool                 // true if current turn originated from voice transcription
 	sideText                 string
 	currentPromptLen         int
 	currentPromptPreview     string
@@ -701,18 +700,6 @@ type pendingPermission struct {
 	resolveOnce     sync.Once
 }
 
-// maxPendingPermissionQueue bounds how many background permission requests
-// may wait behind the active one before new arrivals are denied outright.
-// Requests within this bound are never dropped or auto-denied — they are
-// queued FIFO and promoted to active as the one ahead of them resolves.
-//
-// This is deliberately one below the round number (16 total budget, 15 of
-// which are real request slots): the 16th slot is never occupied by a queued
-// request — it is reserved for the one-time MsgPermissionQueueFull notice, so
-// the user always finds out the queue filled up instead of requests vanishing
-// into silent denials with no sign posted at the door.
-const maxPendingPermissionQueue = 15
-
 // promoteNextPending pops the next queued permission request (if any) into
 // state.pending, so it becomes the active request awaiting a user response.
 // Returns nil if the queue was empty, or if state.pending was already
@@ -730,7 +717,6 @@ func (e *Engine) promoteNextPending(state *interactiveState) *pendingPermission 
 	next := state.pendingQueue[0]
 	state.pendingQueue = state.pendingQueue[1:]
 	state.pending = next
-	state.pendingQueueOverflowNotified = false
 	return next
 }
 
@@ -788,35 +774,62 @@ func (pp *pendingPermission) resolve() {
 	pp.resolveOnce.Do(func() { close(pp.Resolved) })
 }
 
+// denyPendingPermissions detaches every unresolved permission from a session
+// and settles it on the stdio bridge. Callers pass the captured session after
+// preventing new events; no mutex is held while RespondPermission runs.
+func denyPendingPermissions(state *interactiveState, agentSession AgentSession) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	pending := make([]*pendingPermission, 0, 1+len(state.pendingQueue))
+	if state.pending != nil {
+		pending = append(pending, state.pending)
+	}
+	pending = append(pending, state.pendingQueue...)
+	state.pending = nil
+	state.pendingQueue = nil
+	state.approveAll = false
+	state.mu.Unlock()
+	for _, pp := range pending {
+		if agentSession != nil {
+			if err := agentSession.RespondPermission(pp.RequestID, PermissionResult{Behavior: "deny", Message: "session ended"}); err != nil {
+				slog.Warn("failed to deny pending permission during session cleanup", "error", err, "request_id", pp.RequestID)
+			}
+		}
+		pp.resolve()
+	}
+}
+
 func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath string, lang Language) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		name:                  name,
-		agent:                 ag,
-		platforms:             platforms,
-		sessions:              NewSessionManager(sessionStorePath),
-		ctx:                   ctx,
-		cancel:                cancel,
-		i18n:                  NewI18n(lang),
-		attachmentSendEnabled: true,
-		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
-		commands:              NewCommandRegistry(),
-		skills:                NewSkillRegistry(),
-		aliases:               make(map[string]string),
-		interactiveStates:     make(map[string]*interactiveState),
-		sendWorkDirs:          make(map[string]string),
-		platformReady:         make(map[Platform]bool),
-		startedAt:             time.Now(),
-		streamPreview:         DefaultStreamPreviewCfg(),
-		references:            DefaultReferenceRenderCfg(),
-		eventIdleTimeout:      defaultEventIdleTimeout,
-		maxQueuedMessages:     defaultMaxQueuedMessages,
-		showContextIndicator:  true,
-		showWorkdirIndicator:  true,
-		contextWindow:         modelContextWindow,
-		shell:                 defaultShell(),
-		shellFlag:             defaultShellFlag(),
-		pendingRestartTimeout: defaultPendingRestartTimeout,
+		name:                    name,
+		agent:                   ag,
+		platforms:               platforms,
+		sessions:                NewSessionManager(sessionStorePath),
+		ctx:                     ctx,
+		cancel:                  cancel,
+		i18n:                    NewI18n(lang),
+		attachmentSendEnabled:   true,
+		display:                 DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
+		commands:                NewCommandRegistry(),
+		skills:                  NewSkillRegistry(),
+		aliases:                 make(map[string]string),
+		interactiveStates:       make(map[string]*interactiveState),
+		sendWorkDirs:            make(map[string]string),
+		platformReady:           make(map[Platform]bool),
+		startedAt:               time.Now(),
+		streamPreview:           DefaultStreamPreviewCfg(),
+		references:              DefaultReferenceRenderCfg(),
+		eventIdleTimeout:        defaultEventIdleTimeout,
+		maxQueuedMessages:       defaultMaxQueuedMessages,
+		showContextIndicator:    true,
+		showWorkdirIndicator:    true,
+		contextWindow:           modelContextWindow,
+		shell:                   defaultShell(),
+		shellFlag:               defaultShellFlag(),
+		pendingRestartTimeout:   defaultPendingRestartTimeout,
 		dispatchBranchIsolation: true,
 	}
 
@@ -3741,6 +3754,12 @@ found:
 	}
 
 	lower := strings.ToLower(strings.TrimSpace(content))
+	// /yolo is a session-scoped alias for the existing allow-all response
+	// only after an active permission was found above. It never changes the
+	// Claude Code permission mode.
+	if lower == "/yolo" {
+		lower = "allow all"
+	}
 
 	if isApproveAllResponse(lower) {
 		state.mu.Lock()
@@ -3823,14 +3842,12 @@ func (e *Engine) drainPendingQueueApproved(state *interactiveState) {
 			}
 			state.pendingQueue = state.pendingQueue[1:]
 			state.pending = qp
-			state.pendingQueueOverflowNotified = false
 			state.mu.Unlock()
 			e.sendPendingPrompt(state, qp)
 			return
 		}
 
 		state.pendingQueue = state.pendingQueue[1:]
-		state.pendingQueueOverflowNotified = false
 		agentSession := state.agentSession
 		state.mu.Unlock()
 
@@ -4738,14 +4755,7 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 		// loop) does not block on <-pending.Resolved forever. Any queued
 		// background requests are dropped too — the session is going away,
 		// so there is no reader left to service them.
-		state.mu.Lock()
-		pending := state.pending
-		state.pending = nil
-		state.pendingQueue = nil
-		state.mu.Unlock()
-		if pending != nil {
-			pending.resolve()
-		}
+		denyPendingPermissions(state, agentSession)
 
 		e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
 	}
@@ -4858,14 +4868,7 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	e.stopUnsolicitedReader(state)
 	state.markStopped()
 
-	state.mu.Lock()
-	pending := state.pending
-	state.pending = nil
-	state.pendingQueue = nil
-	state.mu.Unlock()
-	if pending != nil {
-		pending.resolve()
-	}
+	denyPendingPermissions(state, agentSession)
 	e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
 
 	e.closeAgentSessionWithTimeout(sessionKey, agentSession)
@@ -5196,16 +5199,13 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				// active must not be dropped or denied merely for arriving out
 				// of turn — Claude asked for multiple things and each one is
 				// queued FIFO behind the active request, promoted to active as
-				// the ones ahead of it resolve (see promoteNextPending). Only a
-				// queue that is genuinely full (maxPendingPermissionQueue) is
-				// denied, as real backpressure rather than an arbitrary cap of one.
+				// the ones ahead of it resolve (see promoteNextPending). Requests
+				// are never denied merely because a local queue reached a limit.
 				isAskQuestion := event.ToolName == "AskUserQuestion" && len(event.Questions) > 0
 
 				state.mu.Lock()
 				autoApprove := state.approveAll && !isAskQuestion
 				var newPending *pendingPermission
-				queueOverflow := false
-				notifyQueueFull := false
 				if !autoApprove {
 					candidate := &pendingPermission{
 						RequestID:    event.RequestID,
@@ -5215,30 +5215,14 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 						Questions:    event.Questions,
 						Resolved:     make(chan struct{}),
 					}
-					switch {
-					case state.pending == nil:
+					if state.pending == nil {
 						state.pending = candidate
 						newPending = candidate
-					case len(state.pendingQueue) < maxPendingPermissionQueue:
+					} else {
 						state.pendingQueue = append(state.pendingQueue, candidate)
-					default:
-						queueOverflow = true
-						// Tell the user the queue filled up, once per overflow
-						// episode (promoteNextPending/drain reset this flag as
-						// soon as a slot frees up) — a full queue must never
-						// deny requests silently with no sign posted anywhere.
-						if !state.pendingQueueOverflowNotified {
-							state.pendingQueueOverflowNotified = true
-							notifyQueueFull = true
-						}
 					}
 				}
 				state.mu.Unlock()
-
-				if notifyQueueFull {
-					msg := fmt.Sprintf(e.i18n.T(MsgPermissionQueueFull), maxPendingPermissionQueue, maxPendingPermissionQueue)
-					e.send(p, replyCtx, msg)
-				}
 
 				// RespondPermission may make a slow adapter call, so it is offloaded
 				// to a detached goroutine that honours the reader's context, keeping
@@ -5262,8 +5246,6 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				switch {
 				case autoApprove:
 					respondAsync(PermissionResult{Behavior: "allow", UpdatedInput: event.ToolInputRaw}, "auto-approve")
-				case queueOverflow:
-					respondAsync(PermissionResult{Behavior: "deny", Message: "denied: permission queue is full"}, "queue-full")
 				case newPending != nil:
 					if isAskQuestion {
 						e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
@@ -10773,12 +10755,9 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	e.stopUnsolicitedReader(state)
 
 	state.mu.Lock()
-	pending := state.pending
-	state.pending = nil
-	state.pendingQueue = nil
-	state.pendingQueueOverflowNotified = false
 	agentSession := state.agentSession
 	state.mu.Unlock()
+	denyPendingPermissions(state, agentSession)
 
 	// If the agent session supports graceful turn cancellation (e.g. ACP),
 	// send a cancel notification and keep the session alive for the next
@@ -10789,9 +10768,6 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		// Don't delete from interactiveStates — keep it alive.
 		e.interactiveMu.Unlock()
 
-		if pending != nil {
-			pending.resolve()
-		}
 		if notifyQueued {
 			e.notifyDroppedQueuedMessages(state, fmt.Errorf("session cancelled"))
 		} else {
@@ -10830,9 +10806,6 @@ normalCleanup:
 	delete(e.interactiveStates, sessionKey)
 	e.interactiveMu.Unlock()
 
-	if pending != nil {
-		pending.resolve()
-	}
 	if notifyQueued {
 		e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
 	} else {

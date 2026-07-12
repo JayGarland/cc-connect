@@ -13867,12 +13867,20 @@ func TestUnsolicitedReader_QueuesPermissionForApproval(t *testing.T) {
 		pending := state.pending
 		state.mu.Unlock()
 		if pending != nil {
-			if pending.RequestID != "background-1" { t.Fatalf("pending id = %q", pending.RequestID) }
+			if pending.RequestID != "background-1" {
+				t.Fatalf("pending id = %q", pending.RequestID)
+			}
 			break
 		}
-		select { case <-deadline: t.Fatal("background permission was not queued for approval"); case <-time.After(10 * time.Millisecond): }
+		select {
+		case <-deadline:
+			t.Fatal("background permission was not queued for approval")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	if sess.calls != 0 { t.Fatalf("background permission was answered early: %d calls", sess.calls) }
+	if sess.calls != 0 {
+		t.Fatalf("background permission was answered early: %d calls", sess.calls)
+	}
 
 	// The pending/card contract is only useful if the user actually sees a
 	// prompt — assert the platform received one naming the tool, not just
@@ -14145,7 +14153,7 @@ func TestUnsolicitedReader_PermissionQueuedThenPromoted(t *testing.T) {
 // queued behind the active one), a further request is denied as real
 // backpressure — distinct from the old, incorrect behavior of denying the
 // very first request to arrive while anything was pending.
-func TestUnsolicitedReader_PermissionQueueOverflowDenied(t *testing.T) {
+func TestUnsolicitedReader_PermissionQueueHasNoCapacityDeny(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	defer func() { _ = e.Stop() }()
@@ -14193,83 +14201,33 @@ func TestUnsolicitedReader_PermissionQueueOverflowDenied(t *testing.T) {
 		return state.pending != nil && state.pending.RequestID == "req-0"
 	}, "active request was not set")
 
-	for i := 0; i < maxPendingPermissionQueue; i++ {
+	const queued = 16
+	for i := 0; i < queued; i++ {
 		permRecorder.events <- Event{Type: EventPermissionRequest, RequestID: fmt.Sprintf("req-fill-%d", i), ToolName: "Bash"}
 	}
 	waitFor(func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		return len(state.pendingQueue) == maxPendingPermissionQueue
-	}, "queue did not fill to capacity")
+		return len(state.pendingQueue) == queued
+	}, "queue did not retain the initial burst")
 
-	permRecorder.events <- Event{Type: EventPermissionRequest, RequestID: "req-overflow", ToolName: "Bash"}
+	permRecorder.events <- Event{Type: EventPermissionRequest, RequestID: "req-after-16", ToolName: "Bash"}
 	waitFor(func() bool {
-		permRecorder.mu.Lock()
-		defer permRecorder.mu.Unlock()
-		return permRecorder.permCalls > 0
-	}, "overflow request was never answered")
-
-	permRecorder.mu.Lock()
-	result := permRecorder.lastPermResult
-	permRecorder.mu.Unlock()
-	if result.Behavior != "deny" {
-		t.Errorf("expected overflow request to be denied, got %q", result.Behavior)
-	}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return len(state.pendingQueue) == queued+1
+	}, "request after sixteen queued entries was not retained")
 
 	state.mu.Lock()
 	queueLen := len(state.pendingQueue)
 	state.mu.Unlock()
-	if queueLen != maxPendingPermissionQueue {
-		t.Errorf("expected queue to remain at capacity %d, got %d", maxPendingPermissionQueue, queueLen)
+	if queueLen != queued+1 {
+		t.Errorf("expected %d queued requests, got %d", queued+1, queueLen)
 	}
-
-	// The user must be told the queue filled up (L-0404 pursuit: a silent
-	// deny with "no sign posted at the door" is not acceptable) — exactly
-	// once for this overflow episode, not once per overflowing request.
-	sentAfterFirstOverflow := waitForPlatformSend(p, 1, time.Second)
-	noticeCount := 0
-	for _, s := range sentAfterFirstOverflow {
-		if strings.Contains(s, "queue is full") {
-			noticeCount++
-		}
-	}
-	if noticeCount != 1 {
-		t.Fatalf("expected exactly 1 queue-full notice, got %d in %v", noticeCount, sentAfterFirstOverflow)
-	}
-
-	permRecorder.events <- Event{Type: EventPermissionRequest, RequestID: "req-overflow-2", ToolName: "Bash"}
-	waitFor(func() bool {
-		permRecorder.mu.Lock()
-		defer permRecorder.mu.Unlock()
-		return permRecorder.permCalls > 1
-	}, "second overflow request was never answered")
-
-	sentAfterSecondOverflow := p.getSent()
-	noticeCount = 0
-	for _, s := range sentAfterSecondOverflow {
-		if strings.Contains(s, "queue is full") {
-			noticeCount++
-		}
-	}
-	if noticeCount != 1 {
-		t.Fatalf("expected the notice to still appear exactly once (not repeated per overflowing request), got %d in %v", noticeCount, sentAfterSecondOverflow)
-	}
-
-	// Freeing a slot (by resolving the active request, which promotes the
-	// next queued one) must reset the notified flag so a future overflow
-	// episode gets its own fresh notice.
-	if !e.handlePendingPermission(p, &Message{SessionKey: "test:perm:overflow", ReplyCtx: "ctx"}, "allow", "") {
-		t.Fatal("expected handlePendingPermission to resolve the active request and free a queue slot")
-	}
-	state.mu.Lock()
-	notified := state.pendingQueueOverflowNotified
-	queueLenAfter := len(state.pendingQueue)
-	state.mu.Unlock()
-	if notified {
-		t.Error("expected pendingQueueOverflowNotified to reset once a slot freed up")
-	}
-	if queueLenAfter != maxPendingPermissionQueue-1 {
-		t.Errorf("expected queue to shrink by one after promotion, got %d", queueLenAfter)
+	permRecorder.mu.Lock()
+	defer permRecorder.mu.Unlock()
+	if permRecorder.permCalls != 0 {
+		t.Fatalf("queued requests must not be denied early, got %d responses", permRecorder.permCalls)
 	}
 }
 
