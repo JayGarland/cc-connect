@@ -271,6 +271,13 @@ func TestCodexPromptPreamble_PrependsProjectPrompts(t *testing.T) {
 	}
 }
 
+func TestCodexPromptPreamble_IncludesSessionRehydrationDigest(t *testing.T) {
+	preamble := buildCodexPromptPreamble("", "", "REHYDRATION_DIGEST")
+	if !strings.Contains(preamble, "REHYDRATION_DIGEST") {
+		t.Fatalf("prompt preamble missing session digest: %q", preamble)
+	}
+}
+
 func TestCodexPromptPreamble_EmptyIsNoop(t *testing.T) {
 	const prompt = "Hello"
 	if got := prependCodexPromptPreamble(prompt, ""); got != prompt {
@@ -571,6 +578,39 @@ func TestSend_PrependsProjectPromptOnFreshSession(t *testing.T) {
 	for _, want := range wantParts {
 		waitForFileContains(t, stdinFile, want)
 	}
+}
+
+func TestSend_PrependsProjectPromptOnResumedSession(t *testing.T) {
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+
+	stdinFile := filepath.Join(workDir, "stdin.txt")
+	script := "#!/bin/sh\n" +
+		"cat > \"$CODEX_STDIN_FILE\"\n" +
+		"printf '%s\\n' '{\"type\":\"turn.completed\"}'\n"
+	powershellScript := `
+[IO.File]::WriteAllText($env:CODEX_STDIN_FILE, [Console]::In.ReadToEnd())
+[Console]::Out.WriteLine('{"type":"turn.completed"}')
+`
+	writeFakeCodexScript(t, binDir, script, powershellScript)
+
+	t.Setenv("CODEX_STDIN_FILE", stdinFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-existing", "", nil, "", "Resume instructions", "")
+	if err != nil {
+		t.Fatalf("newCodexSession: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	if err := cs.Send("Continue the task.", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	waitForFileContains(t, stdinFile, "Project system prompt:\nResume instructions")
 }
 
 func TestSend_HandlesLargeJSONLines(t *testing.T) {

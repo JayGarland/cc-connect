@@ -64,13 +64,18 @@ var codexRuntimeConfigTimeout = 1500 * time.Millisecond
 var codexContextUsageRetryDelay = 50 * time.Millisecond
 var codexContextUsageRetryCount = 4
 
-func buildCodexPromptPreamble(systemPrompt string, appendPrompt string) string {
+func buildCodexPromptPreamble(systemPrompt string, appendPrompt string, rehydrationDigest ...string) string {
 	var sections []string
 	if systemPrompt = strings.TrimSpace(systemPrompt); systemPrompt != "" {
 		sections = append(sections, "Project system prompt:\n"+systemPrompt)
 	}
 	if appendPrompt = strings.TrimSpace(appendPrompt); appendPrompt != "" {
 		sections = append(sections, "Additional project instructions:\n"+appendPrompt)
+	}
+	if len(rehydrationDigest) > 0 {
+		if digest := strings.TrimSpace(rehydrationDigest[0]); digest != "" {
+			sections = append(sections, "Session rehydration digest:\n"+digest)
+		}
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -87,7 +92,7 @@ func prependCodexPromptPreamble(prompt string, preamble string) string {
 	return "Before answering, follow these project-level instructions for this cc-connect session. They are not user content.\n\n" + preamble + "\n\n---\n\nUser message:\n" + prompt
 }
 
-func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string) (*codexSession, error) {
+func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string, rehydrationDigest ...string) (*codexSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &codexSession{
@@ -100,7 +105,7 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 		cmd:            cliBin,
 		cliExtraArgs:   cliExtraArgs,
 		extraEnv:       extraEnv,
-		promptPreamble: buildCodexPromptPreamble(systemPrompt, appendPrompt),
+		promptPreamble: buildCodexPromptPreamble(systemPrompt, appendPrompt, rehydrationDigest...),
 		events:         make(chan core.Event, 64),
 		ctx:            sessionCtx,
 		cancel:         cancel,
@@ -133,9 +138,7 @@ func (cs *codexSession) Send(prompt string, images []core.ImageAttachment, files
 	}
 
 	isResume := cs.CurrentSessionID() != ""
-	if !isResume {
-		prompt = prependCodexPromptPreamble(prompt, cs.promptPreamble)
-	}
+	prompt = prependCodexPromptPreamble(prompt, cs.promptPreamble)
 	args := cs.buildExecArgs(prompt, imagePaths)
 	if len(cs.cliExtraArgs) > 0 {
 		args = append(append([]string{}, cs.cliExtraArgs...), args...)

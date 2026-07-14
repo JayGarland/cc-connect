@@ -191,7 +191,7 @@ const (
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
 )
 
-func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string) (*appServerSession, error) {
+func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string, rehydrationDigest string) (*appServerSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
 		url:              url,
@@ -203,13 +203,13 @@ func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode,
 		modelProvider:    modelProvider,
 		extraEnv:         append([]string(nil), extraEnv...),
 		codexHome:        strings.TrimSpace(codexHome),
-		promptPreamble:   buildCodexPromptPreamble(systemPrompt, appendPrompt),
+		promptPreamble:   buildCodexPromptPreamble(systemPrompt, appendPrompt, rehydrationDigest),
 		events:           make(chan core.Event, 128),
 		ctx:              sessionCtx,
 		cancel:           cancel,
 		pending:          make(map[int64]chan rpcResponseEnvelope),
 		pendingApprovals: make(map[string]chan core.PermissionResult),
-		preambleSent:     resumeID != "" && resumeID != core.ContinueSession,
+		preambleSent:     false,
 	}
 	s.alive.Store(true)
 

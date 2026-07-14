@@ -151,7 +151,7 @@ func TestSyncArchiveFirstAGENTSMD_ConsumesRehydrationDigest(t *testing.T) {
 	if !strings.Contains(content, "ARCHIVE FIRST") {
 		t.Fatal("expected AGENTS.md to contain archive-first preamble")
 	}
-	if !strings.Contains(content, digest) {
-		t.Fatal("expected AGENTS.md to contain rehydration digest")
+	if strings.Contains(content, digest) {
+		t.Fatal("expected AGENTS.md to exclude session-scoped rehydration digest")
 	}
 }

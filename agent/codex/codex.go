@@ -498,17 +498,18 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		}
 	}
 
+	rehydrationDigest := extractRehydrationDigest(extraEnv)
 	syncArchiveFirstAGENTSMD(workDir, extraEnv)
 	extraEnv = core.RemoveEnvKeys(extraEnv, "CC_REHYDRATION_DIGEST")
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		return newAppServerSession(ctx, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, rehydrationDigest)
 	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
 	}
 
-	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
+	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt, rehydrationDigest)
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -695,7 +696,7 @@ func syncArchiveFirstAGENTSMD(workDir string, extraEnv []string) {
 	if workDir == "" {
 		return
 	}
-	var personasDir, personaClass, rehydrationDigest string
+	var personasDir, personaClass string
 	for _, kv := range extraEnv {
 		if idx := strings.Index(kv, "="); idx >= 0 {
 			switch kv[:idx] {
@@ -710,11 +711,7 @@ func syncArchiveFirstAGENTSMD(workDir string, extraEnv []string) {
 		return
 	}
 	preamble := core.ComposePersona(personasDir, core.PersonaClass(personaClass), "")
-	rehydrationDigest = extractRehydrationDigest(extraEnv)
 	content := preamble
-	if rehydrationDigest != "" {
-		content += "\n\n---\n\n" + rehydrationDigest
-	}
 	agentsPath := filepath.Join(workDir, "AGENTS.md")
 	if err := core.SyncManagedBlock(agentsPath, core.ArchiveFirstMarkerStart, core.ArchiveFirstMarkerEnd, content); err != nil {
 		slog.Warn("codex: failed to sync archive-first AGENTS.md block", "path", agentsPath, "error", err)
