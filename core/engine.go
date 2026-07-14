@@ -4757,7 +4757,7 @@ func (e *Engine) cleanupInteractiveState(sessionKey string, expected ...*interac
 		// so there is no reader left to service them.
 		denyPendingPermissions(state, agentSession)
 
-		e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
+		e.notifyDroppedQueuedMessages(state, fmt.Errorf("execution stopped"))
 	}
 
 	// Close the agent session BEFORE deleting from the map.
@@ -4869,7 +4869,7 @@ func (e *Engine) cleanupInteractiveStateForIdleToken(sessionKey string, expected
 	state.markStopped()
 
 	denyPendingPermissions(state, agentSession)
-	e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
+	e.notifyDroppedQueuedMessages(state, fmt.Errorf("session idle timeout"))
 
 	e.closeAgentSessionWithTimeout(sessionKey, agentSession)
 
@@ -10807,7 +10807,7 @@ normalCleanup:
 	e.interactiveMu.Unlock()
 
 	if notifyQueued {
-		e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
+		e.notifyDroppedQueuedMessages(state, fmt.Errorf("execution stopped"))
 	} else {
 		state.mu.Lock()
 		state.pendingMessages = nil
