@@ -297,6 +297,138 @@ Type: QUERY
 	}
 }
 
+func TestIsPrivateTelegramSessionKey(t *testing.T) {
+	tests := []struct {
+		sessionKey string
+		want       bool
+	}{
+		{"telegram:-1003917051393:7664413698", false},                  // group (negative chat ID)
+		{"telegram:-1003917051393:7664413698:0", false},                 // group with thread
+		{"telegram:7664413698:7664413698", true},                        // DM (positive chat ID == user ID)
+		{"telegram:7664413698", true},                                   // bare DM chat ID
+		{"feishu:some-chat", false},                                     // non-telegram platform
+		{"telegram:not-a-number:1", false},                              // malformed
+	}
+	for _, tt := range tests {
+		if got := isPrivateTelegramSessionKey(tt.sessionKey); got != tt.want {
+			t.Errorf("isPrivateTelegramSessionKey(%q) = %v, want %v", tt.sessionKey, got, tt.want)
+		}
+	}
+}
+
+func TestResolveDashboardSessionKey(t *testing.T) {
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+
+	// DynamicDashboard disabled (default): always static, even from a DM source.
+	e.configureDispatch(DispatchConfig{
+		Enabled:             true,
+		DashboardSessionKey: "telegram:-1003917051393:7664413698",
+	})
+	if got := e.resolveDashboardSessionKey("telegram:7664413698:7664413698"); got != "telegram:-1003917051393:7664413698" {
+		t.Errorf("static mode: got %q, want General group", got)
+	}
+
+	// DynamicDashboard enabled + DM source: routes to the DM.
+	e.dispatchConfig.DynamicDashboard = true
+	dmKey := "telegram:7664413698:7664413698"
+	if got := e.resolveDashboardSessionKey(dmKey); got != dmKey {
+		t.Errorf("dynamic mode from DM: got %q, want %q", got, dmKey)
+	}
+
+	// DynamicDashboard enabled + group source: still static (default fleet
+	// behavior for General dispatch must not change, L-0429).
+	groupKey := "telegram:-1003917051393:7664413698:0"
+	if got := e.resolveDashboardSessionKey(groupKey); got != "telegram:-1003917051393:7664413698" {
+		t.Errorf("dynamic mode from group: got %q, want static General group", got)
+	}
+}
+
+func TestExecuteDispatch_DynamicDashboardRoutesToPrivateChatViaVirtualTopic(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "cc-connect-notification-boundary")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0429.query.md")
+	query := `---
+ID: L-0429
+Thread: cc-connect-notification-boundary
+Type: QUERY
+---
+
+## Query
+`
+	if err := os.WriteFile(queryPath, []byte(query), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	createTopicCalls := 0
+	p := &mockTaskTopicPlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		createTaskTopicFunc: func(ctx context.Context, dashboardSessionKey, title, content string) (*TaskTopic, error) {
+			createTopicCalls++
+			return nil, fmt.Errorf("forum topics are not supported in private chats")
+		},
+		reconstructFunc: func(sessionKey string) (any, error) {
+			return "reconstructed-ctx:" + sessionKey, nil
+		},
+	}
+
+	targetEngine := NewEngine("dev-pro", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	targetEngine.SetWorkspacePattern(filepath.Join(root, "worktrees", "task-{{THREAD_ID}}"))
+
+	sourceEngine := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sourceEngine.dataDir = root
+	sourceEngine.relayManager = NewRelayManager(root)
+	sourceEngine.relayManager.RegisterEngine("dev-pro", targetEngine)
+	sourceEngine.relayManager.RegisterEngine("secretary-seat", sourceEngine)
+
+	sourceEngine.configureDispatch(DispatchConfig{
+		Enabled:             true,
+		SourceProject:       "secretary-seat",
+		DashboardSessionKey: "telegram:-1003917051393:7664413698", // General group (unused: DM wins)
+		DynamicDashboard:    true,
+		PollInterval:        1 * time.Second,
+	})
+
+	dmSessionKey := "telegram:7664413698:7664413698"
+	req := dispatchRequest{
+		To:     "dev-pro",
+		Letter: "L-0429",
+		Thread: "cc-connect-notification-boundary",
+		Path:   queryPath,
+	}
+
+	receipt, err := sourceEngine.executeDispatch(p, dmSessionKey, req)
+	if err != nil {
+		t.Fatalf("executeDispatch failed: %v", err)
+	}
+	if receipt != "✅ Dispatched L-0429 to dev-pro" {
+		t.Errorf("unexpected receipt: %q", receipt)
+	}
+	// The DM has no forum support at all, so CreateTaskTopic must never be
+	// attempted — the private-chat shortcut skips straight to the virtual
+	// topic path (L-0429).
+	if createTopicCalls != 0 {
+		t.Fatalf("expected CreateTaskTopic to be skipped for a private chat, got %d calls", createTopicCalls)
+	}
+
+	open, err := sourceEngine.dispatchStore.listOpen()
+	if err != nil {
+		t.Fatalf("listOpen failed: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open expectation, got %d", len(open))
+	}
+	exp := open[0]
+	if exp.DashboardSessionKey != dmSessionKey {
+		t.Errorf("expected DashboardSessionKey routed to DM %q, got %q", dmSessionKey, exp.DashboardSessionKey)
+	}
+	if exp.TopicSessionKey != "telegram:7664413698:0429:7664413698" {
+		t.Errorf("unexpected virtual topic session key: %q", exp.TopicSessionKey)
+	}
+}
+
 type topicIsolationTestAgent struct {
 	stubAgent
 }

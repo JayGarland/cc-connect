@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,14 @@ type DispatchConfig struct {
 	Enabled             bool
 	SourceProject       string
 	DashboardSessionKey string
-	PollInterval        time.Duration
+	// DynamicDashboard, when true, routes the [DISPATCH] receipt and later
+	// [RESULT_READY] notification to the session that emitted [DISPATCH]
+	// instead of the static DashboardSessionKey, but only when that session
+	// is a private (DM) Telegram chat. Group/Topic sessions always use the
+	// static DashboardSessionKey regardless of this flag, so default fleet
+	// behavior (General group dispatch) is unaffected (L-0429).
+	DynamicDashboard bool
+	PollInterval     time.Duration
 }
 
 type dispatchRequest struct {
@@ -336,6 +344,69 @@ func archiveRootFromLetterPath(path string) string {
 	return ""
 }
 
+// isPrivateTelegramSessionKey reports whether a Telegram session key
+// addresses a private one-to-one (DM) chat rather than a group or
+// supergroup. Telegram assigns negative chat IDs to groups/supergroups and
+// positive IDs to private chats with users, so the sign of the chat ID
+// disambiguates without any platform-specific lookup (L-0429).
+func isPrivateTelegramSessionKey(sessionKey string) bool {
+	parts := strings.Split(sessionKey, ":")
+	if len(parts) < 2 || parts[0] != "telegram" {
+		return false
+	}
+	chatID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	return chatID > 0
+}
+
+// resolveDashboardSessionKey picks the session that receives the [DISPATCH]
+// receipt and the later [RESULT_READY] notification. By default this is the
+// statically configured DashboardSessionKey (typically the General group).
+// When DynamicDashboard is enabled and the emitting session is a private
+// Telegram chat, dispatch instead routes to that same DM so a Secretary
+// conversing one-on-one with Boss keeps the whole exchange in that DM
+// instead of leaking into the group (L-0429).
+func (e *Engine) resolveDashboardSessionKey(sourceSessionKey string) string {
+	static := strings.TrimSpace(e.dispatchConfig.DashboardSessionKey)
+	if e.dispatchConfig.DynamicDashboard && isPrivateTelegramSessionKey(sourceSessionKey) {
+		return sourceSessionKey
+	}
+	return static
+}
+
+// virtualTopicSessionKey builds a synthetic per-letter session inside
+// dashboardSessionKey when the platform cannot create a real topic there —
+// either because Telegram private chats have no forum-topic support at all,
+// or because CreateTaskTopic failed for some other reason (e.g. missing
+// rights in a group). Concurrent letters stay isolated in the engine's
+// internal session state even though, for a DM, they render as plain
+// messages with no visual thread separation.
+func virtualTopicSessionKey(dashboardSessionKey, letter string) (sessionKey, channelKey, topicName string, err error) {
+	parts := strings.Split(dashboardSessionKey, ":")
+	if len(parts) < 2 || parts[0] != "telegram" {
+		return "", "", "", fmt.Errorf("dashboard session key is invalid: %q", dashboardSessionKey)
+	}
+	rawChatID := parts[1]
+	userID := parts[len(parts)-1]
+
+	var letterNum string
+	for _, r := range letter {
+		if r >= '0' && r <= '9' {
+			letterNum += string(r)
+		}
+	}
+	if letterNum == "" {
+		letterNum = "9999"
+	}
+
+	sessionKey = fmt.Sprintf("telegram:%s:%s:%s", rawChatID, letterNum, userID)
+	channelKey = rawChatID + ":" + letterNum
+	topicName = "letter-" + letterNum
+	return sessionKey, channelKey, topicName, nil
+}
+
 func dispatchResultReady(exp DispatchExpectation) bool {
 	// Under C' protocol, result.md file creation or update is the primary delivery channel
 	// and does not require the INDEX RESULT row.
@@ -410,7 +481,7 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	if err != nil {
 		return "", err
 	}
-	dashboardSessionKey := strings.TrimSpace(e.dispatchConfig.DashboardSessionKey)
+	dashboardSessionKey := e.resolveDashboardSessionKey(sourceSessionKey)
 	if dashboardSessionKey == "" {
 		return "", fmt.Errorf("dispatch dashboard session key is not configured")
 	}
@@ -426,36 +497,14 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	var channelKey string
 
 	if target.UsesWorkspacePattern() || target.UsesDispatchTopicIsolation() {
-		creator, ok := p.(TaskTopicCreator)
-		if !ok {
-			return "", fmt.Errorf("platform %s cannot create task topics", p.Name())
-		}
-		topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, "letter-"+req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
-		if err != nil {
-			slog.Warn("failed to create task topic, falling back to virtual topic on General channel", "project", e.name, "letter", req.Letter, "error", err)
-
-			// Fallback: Use virtual topic on General channel
-			parts := strings.Split(dashboardSessionKey, ":")
-			if len(parts) < 2 || parts[0] != "telegram" {
-				return "", fmt.Errorf("create task topic failed: %w (and dashboard session key is invalid)", err)
+		if isPrivateTelegramSessionKey(dashboardSessionKey) {
+			// Telegram private chats have no forum-topic support at all, so
+			// skip the doomed CreateForumTopic round-trip and go straight to
+			// the virtual-topic session-isolation path (L-0429).
+			sessionKey, channelKey, topicName, err = virtualTopicSessionKey(dashboardSessionKey, req.Letter)
+			if err != nil {
+				return "", err
 			}
-			rawChatID := parts[1]
-			userID := parts[len(parts)-1]
-
-			var letterNum string
-			for _, r := range req.Letter {
-				if r >= '0' && r <= '9' {
-					letterNum += string(r)
-				}
-			}
-			if letterNum == "" {
-				letterNum = "9999"
-			}
-
-			// Virtual sessionKey
-			sessionKey = fmt.Sprintf("telegram:%s:%s:%s", rawChatID, letterNum, userID)
-			channelKey = rawChatID + ":" + letterNum
-
 			if rc, ok := p.(ReplyContextReconstructor); ok {
 				if reconstructed, rErr := rc.ReconstructReplyCtx(dashboardSessionKey); rErr == nil {
 					replyCtx = reconstructed
@@ -464,16 +513,38 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 			if replyCtx == nil {
 				replyCtx = dashboardSessionKey
 			}
-			topicName = "letter-" + letterNum
 		} else {
-			if topic == nil || strings.TrimSpace(topic.SessionKey) == "" {
-				return "", fmt.Errorf("create task topic returned no session key")
+			creator, ok := p.(TaskTopicCreator)
+			if !ok {
+				return "", fmt.Errorf("platform %s cannot create task topics", p.Name())
 			}
-			sessionKey = topic.SessionKey
-			replyCtx = topic.ReplyCtx
-			topicID = topic.ThreadID
-			topicName = topic.Name
-			channelKey = chatID + ":" + topicID
+			topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, "letter-"+req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
+			if err != nil {
+				slog.Warn("failed to create task topic, falling back to virtual topic", "project", e.name, "letter", req.Letter, "error", err)
+
+				sessionKey, channelKey, topicName, err = virtualTopicSessionKey(dashboardSessionKey, req.Letter)
+				if err != nil {
+					return "", fmt.Errorf("create task topic failed: %w (and dashboard session key is invalid)", err)
+				}
+
+				if rc, ok := p.(ReplyContextReconstructor); ok {
+					if reconstructed, rErr := rc.ReconstructReplyCtx(dashboardSessionKey); rErr == nil {
+						replyCtx = reconstructed
+					}
+				}
+				if replyCtx == nil {
+					replyCtx = dashboardSessionKey
+				}
+			} else {
+				if topic == nil || strings.TrimSpace(topic.SessionKey) == "" {
+					return "", fmt.Errorf("create task topic returned no session key")
+				}
+				sessionKey = topic.SessionKey
+				replyCtx = topic.ReplyCtx
+				topicID = topic.ThreadID
+				topicName = topic.Name
+				channelKey = chatID + ":" + topicID
+			}
 		}
 	} else {
 		channelKey = chatID
