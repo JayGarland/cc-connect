@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,13 +14,22 @@ import (
 	"time"
 )
 
-// NotifyConfig wires the INDEX watcher: any RESULT row appended to the
-// archive INDEX by any seat (dispatched or not) is pushed to the Secretary
-// session and/or the local desktop. Under the C' protocol, this INDEX-based
-// notification serves as a secondary/compatible fallback channel (e.g. for non-dispatched
-// manual letters). The primary delivery channel for dispatched letters is the
-// result.md file watcher (L-0382). The INDEX row itself is the push event —
-// no seat has to learn to send notifications (L-0311).
+// NotifyConfig wires the result.md watcher: any threads/**/*.result.md
+// created or modified by any seat (dispatched or not) is pushed to the
+// Secretary session and/or the local desktop. Under the C' protocol, INDEX
+// write authority belongs solely to the Secretary, who appends the RESULT
+// row only after already having seen and validated the result — so watching
+// INDEX.md can never notify the Secretary about its own inbox (it would be
+// the Secretary waiting on itself). Watching result.md files directly
+// removes that dependency (L-0429). Dispatched letters still get their
+// [RESULT_READY] from the dispatch watcher's own result.md polling
+// (L-0382); this watcher additionally covers non-dispatched manual letters
+// and is the sole channel for them.
+//
+// IndexPath anchors the archive root: threads/ is resolved as its sibling
+// directory. The field name is kept for config-compatibility with existing
+// notify_index_path deployments even though INDEX.md's contents are no
+// longer parsed.
 type NotifyConfig struct {
 	Enabled         bool
 	IndexPath       string
@@ -30,10 +40,25 @@ type NotifyConfig struct {
 	ToastEnabled    bool
 }
 
+// threadsDir returns the threads/ directory that sits alongside INDEX.md at
+// the archive root.
+func (c NotifyConfig) threadsDir() string {
+	return filepath.Join(filepath.Dir(c.IndexPath), "threads")
+}
+
 type indexResultRow struct {
 	Letter  string
 	Thread  string
 	Summary string
+}
+
+// resultFileInfo describes one threads/**/*.result.md file discovered by
+// scanResultFiles.
+type resultFileInfo struct {
+	Letter  string
+	Thread  string
+	Path    string
+	ModTime time.Time
 }
 
 type notifyLedger struct {
@@ -92,50 +117,95 @@ func (s *notifyStore) save(ledger notifyLedger) error {
 	return AtomicWriteFile(s.path, data, 0o644)
 }
 
-// parseIndexResultRows extracts RESULT rows from INDEX.md content.
-// Row shape: | L-XXXX | RESULT | thread | parent | summary | date |
-func parseIndexResultRows(data string) []indexResultRow {
-	var out []indexResultRow
-	for _, raw := range strings.Split(data, "\n") {
-		fields := strings.Split(raw, "|")
-		if len(fields) < 7 {
-			continue
+// scanResultFiles walks threadsDir for threads/<thread>/<letter>.result.md
+// files. This is the authoritative signal that a letter has been answered —
+// unlike INDEX.md's RESULT row, it exists the moment an Engineer writes the
+// file, before any Secretary review (L-0429).
+func scanResultFiles(threadsDir string) ([]resultFileInfo, error) {
+	if _, err := os.Stat(threadsDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		if strings.TrimSpace(fields[2]) != "RESULT" {
-			continue
-		}
-		letter := strings.TrimSpace(fields[1])
-		if !strings.HasPrefix(letter, "L-") {
-			continue
-		}
-		out = append(out, indexResultRow{
-			Letter:  letter,
-			Thread:  strings.TrimSpace(fields[3]),
-			Summary: strings.TrimSpace(fields[5]),
-		})
+		return nil, err
 	}
-	return out
+	var out []resultFileInfo
+	err := filepath.WalkDir(threadsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".result.md") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		out = append(out, resultFileInfo{
+			Letter:  strings.TrimSuffix(d.Name(), ".result.md"),
+			Thread:  filepath.Base(filepath.Dir(path)),
+			Path:    path,
+			ModTime: info.ModTime(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-// scanNewResults returns rows not yet notified, skipping letters covered by
-// the dispatch ledger (those get [RESULT_READY] from the dispatch watcher).
-// Under the C' protocol, this prevents duplicate notifications for dispatched
-// letters since they are already notified when result.md is created/updated.
-// Skipped-but-covered rows are still recorded so the ledger stays tidy.
-func scanNewResults(rows []indexResultRow, ledger *notifyLedger, dispatchCovered map[string]bool) []indexResultRow {
-	var fresh []indexResultRow
-	now := time.Now().Format(time.RFC3339)
-	for _, row := range rows {
-		if _, seen := ledger.Notified[row.Letter]; seen {
+// scanNewResultFiles returns files that are new or modified since last
+// notified, skipping letters covered by the dispatch ledger (those get
+// [RESULT_READY] from the dispatch watcher's own result.md polling).
+// Skipped-but-covered files are still recorded so the ledger stays tidy and
+// never re-fires for them later.
+func scanNewResultFiles(files []resultFileInfo, ledger *notifyLedger, dispatchCovered map[string]bool) []resultFileInfo {
+	var fresh []resultFileInfo
+	for _, f := range files {
+		if last, seen := ledger.Notified[f.Letter]; seen {
+			if lastT, err := time.Parse(time.RFC3339Nano, last); err == nil && !f.ModTime.After(lastT) {
+				continue
+			}
+		}
+		ledger.Notified[f.Letter] = f.ModTime.Format(time.RFC3339Nano)
+		if dispatchCovered[f.Letter] {
 			continue
 		}
-		ledger.Notified[row.Letter] = now
-		if dispatchCovered[row.Letter] {
-			continue
-		}
-		fresh = append(fresh, row)
+		fresh = append(fresh, f)
 	}
 	return fresh
+}
+
+// extractResultSummary pulls a one-line preview from a RESULT letter for the
+// [LETTER_ARRIVED] notification body. DONE letters carry it under
+// "## Conclusion"; STUCK/BLOCKED letters have no Conclusion section, so
+// "## Blocker" is tried next.
+func extractResultSummary(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, heading := range []string{"## Conclusion", "## Blocker"} {
+		if s := firstNonEmptyAfter(lines, heading); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyAfter(lines []string, heading string) string {
+	for i, line := range lines {
+		if strings.TrimSpace(line) != heading {
+			continue
+		}
+		for _, next := range lines[i+1:] {
+			if t := strings.TrimSpace(next); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
 }
 
 // letters returns the set of letter IDs present in the dispatch ledger,
@@ -199,9 +269,10 @@ func (e *Engine) runNotifyWatcher() {
 }
 
 func (e *Engine) checkNewResults() {
-	data, err := os.ReadFile(e.notifyConfig.IndexPath)
+	threadsDir := e.notifyConfig.threadsDir()
+	files, err := scanResultFiles(threadsDir)
 	if err != nil {
-		slog.Warn("notify: failed to read INDEX", "path", e.notifyConfig.IndexPath, "error", err)
+		slog.Warn("notify: failed to scan result files", "path", threadsDir, "error", err)
 		return
 	}
 	ledger, err := e.notifyStore.load()
@@ -209,24 +280,22 @@ func (e *Engine) checkNewResults() {
 		slog.Warn("notify: failed to load ledger", "error", err)
 		return
 	}
-	rows := parseIndexResultRows(string(data))
 
-	// First run: seed every existing row without notifying, or the whole
+	// First run: seed every existing file without notifying, or the whole
 	// archive history would fire at once.
 	if !ledger.Seeded {
-		now := time.Now().Format(time.RFC3339)
-		for _, row := range rows {
-			ledger.Notified[row.Letter] = now
+		for _, f := range files {
+			ledger.Notified[f.Letter] = f.ModTime.Format(time.RFC3339Nano)
 		}
 		ledger.Seeded = true
 		if err := e.notifyStore.save(ledger); err != nil {
 			slog.Warn("notify: failed to seed ledger", "error", err)
 		}
-		slog.Info("notify: ledger seeded", "rows", len(rows))
+		slog.Info("notify: ledger seeded", "files", len(files))
 		return
 	}
 
-	fresh := scanNewResults(rows, &ledger, e.dispatchStore.letters())
+	fresh := scanNewResultFiles(files, &ledger, e.dispatchStore.letters())
 	if len(fresh) == 0 {
 		return
 	}
@@ -234,8 +303,12 @@ func (e *Engine) checkNewResults() {
 		slog.Warn("notify: failed to save ledger", "error", err)
 		return
 	}
-	for _, row := range fresh {
-		e.notifyLetterArrived(row)
+	for _, f := range fresh {
+		e.notifyLetterArrived(indexResultRow{
+			Letter:  f.Letter,
+			Thread:  f.Thread,
+			Summary: extractResultSummary(f.Path),
+		})
 	}
 }
 

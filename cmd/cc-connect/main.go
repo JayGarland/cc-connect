@@ -553,10 +553,12 @@ func main() {
 					pollSecs = int(v)
 				}
 			}
+			dispatchToPrivate, _ := proj.Agent.Options["dispatch_to_private"].(bool)
 			engine.SetDispatchConfig(core.DispatchConfig{
 				Enabled:             true,
 				SourceProject:       sourceProject,
 				DashboardSessionKey: dispatchSessionKey,
+				DynamicDashboard:    dispatchToPrivate,
 				PollInterval:        time.Duration(pollSecs) * time.Second,
 			})
 		}
