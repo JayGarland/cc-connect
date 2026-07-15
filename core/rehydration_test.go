@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,13 +118,28 @@ Date: 07-05
 // ── DeriveArchiveDir ─────────────────────────────────────────────
 
 func TestDeriveArchiveDir(t *testing.T) {
+	if got := DeriveArchiveDir(""); got != "" {
+		t.Errorf("DeriveArchiveDir(\"\") = %q, want \"\"", got)
+	}
+
+	// Host-native separators — filepath.Dir/Join are OS-specific.
+	dataDir := filepath.Join(string(filepath.Separator)+"opt", "nexus", "data")
+	want := filepath.Join(string(filepath.Separator)+"opt", "nexus", "docs", "archive")
+	if got := DeriveArchiveDir(dataDir); got != want {
+		t.Errorf("DeriveArchiveDir(%q) = %q, want %q", dataDir, got, want)
+	}
+
+	// Windows drive paths only round-trip on Windows; on Linux/macOS
+	// backslash is not a separator so filepath.Dir("F:\\nexus\\data") → ".".
+	if runtime.GOOS != "windows" {
+		return
+	}
 	tests := []struct {
 		dataDir string
 		want    string
 	}{
 		{`F:\nexus\data`, `F:\nexus\docs\archive`},
 		{`C:\Users\test\nexus\data`, `C:\Users\test\nexus\docs\archive`},
-		{"", ""},
 	}
 	for _, tc := range tests {
 		got := DeriveArchiveDir(tc.dataDir)

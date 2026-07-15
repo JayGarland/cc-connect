@@ -408,8 +408,9 @@ func (p *stubCompactProgressPlatform) getPreviewEdits() []string {
 	return out
 }
 
-// finalAssistantTextDelivered reports whether want appears as a final assistant
-// reply via either p.Send or stream-preview start/edit (post-L-0154 path).
+// finalAssistantTextDelivered reports whether want appears anywhere in Send
+// traffic or stream-preview start/edit traffic. It is a presence check only
+// (no ordering / "this was the terminal reply" guarantee).
 func finalAssistantTextDelivered(sent, starts, edits []string, want string) bool {
 	for _, s := range sent {
 		if s == want {
