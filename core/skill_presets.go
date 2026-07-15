@@ -11,12 +11,18 @@ import (
 )
 
 const (
-	defaultSkillPresetsURL         = "https://raw.githubusercontent.com/chenhg5/cc-connect/main/skill-presets.json"
-	fallbackSkillPresetsURL        = "https://gitee.com/chenhg5/cc-connect/raw/main/skill-presets.json"
+	// Empty by design: this build is independent of chenhg5/cc-connect and must never
+	// fetch skill presets from it. Skills are discovered via skill_dirs in config.toml.
+	// Remote fetch stays off unless an operator injects a URL via SetSkillPresetsURL.
+	defaultSkillPresetsURL         = ""
+	fallbackSkillPresetsURL        = ""
 	skillPresetsCacheTTL           = 6 * time.Hour
 	skillPresetsHTTPTimeout        = 15 * time.Second
 	skillPresetsFallbackHTTPTimeout = 10 * time.Second
 )
+
+// ErrSkillPresetsDisabled is returned when no skill presets URL is configured.
+var ErrSkillPresetsDisabled = fmt.Errorf("remote skill presets are disabled in this build; use skill_dirs in config.toml")
 
 // SkillPreset describes a recommended skill available from the remote presets list.
 type SkillPreset struct {
@@ -96,9 +102,12 @@ func (c *skillPresetsCache) fetch() (*SkillPresetsResponse, error) {
 	if primaryURL == "" {
 		primaryURL = defaultSkillPresetsURL
 	}
+	if primaryURL == "" {
+		return nil, ErrSkillPresetsDisabled
+	}
 
 	result, err := fetchSkillPresetsFromURL(primaryURL, skillPresetsHTTPTimeout)
-	if err != nil {
+	if err != nil && fallbackSkillPresetsURL != "" {
 		slog.Warn("primary skill presets fetch failed, trying fallback", "url", primaryURL, "error", err)
 		result, err = fetchSkillPresetsFromURL(fallbackSkillPresetsURL, skillPresetsFallbackHTTPTimeout)
 	}
