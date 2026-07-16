@@ -54,6 +54,76 @@ type indexResultRow struct {
 	Path       string
 	Status     string
 	Generation string
+	OpenPoints []string
+	Update     receiptUpdate
+}
+
+type receiptSection struct {
+	Heading string `json:"heading"`
+	Body    string `json:"body"`
+}
+
+type receiptUpdate struct {
+	Sections []receiptSection `json:"sections,omitempty"`
+}
+
+func resultSections(body string) []receiptSection {
+	var sections []receiptSection
+	var heading string
+	var lines []string
+	flush := func() {
+		if heading == "" {
+			return
+		}
+		sections = append(sections, receiptSection{Heading: heading, Body: strings.TrimSpace(strings.Join(lines, "\n"))})
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			flush()
+			heading = strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			lines = nil
+			continue
+		}
+		if heading != "" {
+			lines = append(lines, line)
+		}
+	}
+	flush()
+	return sections
+}
+
+func extractOpenPoints(body string) []string {
+	var points []string
+	for _, section := range resultSections(body) {
+		if section.Heading != "Open Points" && section.Heading != "Open Questions" {
+			continue
+		}
+		for _, line := range strings.Split(section.Body, "\n") {
+			line = strings.TrimSpace(line)
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "-"), "*"))
+			if line != "" {
+				points = append(points, line)
+			}
+		}
+	}
+	return points
+}
+
+func diffResultSections(previous, current string) receiptUpdate {
+	if strings.TrimSpace(previous) == "" {
+		return receiptUpdate{}
+	}
+	previousBodies := make(map[string]string)
+	for _, section := range resultSections(previous) {
+		previousBodies[section.Heading] = section.Body
+	}
+	var changed []receiptSection
+	for _, section := range resultSections(current) {
+		if previousBody, ok := previousBodies[section.Heading]; !ok || previousBody != section.Body {
+			changed = append(changed, section)
+		}
+	}
+	return receiptUpdate{Sections: changed}
 }
 
 // resultFileInfo describes one threads/**/*.result.md file discovered by
@@ -82,6 +152,8 @@ type receiptRecord struct {
 	AcknowledgedAt string          `json:"acknowledged_at,omitempty"`
 	AcknowledgedBy string          `json:"acknowledged_by,omitempty"`
 	ForwardedAt    string          `json:"forwarded_at,omitempty"`
+	OpenPoints     []string        `json:"open_points,omitempty"`
+	Update         receiptUpdate   `json:"update,omitempty"`
 }
 
 type notifyStore struct {
@@ -94,6 +166,29 @@ func newNotifyStore(dataDir string) *notifyStore {
 		return nil
 	}
 	return &notifyStore{path: filepath.Join(dataDir, "notify_ledger.json")}
+}
+
+func (s *notifyStore) diffBasePath(letter string) string {
+	return filepath.Join(filepath.Dir(s.path), "notify_diff_cache", letter+".md")
+}
+
+func (s *notifyStore) updateDiffBase(letter string, current []byte) (receiptUpdate, error) {
+	if s == nil || strings.TrimSpace(letter) == "" {
+		return receiptUpdate{}, nil
+	}
+	path := s.diffBasePath(letter)
+	previous, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return receiptUpdate{}, err
+	}
+	update := diffResultSections(string(previous), string(current))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return receiptUpdate{}, err
+	}
+	if err := AtomicWriteFile(path, current, 0o644); err != nil {
+		return receiptUpdate{}, err
+	}
+	return update, nil
 }
 
 func (s *notifyStore) load() (notifyLedger, error) {
@@ -164,6 +259,7 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 		record = receiptRecord{
 			Thread: row.Thread, Summary: row.Summary, ResultPath: row.Path,
 			Status: row.Status, Generation: generation, ArrivedAt: generation,
+			OpenPoints: row.OpenPoints, Update: row.Update,
 		}
 	} else if record.Generation == "" || generation > record.Generation {
 		record.Thread = row.Thread
@@ -172,6 +268,8 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 		record.Status = row.Status
 		record.Generation = generation
 		record.ArrivedAt = generation
+		record.OpenPoints = row.OpenPoints
+		record.Update = row.Update
 		if record.AcknowledgedAt != "" {
 			record.AcknowledgedAt = ""
 			record.AcknowledgedBy = ""

@@ -22,6 +22,54 @@ func writeResultFile(t *testing.T, threadsDir, thread, letter, body string) stri
 	return path
 }
 
+func TestExtractOpenPointsUsesExactHeadingsOnly(t *testing.T) {
+	body := "## Conclusion\nready\n\n## Open Points\n- ship it\n- test it\n\n## Notes\ntext: open points are elsewhere\n"
+	if got := extractOpenPoints(body); !reflect.DeepEqual(got, []string{"ship it", "test it"}) {
+		t.Fatalf("open points = %#v", got)
+	}
+	legacy := "## Open Questions\n- legacy item\n"
+	if got := extractOpenPoints(legacy); !reflect.DeepEqual(got, []string{"legacy item"}) {
+		t.Fatalf("legacy open points = %#v", got)
+	}
+}
+
+func TestDiffResultSectionsReturnsCurrentChangedTextOnly(t *testing.T) {
+	previous := "## Conclusion\nold\n\n## Open Points\n- keep\n"
+	current := "## Conclusion\nnew\n\n## Open Points\n- keep\n- decide\n"
+	got := diffResultSections(previous, current)
+	want := []receiptSection{{Heading: "Conclusion", Body: "new"}, {Heading: "Open Points", Body: "- keep\n- decide"}}
+	if !reflect.DeepEqual(got.Sections, want) {
+		t.Fatalf("update = %#v, want %#v", got, want)
+	}
+}
+
+func TestNotifyStoreUpdateDiffBaseKeepsOnlyPreviousGeneration(t *testing.T) {
+	store := newNotifyStore(filepath.Join(t.TempDir(), "data"))
+	if got, err := store.updateDiffBase("L-0430", []byte("## Conclusion\nfirst\n")); err != nil || len(got.Sections) != 0 {
+		t.Fatalf("first base = %#v, %v", got, err)
+	}
+	got, err := store.updateDiffBase("L-0430", []byte("## Conclusion\nsecond\n"))
+	if err != nil || !reflect.DeepEqual(got.Sections, []receiptSection{{Heading: "Conclusion", Body: "second"}}) {
+		t.Fatalf("second base = %#v, %v", got, err)
+	}
+	data, err := os.ReadFile(store.diffBasePath("L-0430"))
+	if err != nil || string(data) != "## Conclusion\nsecond\n" {
+		t.Fatalf("rolling base = %q, %v", data, err)
+	}
+}
+
+func TestNotifyStorePersistsOpenPointsAndUpdateForNewGeneration(t *testing.T) {
+	store := newNotifyStore(filepath.Join(t.TempDir(), "data"))
+	row := indexResultRow{Letter: "L-0430", Thread: "alpha", Generation: "g1", OpenPoints: []string{"decide"}, Update: receiptUpdate{Sections: []receiptSection{{Heading: "Conclusion", Body: "new"}}}}
+	if _, err := store.recordArrivalTransition(row); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.receipt("L-0430")
+	if err != nil || !reflect.DeepEqual(record.OpenPoints, row.OpenPoints) || !reflect.DeepEqual(record.Update, row.Update) {
+		t.Fatalf("receipt = %#v, %v", record, err)
+	}
+}
+
 func TestScanResultFiles(t *testing.T) {
 	root := t.TempDir()
 	threadsDir := filepath.Join(root, "threads")
