@@ -7417,7 +7417,7 @@ func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, 
 	if page >= len(pages) { e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable)); return }
 	updater, ok := p.(InlineMessageUpdater)
 	if !ok { e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable)); return }
-	content := fmt.Sprintf("This update (Page %d/%d)\n%s", page+1, len(pages), pages[page])
+	content := e.i18n.Tf(MsgReceiptUpdatePage, page+1, len(pages), pages[page])
 	var nav []ButtonOption
 	if page > 0 { nav = append(nav, ButtonOption{Text: e.i18n.T(MsgCardPrev), Data: fmt.Sprintf("cmd:/receipt update %s %s %d", letter, receipt.Generation, page-1)}) }
 	if page+1 < len(pages) { nav = append(nav, ButtonOption{Text: e.i18n.T(MsgCardNext), Data: fmt.Sprintf("cmd:/receipt update %s %s %d", letter, receipt.Generation, page+1)}) }

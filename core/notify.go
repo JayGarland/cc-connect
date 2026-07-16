@@ -572,20 +572,21 @@ func receiptUpdatePages(update receiptUpdate) []string {
 }
 
 const receiptCompactUpdateLimit = 1800
+const receiptCompactTextLimit = 3500
 
 // formatReceiptInboxCard renders the Boss-facing inbox card. A non-positive
 // pageCount is the compact envelope; positive pageCount is an original page.
 func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, body string, page, pageCount int) (string, [][]ButtonOption) {
 	content := i18n.Tf(MsgReceiptCardCompact, letter, record.Thread, record.Status, record.Summary, record.ArrivedAt, record.ResultPath)
 	if len(record.Update.Sections) > 0 {
-		content = strings.Replace(content, "📬 "+letter, "📬 "+letter+" · Updated", 1)
+		content = strings.Replace(content, "📬 "+letter, "📬 "+letter+" · "+i18n.T(MsgReceiptUpdated), 1)
 	}
 	if len(record.OpenPoints) > 0 {
-		content += "\n\nOpen points:\n• " + strings.Join(record.OpenPoints, "\n• ")
+		content += "\n\n" + i18n.T(MsgReceiptOpenPoints) + "\n• " + strings.Join(record.OpenPoints, "\n• ")
 	}
 	update := formatReceiptUpdateBody(record.Update)
-	inlineUpdate := update != "" && len([]rune(update)) < receiptCompactUpdateLimit
-	if inlineUpdate { content += "\n\nChanges:\n" + update }
+	inlineUpdate := update != "" && len([]rune(update)) < receiptCompactUpdateLimit && len([]rune(content))+len([]rune(i18n.T(MsgReceiptChanges)))+len([]rune(update))+2 <= receiptCompactTextLimit
+	if inlineUpdate { content += "\n\n" + i18n.T(MsgReceiptChanges) + "\n" + update }
 	generation := record.Generation
 	if generation == "" {
 		generation = record.ArrivedAt
@@ -597,7 +598,7 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 			{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
 		}
 		if update != "" && !inlineUpdate {
-			buttons = append([]ButtonOption{{Text: "View this update", Data: "cmd:/receipt update " + letter + " " + generation + " 0"}}, buttons...)
+			buttons = append([]ButtonOption{{Text: i18n.T(MsgReceiptViewUpdate), Data: "cmd:/receipt update " + letter + " " + generation + " 0"}}, buttons...)
 		}
 		return content, [][]ButtonOption{buttons}
 	}
