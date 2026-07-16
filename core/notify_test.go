@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -188,5 +189,33 @@ func TestPsToastEscape(t *testing.T) {
 	}
 	if got := psToastEscape("no quotes"); got != "no quotes" {
 		t.Errorf("no-op case failed: %q", got)
+	}
+}
+
+func TestNotifyLetterArrivedSendsShortPlatformMessageWithoutAgentTurn(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.configureNotify(NotifyConfig{
+		TelegramEnabled: true,
+		ToastEnabled:    false,
+		Platform:        "telegram",
+		SessionKey:      "telegram:123:123",
+	})
+
+	e.notifyLetterArrived(indexResultRow{
+		Letter:  "L-0430",
+		Thread:  "cc-connect-maintenance",
+		Summary: "notification context is decoupled.",
+	})
+
+	sent := p.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want one direct notification", sent)
+	}
+	if got, want := sent[0], "📬 L-0430 RESULT — cc-connect-maintenance: notification context is decoupled."; got != want {
+		t.Fatalf("notification = %q, want %q", got, want)
+	}
+	if strings.Contains(sent[0], "[LETTER_ARRIVED]") {
+		t.Fatalf("notification must not use agent-injected marker: %q", sent[0])
 	}
 }

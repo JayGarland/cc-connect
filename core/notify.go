@@ -315,12 +315,24 @@ func (e *Engine) checkNewResults() {
 func (e *Engine) notifyLetterArrived(row indexResultRow) {
 	slog.Info("notify: letter arrived", "letter", row.Letter, "thread", row.Thread)
 	if e.notifyConfig.TelegramEnabled && strings.TrimSpace(e.notifyConfig.SessionKey) != "" {
-		content := fmt.Sprintf("[LETTER_ARRIVED]\nLetter: %s\nThread: %s\nSummary: %s", row.Letter, row.Thread, row.Summary)
+		content := fmt.Sprintf("📬 %s RESULT — %s: %s", row.Letter, row.Thread, row.Summary)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := e.InjectSyntheticMessage(ctx, e.notifyConfig.Platform, e.notifyConfig.SessionKey, "cc-connect-notify", "cc-connect notify", content); err != nil {
-			slog.Warn("notify: failed to inject LETTER_ARRIVED", "letter", row.Letter, "error", err)
+		defer cancel()
+		for _, p := range e.platforms {
+			if p.Name() != e.notifyConfig.Platform {
+				continue
+			}
+			replyCtx := any(e.notifyConfig.SessionKey)
+			if rc, ok := p.(ReplyContextReconstructor); ok {
+				if reconstructed, err := rc.ReconstructReplyCtx(e.notifyConfig.SessionKey); err == nil {
+					replyCtx = reconstructed
+				}
+			}
+			if err := p.Send(ctx, replyCtx, content); err != nil {
+				slog.Warn("notify: failed to send LETTER_ARRIVED", "letter", row.Letter, "error", err)
+			}
+			break
 		}
-		cancel()
 	}
 	if e.notifyConfig.ToastEnabled {
 		title := fmt.Sprintf("📬 %s RESULT 到了", row.Letter)
