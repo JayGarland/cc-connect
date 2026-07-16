@@ -152,8 +152,24 @@ func (s *notifyStore) recordArrival(row indexResultRow) error {
 	if err != nil {
 		return err
 	}
-	if _, exists := ledger.Receipts[row.Letter]; !exists {
-		data, err := os.ReadFile(row.Path)
+	record, exists := ledger.Receipts[row.Letter]
+	if !exists {
+		record = receiptRecord{
+			Thread: row.Thread, Summary: compactReceiptSummary(row.Summary), ResultPath: row.Path,
+			Status: row.Status, ArrivedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+	}
+	if record.ResultPath == "" {
+		record.ResultPath = row.Path
+	}
+	if record.Thread == "" {
+		record.Thread = row.Thread
+	}
+	if record.Status == "" {
+		record.Status = row.Status
+	}
+	if !exists || record.SnapshotPath == "" || record.SnapshotSHA256 == "" {
+		data, err := os.ReadFile(record.ResultPath)
 		if err != nil {
 			return fmt.Errorf("read result snapshot: %w", err)
 		}
@@ -164,13 +180,23 @@ func (s *notifyStore) recordArrival(row indexResultRow) error {
 		if err := AtomicWriteFile(snapshotPath, data, 0o644); err != nil {
 			return fmt.Errorf("write result snapshot: %w", err)
 		}
-		ledger.Receipts[row.Letter] = receiptRecord{
-			Thread: row.Thread, Summary: row.Summary, ResultPath: row.Path,
-			SnapshotPath: snapshotPath, SnapshotSHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Status: row.Status,
-			ArrivedAt: time.Now().UTC().Format(time.RFC3339),
-		}
+		record.SnapshotPath = snapshotPath
+		record.SnapshotSHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
 	}
+	if record.Summary == "" || len([]rune(record.Summary)) > 240 {
+		record.Summary = compactReceiptSummary(row.Summary)
+	}
+	ledger.Receipts[row.Letter] = record
 	return s.save(ledger)
+}
+
+func compactReceiptSummary(summary string) string {
+	summary = strings.Join(strings.Fields(summary), " ")
+	runes := []rune(summary)
+	if len(runes) <= 240 {
+		return summary
+	}
+	return string(runes[:237]) + "..."
 }
 
 func (s *notifyStore) acknowledge(letter, user string) (receiptRecord, bool, error) {

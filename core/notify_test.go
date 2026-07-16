@@ -264,6 +264,36 @@ func TestNotifyStoreSnapshotsResultAtArrival(t *testing.T) {
 	}
 }
 
+func TestNotifyStoreBackfillsLegacyReceiptSnapshotAndSummary(t *testing.T) {
+	root := t.TempDir()
+	body := "ID: L-0430\nStatus: DONE\n---\n\nimmutable body\n"
+	resultPath := writeResultFile(t, root, "alpha", "L-0430", body)
+	store := newNotifyStore(filepath.Join(root, "data"))
+	longSummary := strings.Repeat("legacy summary ", 40)
+	if err := store.save(notifyLedger{Receipts: map[string]receiptRecord{
+		"L-0430": {Thread: "alpha", ResultPath: resultPath, Summary: longSummary, Status: "DONE", ArrivedAt: "2026-07-16T16:15:01Z"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.recordArrival(indexResultRow{Letter: "L-0430", Thread: "alpha", Path: resultPath, Summary: longSummary, Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.receipt("L-0430")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SnapshotPath == "" || record.SnapshotSHA256 == "" {
+		t.Fatalf("legacy receipt was not backfilled: %+v", record)
+	}
+	data, err := os.ReadFile(record.SnapshotPath)
+	if err != nil || string(data) != body {
+		t.Fatalf("snapshot = %q, %v", data, err)
+	}
+	if len([]rune(record.Summary)) > 240 {
+		t.Fatalf("summary was not compacted: %d", len([]rune(record.Summary)))
+	}
+}
+
 func TestReceiptEnvelopeGivesAgentDirectResultContext(t *testing.T) {
 	got := formatReceiptEnvelope("L-0430", receiptRecord{
 		Thread:         "cc-connect-maintenance",
