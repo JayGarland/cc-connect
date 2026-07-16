@@ -7381,6 +7381,22 @@ func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string) {
 }
 
 func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string) bool {
+	if _, err := e.notifyStore.receipt(letter); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	deleter, ok := p.(MessageDeleter)
+	if !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
+		return true
+	}
+	return true
+}
+
+func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string) bool {
 	targetSession := e.notifyConfig.ReceiptSessionKey
 	if targetSession == "" {
 		targetSession = e.notifyConfig.SessionKey
@@ -7395,7 +7411,13 @@ func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string) bool {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
-	if _, err := e.notifyStore.receipt(letter); err != nil {
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	snapshot, err := os.ReadFile(receipt.SnapshotPath)
+	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7404,17 +7426,17 @@ func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string) bool {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
-	receipt, changed, err := e.markReceipt(letter, msg.UserName)
+	_, changed, err := e.markReceipt(letter, msg.UserName)
 	if err != nil || !changed {
 		return true
 	}
-	receipt, forward, err := e.notifyStore.markForwarded(letter)
+	_, forward, err := e.notifyStore.markForwarded(letter)
 	if err != nil || !forward {
 		return true
 	}
 	msg.SessionKey = targetSession
 	msg.ReplyCtx = targetReplyCtx
-	msg.Content = formatReceiptEnvelope(letter, receipt)
+	msg.Content = string(snapshot)
 	return false
 }
 
