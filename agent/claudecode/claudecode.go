@@ -444,6 +444,43 @@ func (a *Agent) SetPlatformPrompt(prompt string) {
 	a.platformPrompt = prompt
 }
 
+// PromptFootprint reports harness-aware overhead for context_guard (L-0428 P1-C):
+// AgentSystemPrompt + composed persona + skills + platform/rehydration session bits.
+func (a *Agent) PromptFootprint() core.PromptFootprint {
+	a.mu.RLock()
+	platformPrompt := a.platformPrompt
+	workDir := a.workDir
+	sessionEnv := append([]string(nil), a.sessionEnv...)
+	a.mu.RUnlock()
+
+	absDir, err := filepath.Abs(workDir)
+	if err != nil {
+		absDir = workDir
+	}
+
+	var staticParts []string
+	if sys := strings.TrimSpace(core.AgentSystemPrompt()); sys != "" {
+		staticParts = append(staticParts, sys)
+	}
+	if persona := core.LoadComposedPersonaFromEnv(sessionEnv); persona != "" {
+		staticParts = append(staticParts, persona)
+	}
+	staticTokens := core.EstimatePromptTokens(strings.Join(staticParts, "\n\n"))
+	staticTokens += core.EstimateSkillMarkdownTokens(appendProjectClaudeSkillDirs(absDir, claudeConfigHomeDir()))
+
+	var sessionParts []string
+	if platformPrompt = strings.TrimSpace(platformPrompt); platformPrompt != "" {
+		sessionParts = append(sessionParts, platformPrompt)
+	}
+	if digest := strings.TrimSpace(core.EnvValue(sessionEnv, "CC_REHYDRATION_DIGEST")); digest != "" {
+		sessionParts = append(sessionParts, digest)
+	}
+	return core.PromptFootprint{
+		StaticTokens:  staticTokens,
+		SessionTokens: core.EstimatePromptTokens(strings.Join(sessionParts, "\n\n")),
+	}
+}
+
 // ValidateSessionID reports whether the given session ID exists in this
 // agent's per-project session store (issue #599). It is the agent-side
 // implementation of core.SessionIDValidator: when the engine is about to

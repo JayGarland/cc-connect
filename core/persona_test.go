@@ -112,3 +112,29 @@ func TestSyncManagedBlock_PreservesSurroundingContentAndOverwritesBlock(t *testi
 		t.Errorf("expected surrounding human content preserved, got:\n%s", content)
 	}
 }
+
+func TestLoadComposedPersonaFromEnv(t *testing.T) {
+	personasDir := t.TempDir()
+	preambleDir := filepath.Join(personasDir, "_preamble")
+	if err := os.MkdirAll(preambleDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(preambleDir, "archive-first.write.md"), []byte("PREAMBLE"), 0o644); err != nil {
+		t.Fatalf("write preamble: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personasDir, "dev-pro.md"), []byte("PERSONA"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+
+	got := LoadComposedPersonaFromEnv([]string{
+		"CC_PROJECT=dev-pro",
+		"CC_PERSONAS_DIR=" + personasDir,
+		"CC_PERSONA_CLASS=write",
+	})
+	if !strings.Contains(got, "PREAMBLE") || !strings.Contains(got, "PERSONA") {
+		t.Fatalf("LoadComposedPersonaFromEnv = %q", got)
+	}
+	if EnvValue([]string{"CC_REHYDRATION_DIGEST=abc"}, "CC_REHYDRATION_DIGEST") != "abc" {
+		t.Fatal("EnvValue failed")
+	}
+}

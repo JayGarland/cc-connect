@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -153,6 +155,64 @@ func TestEstimateContextGuardTokensWithOverhead(t *testing.T) {
 	gotWith := EstimateContextGuardTokens(history, "", 5000)
 	if gotWith != 5002 {
 		t.Fatalf("EstimateContextGuardTokens with overhead = %d, want 5002", gotWith)
+	}
+}
+
+func TestEstimatePromptTokensAndSkillMarkdown(t *testing.T) {
+	if got := EstimatePromptTokens(""); got != 0 {
+		t.Fatalf("empty EstimatePromptTokens = %d, want 0", got)
+	}
+	if got := EstimatePromptTokens("abcd"); got != 1 {
+		t.Fatalf("EstimatePromptTokens(abcd) = %d, want 1", got)
+	}
+
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "demo")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("abcdefgh"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	got := EstimateSkillMarkdownTokens([]string{filepath.Join(root, "skills")})
+	if got != 2 {
+		t.Fatalf("EstimateSkillMarkdownTokens = %d, want 2", got)
+	}
+}
+
+type footprintAgent struct {
+	stubAgent
+	fp PromptFootprint
+}
+
+func (a *footprintAgent) PromptFootprint() PromptFootprint { return a.fp }
+
+func TestApplyContextGuardBeforeTurn_UsesPromptFootprint(t *testing.T) {
+	agent := &footprintAgent{fp: PromptFootprint{StaticTokens: 4000, SessionTokens: 1000}}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	e.SetContextGuardConfig(ContextGuardConfig{
+		Enabled:                true,
+		ThresholdTokens:        4500,
+		KeepRecentTurns:        1,
+		SummaryMaxTokens:       100,
+		RotateSessionOnCompact: true,
+	})
+
+	sessions := NewSessionManager("")
+	session := sessions.GetOrCreateActive("telegram:chat:user")
+	session.SetAgentSessionID("backend", agent.Name())
+	session.History = []HistoryEntry{
+		{Role: "user", Content: "old", Timestamp: time.Unix(1, 0)},
+		{Role: "assistant", Content: "reply", Timestamp: time.Unix(2, 0)},
+		{Role: "user", Content: "new", Timestamp: time.Unix(3, 0)},
+	}
+
+	summary := e.applyContextGuardBeforeTurn("telegram:chat:user", agent, session, sessions, "incoming")
+	if !strings.HasPrefix(summary, contextGuardSummaryPrefix) {
+		t.Fatalf("expected footprint overhead to trigger compaction, got %q", summary)
+	}
+	if got := session.GetAgentSessionID(); got != "" {
+		t.Fatalf("expected rotation, got session id %q", got)
 	}
 }
 

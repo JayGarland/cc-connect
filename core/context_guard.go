@@ -97,6 +97,37 @@ func estimateContextGuardQuarterTokens(s string) int {
 	return total
 }
 
+// EstimatePromptTokens converts text to the same token estimate used by
+// context_guard history accounting. Empty input yields 0.
+func EstimatePromptTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	return (estimateContextGuardQuarterTokens(s) + 3) / 4
+}
+
+// EstimateSkillMarkdownTokens sums EstimatePromptTokens over depth-1 SKILL.md
+// files under the given skill directories (Claude/Codex layout).
+func EstimateSkillMarkdownTokens(dirs []string) int {
+	total := 0
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			path := filepath.Join(dir, e.Name(), "SKILL.md")
+			if data, err := os.ReadFile(path); err == nil {
+				total += EstimatePromptTokens(string(data))
+			}
+		}
+	}
+	return total
+}
+
 type contextGuardResult struct {
 	Compacted       bool
 	Summary         string
@@ -300,20 +331,16 @@ func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent,
 
 	staticOverhead := 0
 	if agent != nil {
-		staticOverhead += (estimateContextGuardQuarterTokens(AgentSystemPrompt()) + 3) / 4
-		personaContent := e.loadPersonaContent()
-		if personaContent != "" {
-			staticOverhead += (estimateContextGuardQuarterTokens(personaContent) + 3) / 4
-		}
-		name := strings.ToLower(agent.Name())
-		switch {
-		case strings.Contains(name, "claudecode"):
-			staticOverhead += 6000
-		case strings.Contains(name, "copilot"):
-			staticOverhead += 4000
-		case strings.Contains(name, "codex"):
-			staticOverhead += 3000
-		default:
+		if fp, ok := agent.(PromptFootprintProvider); ok {
+			staticOverhead = fp.PromptFootprint().Total()
+		} else {
+			// Fallback for adapters without harness-aware accounting: count the
+			// shared system prompt + composed persona, plus a small generic
+			// allowance. Name-based flat pads (+3000/+6000) were removed in L-0428.
+			staticOverhead += EstimatePromptTokens(AgentSystemPrompt())
+			if personaContent := e.loadPersonaContent(); personaContent != "" {
+				staticOverhead += EstimatePromptTokens(personaContent)
+			}
 			staticOverhead += 2000
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/JayGarland/cc-connect/core"
@@ -310,6 +311,38 @@ func TestAgent_SetPlatformPrompt(t *testing.T) {
 	a.SetPlatformPrompt("You are a helpful assistant on Feishu.")
 	if a.platformPrompt != "You are a helpful assistant on Feishu." {
 		t.Errorf("platformPrompt = %q, want %q", a.platformPrompt, "You are a helpful assistant on Feishu.")
+	}
+}
+
+func TestAgent_PromptFootprint_CountsSystemPersonaAndSession(t *testing.T) {
+	personasDir := t.TempDir()
+	preambleDir := filepath.Join(personasDir, "_preamble")
+	if err := os.MkdirAll(preambleDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(preambleDir, "archive-first.write.md"), []byte("WRITE PREAMBLE"), 0o644); err != nil {
+		t.Fatalf("write preamble: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personasDir, "dev-pro.md"), []byte("DEV PRO PERSONA"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+
+	a := &Agent{
+		workDir:        t.TempDir(),
+		platformPrompt: "TELEGRAM FORMAT",
+		sessionEnv: []string{
+			"CC_PROJECT=dev-pro",
+			"CC_PERSONAS_DIR=" + personasDir,
+			"CC_PERSONA_CLASS=write",
+			"CC_REHYDRATION_DIGEST=" + strings.Repeat("DIGEST ", 50),
+		},
+	}
+	fp := a.PromptFootprint()
+	if fp.StaticTokens <= 0 {
+		t.Fatalf("StaticTokens = %d, want > 0", fp.StaticTokens)
+	}
+	if fp.SessionTokens <= 0 {
+		t.Fatalf("SessionTokens = %d, want > 0", fp.SessionTokens)
 	}
 }
 
