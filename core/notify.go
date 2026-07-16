@@ -543,6 +543,10 @@ func (e *Engine) notifyLetterArrived(row indexResultRow) {
 	if err := e.notifyStore.recordArrival(row); err != nil {
 		slog.Warn("notify: failed to record receipt", "letter", row.Letter, "error", err)
 	}
+	if receipt, err := e.notifyStore.receipt(row.Letter); err == nil && receipt.AcknowledgedAt != "" {
+		slog.Info("notify: skipping already acknowledged receipt", "letter", row.Letter)
+		return
+	}
 	if e.notifyConfig.TelegramEnabled && strings.TrimSpace(e.notifyConfig.SessionKey) != "" {
 		content := fmt.Sprintf("📬 %s 到货", row.Letter)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

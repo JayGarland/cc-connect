@@ -367,3 +367,28 @@ func TestNotifyLetterArrivedDoesNotAdvertiseReceiptWithoutStore(t *testing.T) {
 		t.Fatalf("plain notification = %#v, want %#v", got, want)
 	}
 }
+
+func TestNotifyLetterArrivedDoesNotResendCardForAcknowledgedReceipt(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0430", "ID: L-0430\nStatus: DONE\n---\n\n## Conclusion\nready\n")
+	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123"}
+	row := indexResultRow{Letter: "L-0430", Thread: "alpha", Path: resultPath, Status: "DONE", Summary: "ready"}
+	if err := e.notifyStore.recordArrival(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := e.notifyStore.acknowledge("L-0430", "jay"); err != nil || !changed {
+		t.Fatalf("acknowledge = (%v, %v), want changed", changed, err)
+	}
+
+	e.notifyLetterArrived(row)
+
+	if len(p.buttonRows) != 0 {
+		t.Fatalf("acknowledged receipt was re-sent as a card: %#v", p.buttonRows)
+	}
+	if got := p.getSent(); len(got) != 0 {
+		t.Fatalf("acknowledged receipt was re-sent as text: %#v", got)
+	}
+}
