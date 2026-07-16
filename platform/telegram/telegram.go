@@ -1149,6 +1149,7 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 	// Command callbacks (cmd:/lang en, cmd:/mode yolo, etc.)
 	if strings.HasPrefix(data, "cmd:") {
 		command := strings.TrimPrefix(data, "cmd:")
+		choiceLabel := receiptChoiceLabel(command)
 
 		origText := msg.Text
 		if origText == "" {
@@ -1157,7 +1158,7 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		if _, err := bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
 			ChatID:      chatID,
 			MessageID:   msgID,
-			Text:        origText + "\n\n> " + command,
+			Text:        origText + "\n\n" + choiceLabel,
 			ReplyMarkup: emptyMarkup,
 		}); err != nil {
 			slog.Debug("telegram: callback edit failed", "error", err)
@@ -1269,6 +1270,15 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 		ReplyCtx:             rctx,
 		IsPermissionResponse: true,
 	})
+}
+
+// receiptChoiceLabel is deliberately language-neutral because callback
+// handling runs below the engine layer and has no per-session i18n context.
+func receiptChoiceLabel(command string) string {
+	if strings.HasPrefix(command, "/receipt ") {
+		return "✅ Received — " + strings.TrimSpace(strings.TrimPrefix(command, "/receipt "))
+	}
+	return "> " + command
 }
 
 // isDirectedAtBot checks whether a group message is directed at this bot:

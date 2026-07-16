@@ -3,6 +3,8 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,10 +67,25 @@ func TestExtractResultSummary(t *testing.T) {
 	if got := extractResultSummary(donePath); got != "first answer." {
 		t.Errorf("DONE summary = %q, want %q", got, "first answer.")
 	}
+	if got := extractResultStatus(donePath); got != "" {
+		t.Errorf("missing status = %q, want empty", got)
+	}
 
 	stuckPath := writeResultFile(t, root, "alpha", "L-0101", "---\nID: L-0101\nStatus: STUCK\n---\n\n## Partial Work\nsome\n\n## Blocker\nbudget exhausted.\n")
 	if got := extractResultSummary(stuckPath); got != "budget exhausted." {
 		t.Errorf("STUCK summary = %q, want %q", got, "budget exhausted.")
+	}
+	if got := extractResultStatus(stuckPath); got != "STUCK" {
+		t.Errorf("STUCK status = %q, want STUCK", got)
+	}
+
+	bodyStatusPath := writeResultFile(t, root, "alpha", "L-0102", "ID: L-0102\nStatus: DONE\n---\n\n## Conclusion\nready\n\nStatus: STUCK\n")
+	if got := extractResultStatus(bodyStatusPath); got != "DONE" {
+		t.Errorf("header status = %q, want DONE", got)
+	}
+	noHeaderStatusPath := writeResultFile(t, root, "alpha", "L-0103", "ID: L-0103\n---\n\n## Conclusion\nready\n\nStatus: STUCK\n")
+	if got := extractResultStatus(noHeaderStatusPath); got != "" {
+		t.Errorf("body status = %q, want empty", got)
 	}
 }
 
@@ -188,5 +205,90 @@ func TestPsToastEscape(t *testing.T) {
 	}
 	if got := psToastEscape("no quotes"); got != "no quotes" {
 		t.Errorf("no-op case failed: %q", got)
+	}
+}
+
+func TestNotifyStoreReceiptPersistsAndIsIdempotent(t *testing.T) {
+	store := newNotifyStore(t.TempDir())
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0430", Thread: "cc-connect-maintenance", Summary: "ready",
+		Path: "F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md", Status: "DONE",
+	}); err != nil {
+		t.Fatalf("recordArrival: %v", err)
+	}
+	first, changed, err := store.acknowledge("L-0430", "jay")
+	if err != nil || !changed {
+		t.Fatalf("first acknowledge = (%+v, %v, %v), want changed receipt", first, changed, err)
+	}
+	if first.AcknowledgedBy != "jay" || first.AcknowledgedAt == "" || first.ResultPath == "" || first.Status != "DONE" {
+		t.Fatalf("first receipt = %+v", first)
+	}
+	second, changed, err := store.acknowledge("L-0430", "other")
+	if err != nil || changed {
+		t.Fatalf("second acknowledge = (%+v, %v, %v), want idempotent", second, changed, err)
+	}
+	if second.AcknowledgedBy != "jay" || second.AcknowledgedAt != first.AcknowledgedAt {
+		t.Fatalf("idempotent receipt = %+v, want %+v", second, first)
+	}
+}
+
+func TestReceiptEnvelopeGivesAgentDirectResultContext(t *testing.T) {
+	got := formatReceiptEnvelope("L-0430", receiptRecord{
+		Thread:     "cc-connect-maintenance",
+		Status:     "DONE",
+		Summary:    "notification delivery is now transcript-safe.",
+		ResultPath: "F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md",
+	})
+	want := "[RECEIPT L-0430]\n结果文件：F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md\n线程：cc-connect-maintenance\n状态：DONE\n摘要：notification delivery is now transcript-safe.\n\n请直接读取上述 result.md，并按正常译信流程处理。"
+	if got != want {
+		t.Errorf("receipt envelope = %q, want %q", got, want)
+	}
+}
+
+func TestNotifyLetterArrivedSendsShortPlatformMessageWithoutAgentTurn(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.configureNotify(NotifyConfig{
+		TelegramEnabled: true,
+		ToastEnabled:    false,
+		Platform:        "telegram",
+		SessionKey:      "telegram:123:123",
+	})
+
+	e.notifyLetterArrived(indexResultRow{
+		Letter:  "L-0430",
+		Thread:  "cc-connect-maintenance",
+		Summary: "notification context is decoupled.",
+	})
+
+	sent := p.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want one direct notification", sent)
+	}
+	if got, want := sent[0], "📬 L-0430 到货"; got != want {
+		t.Fatalf("notification = %q, want %q", got, want)
+	}
+	if strings.Contains(sent[0], "[LETTER_ARRIVED]") {
+		t.Fatalf("notification must not use agent-injected marker: %q", sent[0])
+	}
+}
+
+func TestNotifyLetterArrivedDoesNotAdvertiseReceiptWithoutStore(t *testing.T) {
+	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.configureNotify(NotifyConfig{
+		TelegramEnabled: true,
+		ToastEnabled:    false,
+		Platform:        "telegram",
+		SessionKey:      "telegram:123:123",
+	})
+
+	e.notifyLetterArrived(indexResultRow{Letter: "L-0430", Thread: "cc-connect-maintenance"})
+
+	if len(p.buttonRows) != 0 {
+		t.Fatalf("receipt button advertised without store: %#v", p.buttonRows)
+	}
+	if got, want := p.getSent(), []string{"📬 L-0430 到货"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("plain notification = %#v, want %#v", got, want)
 	}
 }

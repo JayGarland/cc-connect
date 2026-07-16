@@ -6943,6 +6943,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"receipt", "inbox"}, "receipt"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7274,6 +7275,22 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			return true
 		}
 		e.cmdPs(p, msg, args)
+	case "receipt":
+		if len(args) == 0 {
+			e.cmdInbox(p, msg)
+			return true
+		}
+		receipt, err := e.markReceipt(args[0], msg.UserName)
+		if err != nil {
+			slog.Warn("receipt: acknowledge failed", "letter", args[0], "error", err)
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+			return true
+		}
+		if receipt.ResultPath == "" && receipt.Thread != "" {
+			receipt.ResultPath = filepath.Join(e.notifyConfig.threadsDir(), receipt.Thread, args[0]+".result.md")
+		}
+		msg.Content = formatReceiptEnvelope(args[0], receipt)
+		return false
 
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
@@ -7309,6 +7326,39 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return false
 	}
 	return true
+}
+
+func (e *Engine) markReceipt(letter, user string) (receiptRecord, error) {
+	receipt, _, err := e.notifyStore.acknowledge(letter, user)
+	return receipt, err
+}
+
+func (e *Engine) cmdInbox(p Platform, msg *Message) {
+	ledger, err := e.notifyStore.load()
+	if err != nil {
+		slog.Warn("receipt: inbox unavailable", "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgInboxUnavailable))
+		return
+	}
+	var pending, done []string
+	for letter, record := range ledger.Receipts {
+		line := fmt.Sprintf("%s · %s", letter, record.Thread)
+		if record.AcknowledgedAt == "" {
+			pending = append(pending, line)
+		} else {
+			done = append(done, "✅ "+line)
+		}
+	}
+	sort.Strings(pending)
+	sort.Strings(done)
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptInbox, receiptInboxSection(pending), receiptInboxSection(done)))
+}
+
+func receiptInboxSection(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(items, "\n")
 }
 
 func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string) {
