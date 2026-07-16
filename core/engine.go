@@ -6944,6 +6944,7 @@ var builtinCommands = []struct {
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
 	{[]string{"receipt", "inbox"}, "receipt"},
+	{[]string{"letter"}, "letter"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7280,16 +7281,44 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			e.cmdInbox(p, msg)
 			return true
 		}
-		receipt, err := e.markReceipt(args[0], msg.UserName)
-		if err != nil {
-			slog.Warn("receipt: acknowledge failed", "letter", args[0], "error", err)
+		if args[0] == "page" && len(args) == 3 {
+			page, err := strconv.Atoi(args[2])
+			if err != nil || page < 0 {
+				e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+				return true
+			}
+			e.showReceiptPage(p, msg, args[1], page)
+			return true
+		}
+		if args[0] == "collapse" && len(args) == 2 {
+			e.showReceiptCompact(p, msg, args[1])
+			return true
+		}
+		if args[0] == "primary" && len(args) == 2 {
+			return e.handoffReceiptToPrimary(p, msg, args[1])
+		}
+		letter := args[0]
+		if args[0] == "receive" && len(args) == 2 {
+			letter = args[1]
+		}
+		return e.receiveReceipt(p, msg, letter)
+	case "letter":
+		if len(args) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 			return true
 		}
-		if receipt.ResultPath == "" && receipt.Thread != "" {
-			receipt.ResultPath = filepath.Join(e.notifyConfig.threadsDir(), receipt.Thread, args[0]+".result.md")
+		receipt, err := e.notifyStore.receipt(args[0])
+		if err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+			return true
 		}
-		msg.Content = formatReceiptEnvelope(args[0], receipt)
+		snapshot, err := os.ReadFile(receipt.SnapshotPath)
+		if err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+			return true
+		}
+		question := strings.TrimSpace(strings.Join(args[1:], " "))
+		msg.Content = fmt.Sprintf("[IMMUTABLE RESULT SOURCE]\nL-ID: %s\nSnapshot: %s\nSHA-256: %s\nThread: %s\n---\n%s\n---\nBoss question:\n%s", args[0], receipt.SnapshotPath, receipt.SnapshotSHA256, receipt.Thread, string(snapshot), question)
 		return false
 
 	default:
@@ -7328,9 +7357,122 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	return true
 }
 
-func (e *Engine) markReceipt(letter, user string) (receiptRecord, error) {
-	receipt, _, err := e.notifyStore.acknowledge(letter, user)
-	return receipt, err
+func (e *Engine) markReceipt(letter, user string) (receiptRecord, bool, error) {
+	receipt, changed, err := e.notifyStore.acknowledge(letter, user)
+	return receipt, changed, err
+}
+
+func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page int) {
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	pages, err := receiptSnapshotPages(receipt, e.i18n.T(MsgReceiptEmptyOriginal))
+	if err != nil || page >= len(pages) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	updater, ok := p.(InlineMessageUpdater)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, pages[page], page, len(pages))
+	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		slog.Warn("receipt: update inbox card failed", "letter", letter, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+	}
+}
+
+func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string) {
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	updater, ok := p.(InlineMessageUpdater)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+	}
+}
+
+func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string) bool {
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	deleter, ok := p.(MessageDeleter)
+	if !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
+		if err := e.notifyStore.restoreReceipt(letter, receipt); err != nil {
+			slog.Error("receipt: failed to restore after card delete failure", "letter", letter, "error", err)
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	return true
+}
+
+func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string) bool {
+	targetSession := e.notifyConfig.ReceiptSessionKey
+	if targetSession == "" {
+		targetSession = e.notifyConfig.SessionKey
+	}
+	rc, ok := p.(ReplyContextReconstructor)
+	if !ok || targetSession == "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	targetReplyCtx, err := rc.ReconstructReplyCtx(targetSession)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	snapshot, err := os.ReadFile(receipt.SnapshotPath)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	_, changed, err := e.markReceipt(letter, msg.UserName)
+	if err != nil || !changed {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	_, forward, err := e.notifyStore.markForwarded(letter)
+	if err != nil || !forward {
+		if restoreErr := e.notifyStore.restoreReceipt(letter, receipt); restoreErr != nil {
+			slog.Error("receipt: failed to restore after forwarding error", "letter", letter, "error", restoreErr)
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	deleter, ok := p.(MessageDeleter)
+	if !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
+		if restoreErr := e.notifyStore.restoreReceipt(letter, receipt); restoreErr != nil {
+			slog.Error("receipt: failed to restore after card delete failure", "letter", letter, "error", restoreErr)
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	msg.SessionKey = targetSession
+	msg.ReplyCtx = targetReplyCtx
+	msg.Content = string(snapshot)
+	return false
 }
 
 func (e *Engine) cmdInbox(p Platform, msg *Message) {
@@ -7340,18 +7482,16 @@ func (e *Engine) cmdInbox(p Platform, msg *Message) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgInboxUnavailable))
 		return
 	}
-	var pending, done []string
+	var pending []string
 	for letter, record := range ledger.Receipts {
-		line := fmt.Sprintf("%s · %s", letter, record.Thread)
-		if record.AcknowledgedAt == "" {
-			pending = append(pending, line)
-		} else {
-			done = append(done, "✅ "+line)
+		if record.AcknowledgedAt != "" {
+			continue
 		}
+		line := fmt.Sprintf("%s · %s", letter, record.Thread)
+		pending = append(pending, line)
 	}
 	sort.Strings(pending)
-	sort.Strings(done)
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptInbox, receiptInboxSection(pending), receiptInboxSection(done)))
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptInbox, receiptInboxSection(pending)))
 }
 
 func receiptInboxSection(items []string) string {

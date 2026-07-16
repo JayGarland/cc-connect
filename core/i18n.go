@@ -510,17 +510,24 @@ const (
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
-	MsgBannedWordBlocked  MsgKey = "banned_word_blocked"
-	MsgCommandDisabled    MsgKey = "command_disabled"
-	MsgAdminRequired      MsgKey = "admin_required"
-	MsgRateLimited        MsgKey = "rate_limited"
-	MsgPsSent             MsgKey = "ps_sent"
-	MsgPsSendFailed       MsgKey = "ps_send_failed"
-	MsgPsEmpty            MsgKey = "ps_empty"
-	MsgPsNoSession        MsgKey = "ps_no_session"
-	MsgReceiptUnavailable MsgKey = "receipt_unavailable"
-	MsgInboxUnavailable   MsgKey = "inbox_unavailable"
-	MsgReceiptInbox       MsgKey = "receipt_inbox"
+	MsgBannedWordBlocked     MsgKey = "banned_word_blocked"
+	MsgCommandDisabled       MsgKey = "command_disabled"
+	MsgAdminRequired         MsgKey = "admin_required"
+	MsgRateLimited           MsgKey = "rate_limited"
+	MsgPsSent                MsgKey = "ps_sent"
+	MsgPsSendFailed          MsgKey = "ps_send_failed"
+	MsgPsEmpty               MsgKey = "ps_empty"
+	MsgPsNoSession           MsgKey = "ps_no_session"
+	MsgReceiptUnavailable    MsgKey = "receipt_unavailable"
+	MsgInboxUnavailable      MsgKey = "inbox_unavailable"
+	MsgReceiptInbox          MsgKey = "receipt_inbox"
+	MsgReceiptCardCompact    MsgKey = "receipt_card_compact"
+	MsgReceiptCardPage       MsgKey = "receipt_card_page"
+	MsgReceiptViewOriginal   MsgKey = "receipt_view_original"
+	MsgReceiptCollapse       MsgKey = "receipt_collapse"
+	MsgReceiptReceive        MsgKey = "receipt_receive"
+	MsgReceiptHandoffPrimary MsgKey = "receipt_handoff_primary"
+	MsgReceiptEmptyOriginal  MsgKey = "receipt_empty_original"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -819,11 +826,56 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "❌ La bandeja de recibos no está disponible.",
 	},
 	MsgReceiptInbox: {
-		LangEnglish:            "Pending receipts:%s\n\nReceived:%s",
-		LangChinese:            "待收件：%s\n\n已收件：%s",
-		LangTraditionalChinese: "待收件：%s\n\n已收件：%s",
-		LangJapanese:           "未受領：%s\n\n受領済み：%s",
-		LangSpanish:            "Recibos pendientes:%s\n\nRecibidos:%s",
+		LangEnglish:            "Pending receipts:%s",
+		LangChinese:            "待收件：%s",
+		LangTraditionalChinese: "待收件：%s",
+		LangJapanese:           "未受領：%s",
+		LangSpanish:            "Recibos pendientes:%s",
+	},
+	MsgReceiptCardCompact: {
+		LangEnglish:            "📬 %s\nThread: %s\nStatus: %s\nSummary: %s\nArrived: %s\nSnapshot path: %s\nSnapshot SHA-256: %s",
+		LangChinese:            "📬 %s\n线程：%s\n状态：%s\n摘要：%s\n到货：%s\n快照路径：%s\n快照 SHA-256：%s",
+		LangTraditionalChinese: "📬 %s\n執行緒：%s\n狀態：%s\n摘要：%s\n送達：%s\n快照路徑：%s\n快照 SHA-256：%s",
+		LangJapanese:           "📬 %s\nスレッド: %s\nステータス: %s\n概要: %s\n到着: %s\nスナップショット: %s\nSHA-256: %s",
+		LangSpanish:            "📬 %s\nHilo: %s\nEstado: %s\nResumen: %s\nRecibido: %s\nRuta de instantánea: %s\nSHA-256 de instantánea: %s",
+	},
+	MsgReceiptCardPage: {
+		LangEnglish:            "Original (Page %d/%d)\n%s",
+		LangChinese:            "原信（第 %d/%d 页）\n%s",
+		LangTraditionalChinese: "原信（第 %d/%d 頁）\n%s",
+		LangJapanese:           "原文（%d/%d ページ）\n%s",
+		LangSpanish:            "Original (página %d/%d)\n%s",
+	},
+	MsgReceiptViewOriginal: {
+		LangEnglish:            "View original",
+		LangChinese:            "展开原信",
+		LangTraditionalChinese: "展開原信",
+		LangJapanese:           "原文を表示",
+		LangSpanish:            "Ver original",
+	},
+	MsgReceiptCollapse: {
+		LangEnglish:            "Collapse",
+		LangChinese:            "收起",
+		LangTraditionalChinese: "收起",
+		LangJapanese:           "折りたたむ",
+		LangSpanish:            "Contraer",
+	},
+	MsgReceiptReceive: {
+		LangEnglish:            "✅ Receive",
+		LangChinese:            "✅ 收件",
+		LangTraditionalChinese: "✅ 收件",
+		LangJapanese:           "✅ 受領",
+		LangSpanish:            "✅ Recibir",
+	},
+	MsgReceiptHandoffPrimary: {
+		LangEnglish: "Hand to primary", LangChinese: "交主秘书", LangTraditionalChinese: "交主秘書", LangJapanese: "主任秘書へ渡す", LangSpanish: "Entregar a secretaría principal",
+	},
+	MsgReceiptEmptyOriginal: {
+		LangEnglish:            "(Original is empty)",
+		LangChinese:            "（原信为空）",
+		LangTraditionalChinese: "（原信為空）",
+		LangJapanese:           "（原文は空です）",
+		LangSpanish:            "(El original está vacío)",
 	},
 	MsgBackgroundAutoDenied: {
 		LangEnglish:            "⚠️ Background task requested permission for `%s` but was auto-denied (no active user turn). Send a message or use `/yolo` to approve future requests.",
