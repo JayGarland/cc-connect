@@ -400,6 +400,17 @@ func TestReceiptInboxCardRendersOpenPointsAndShortUpdateInline(t *testing.T) {
 	}
 }
 
+func TestReceiptInboxCardAddsUpdateButtonOnlyForLongUpdate(t *testing.T) {
+	record := receiptRecord{Generation: "g1", Update: receiptUpdate{Sections: []receiptSection{{Heading: "Conclusion", Body: strings.Repeat("x", receiptCompactUpdateLimit)}}}}
+	content, buttons := formatReceiptInboxCard(NewI18n(LangEnglish), "L-0430", record, "", 0, 0)
+	if strings.Contains(content, strings.Repeat("x", receiptCompactUpdateLimit)) {
+		t.Fatalf("long update leaked into compact card")
+	}
+	found := false
+	for _, row := range buttons { for _, button := range row { if button.Data == "cmd:/receipt update L-0430 g1 0" { found = true } } }
+	if !found { t.Fatalf("missing conditional update button: %#v", buttons) }
+}
+
 func TestReceiptInboxCardPaginatesOriginalResultWithoutHash(t *testing.T) {
 	record := receiptRecord{
 		Thread: "alpha", Status: "DONE", Summary: "ready", ArrivedAt: "2026-07-16T16:20:00Z",

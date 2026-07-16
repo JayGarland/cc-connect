@@ -558,6 +558,21 @@ func formatReceiptUpdateBody(update receiptUpdate) string {
 	return strings.Join(blocks, "\n\n")
 }
 
+func receiptUpdatePages(update receiptUpdate) []string {
+	runes := []rune(formatReceiptUpdateBody(update))
+	if len(runes) == 0 { return nil }
+	const pageSize = 3000
+	var pages []string
+	for len(runes) > 0 {
+		n := pageSize
+		if len(runes) < n { n = len(runes) }
+		pages, runes = append(pages, string(runes[:n])), runes[n:]
+	}
+	return pages
+}
+
+const receiptCompactUpdateLimit = 1800
+
 // formatReceiptInboxCard renders the Boss-facing inbox card. A non-positive
 // pageCount is the compact envelope; positive pageCount is an original page.
 func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, body string, page, pageCount int) (string, [][]ButtonOption) {
@@ -568,19 +583,23 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 	if len(record.OpenPoints) > 0 {
 		content += "\n\nOpen points:\n• " + strings.Join(record.OpenPoints, "\n• ")
 	}
-	if update := formatReceiptUpdateBody(record.Update); update != "" {
-		content += "\n\nChanges:\n" + update
-	}
+	update := formatReceiptUpdateBody(record.Update)
+	inlineUpdate := update != "" && len([]rune(update)) < receiptCompactUpdateLimit
+	if inlineUpdate { content += "\n\nChanges:\n" + update }
 	generation := record.Generation
 	if generation == "" {
 		generation = record.ArrivedAt
 	}
 	if pageCount <= 0 {
-		return content, [][]ButtonOption{{
+		buttons := []ButtonOption{
 			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/receipt page " + letter + " " + generation + " 0"},
 			{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter + " " + generation},
 			{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
-		}}
+		}
+		if update != "" && !inlineUpdate {
+			buttons = append([]ButtonOption{{Text: "View this update", Data: "cmd:/receipt update " + letter + " " + generation + " 0"}}, buttons...)
+		}
+		return content, [][]ButtonOption{buttons}
 	}
 	content += "\n\n" + i18n.Tf(MsgReceiptCardPage, page+1, pageCount, body)
 	var buttons [][]ButtonOption

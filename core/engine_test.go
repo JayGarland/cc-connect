@@ -1008,6 +1008,23 @@ func TestEngineReceiptPageUpdatesInboxCardWithoutAgentTurn(t *testing.T) {
 	}
 }
 
+func TestEngineReceiptUpdatePageUpdatesInboxCardWithoutAgentTurn(t *testing.T) {
+	root := t.TempDir()
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0432", Thread: "alpha", Generation: "g1", Update: receiptUpdate{Sections: []receiptSection{{Heading: "Conclusion", Body: strings.Repeat("x", receiptCompactUpdateLimit)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt update L-0432 g1 0"); !handled {
+		t.Fatal("update action must be handled without reaching the agent")
+	}
+	if !strings.Contains(p.updatedContent, "Conclusion") || !strings.Contains(p.updatedContent, "x") {
+		t.Fatalf("updated card = %q", p.updatedContent)
+	}
+}
+
 func TestEngineReceiptDeleteFailureKeepsCardAndDoesNotForward(t *testing.T) {
 	root := t.TempDir()
 	resultPath := writeResultFile(t, root, "alpha", "L-0433", "ID: L-0433\nStatus: DONE\n---\n")
