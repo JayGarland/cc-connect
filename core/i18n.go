@@ -584,7 +584,6 @@ const (
 	MsgBuiltinCmdDir       MsgKey = "dir"
 	MsgBuiltinCmdDiff      MsgKey = "diff"
 	MsgBuiltinCmdPs        MsgKey = "ps"
-	MsgBuiltinCmdFeature   MsgKey = "feature-start"
 
 	MsgDiffEmpty       MsgKey = "diff_empty"
 	MsgDiffNoDiff2HTML MsgKey = "diff_no_diff2html"
@@ -3792,13 +3791,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "向正在執行的任務追加補充資訊",
 		LangJapanese:           "実行中のタスクに補足情報を送信",
 		LangSpanish:            "Enviar un P.S. a la tarea en curso",
-	},
-	MsgBuiltinCmdFeature: {
-		LangEnglish:            "Start a feature with a fresh Chef session and local board item",
-		LangChinese:            "使用新的 Chef 会话和本地看板项启动功能任务",
-		LangTraditionalChinese: "使用新的 Chef 會話和本地看板項啟動功能任務",
-		LangJapanese:           "新しいChefセッションとローカルボード項目で機能を開始",
-		LangSpanish:            "Iniciar una función con sesión Chef nueva y elemento de tablero local",
 	},
 	MsgDiffEmpty: {
 		LangEnglish:            "No diff — clean working tree (or no changes vs `%s`).",
