@@ -707,12 +707,9 @@ func (e *Engine) checkDispatchResults() {
 		if !dispatchResultReady(exp) {
 			continue
 		}
-		_, changed, err := store.markResultReady(exp.Letter, exp.Thread, exp.To, time.Now())
+		_, _, err := store.markResultReady(exp.Letter, exp.Thread, exp.To, time.Now())
 		if err != nil {
 			slog.Warn("dispatch: failed to mark result ready", "letter", exp.Letter, "error", err)
-			continue
-		}
-		if !changed {
 			continue
 		}
 	}
