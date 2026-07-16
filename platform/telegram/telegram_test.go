@@ -96,6 +96,7 @@ type stubTelegramBot struct {
 	setReactionCalls      int
 
 	sendErr               error
+	sendMessageErrOnce    error // returned on the first SendMessage call only, then cleared
 	sendRichErr           error
 	createForumTopicErr   error
 	getFileErr            error
@@ -118,6 +119,12 @@ func (b *stubTelegramBot) SendMessage(_ context.Context, params *tgbot.SendMessa
 	b.mu.Lock()
 	b.sendMessageCalls++
 	b.sendMessageParams = append(b.sendMessageParams, params)
+	if b.sendMessageErrOnce != nil {
+		err := b.sendMessageErrOnce
+		b.sendMessageErrOnce = nil
+		b.mu.Unlock()
+		return nil, err
+	}
 	b.mu.Unlock()
 	if b.sendErr != nil {
 		return nil, b.sendErr
@@ -519,6 +526,61 @@ func TestSendFallsBackToHTMLWhenRichMessageFails(t *testing.T) {
 	}
 	if stubBot.sendMessageCalls != 1 {
 		t.Fatalf("sendMessageCalls = %d, want 1 (fallback path)", stubBot.sendMessageCalls)
+	}
+}
+
+// TestSendRetriesOn429 verifies the L-0431 fix: a Telegram 429 (e.g. a
+// rate-limited permission-prompt card) is retried once, honoring
+// retry_after, instead of being silently dropped after a single log line.
+func TestSendRetriesOn429(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	stubBot.sendMessageErrOnce = &tgbot.TooManyRequestsError{Message: "too many requests", RetryAfter: 0}
+	p := &Platform{bot: stubBot}
+	ctx := context.Background()
+	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
+
+	if err := p.Send(ctx, rctx, "hello"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if stubBot.sendMessageCalls != 2 {
+		t.Fatalf("sendMessageCalls = %d, want 2 (1 rate-limited + 1 retry)", stubBot.sendMessageCalls)
+	}
+}
+
+// TestSendWithButtonsRetriesOn429 covers the specific path a permission
+// prompt card takes (core.Engine.sendPermissionPrompt → SendWithButtons).
+func TestSendWithButtonsRetriesOn429(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	stubBot.sendMessageErrOnce = &tgbot.TooManyRequestsError{Message: "too many requests", RetryAfter: 0}
+	p := &Platform{bot: stubBot}
+	ctx := context.Background()
+	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
+
+	buttons := [][]core.ButtonOption{{{Text: "Allow", Data: "perm:allow"}, {Text: "Deny", Data: "perm:deny"}}}
+	if err := p.SendWithButtons(ctx, rctx, "Allow tool X?", buttons); err != nil {
+		t.Fatalf("SendWithButtons: %v", err)
+	}
+	if stubBot.sendMessageCalls != 2 {
+		t.Fatalf("sendMessageCalls = %d, want 2 (1 rate-limited + 1 retry)", stubBot.sendMessageCalls)
+	}
+}
+
+// TestSendGivesUpAfterSecond429 verifies the retry is bounded (mirrors
+// webex's single-retry doWithRetry): a second consecutive 429 is returned
+// as an error rather than retried indefinitely.
+func TestSendGivesUpAfterSecond429(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	stubBot.sendErr = &tgbot.TooManyRequestsError{Message: "too many requests", RetryAfter: 0}
+	p := &Platform{bot: stubBot}
+	ctx := context.Background()
+	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
+
+	err := p.Send(ctx, rctx, "hello")
+	if err == nil {
+		t.Fatal("Send: expected error after repeated 429, got nil")
+	}
+	if stubBot.sendMessageCalls != 2 {
+		t.Fatalf("sendMessageCalls = %d, want 2 (1 original + 1 retry, then give up)", stubBot.sendMessageCalls)
 	}
 }
 

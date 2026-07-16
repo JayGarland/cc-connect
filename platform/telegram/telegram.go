@@ -56,6 +56,39 @@ type telegramBot interface {
 	SetMessageReaction(ctx context.Context, params *tgbot.SetMessageReactionParams) (bool, error)
 }
 
+// telegramRetryMaxWait caps how long we honor Telegram's retry_after hint
+// before retrying a rate-limited send. Mirrors platform/webex/client.go's
+// maxRetryAfter.
+const telegramRetryMaxWait = 60 * time.Second
+
+// sendMessageWithRetry wraps bot.SendMessage and retries once when Telegram
+// returns 429 Too Many Requests, honoring the retry_after hint it reports
+// (capped at telegramRetryMaxWait). Without this, a rate-limited send — most
+// consequentially a permission-prompt card — was silently dropped after a
+// single log line: Claude Code's control_request then waits with no response
+// until the unrelated 120-minute session idle timeout eventually kills the
+// whole turn (L-0431). All bot.SendMessage call sites in this package should
+// go through this helper instead of calling bot.SendMessage directly.
+func sendMessageWithRetry(ctx context.Context, bot telegramBot, params *tgbot.SendMessageParams) (*models.Message, error) {
+	msg, err := bot.SendMessage(ctx, params)
+	var tmr *tgbot.TooManyRequestsError
+	if !errors.As(err, &tmr) {
+		return msg, err
+	}
+	wait := time.Duration(tmr.RetryAfter) * time.Second
+	if wait > telegramRetryMaxWait {
+		wait = telegramRetryMaxWait
+	}
+	slog.Warn("telegram: rate limited (429), retrying after wait",
+		"retry_after_secs", tmr.RetryAfter, "wait", wait, "chat_id", params.ChatID)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(wait):
+	}
+	return bot.SendMessage(ctx, params)
+}
+
 type backoffTimer interface {
 	C() <-chan time.Time
 	Stop() bool
@@ -809,14 +842,14 @@ func (p *Platform) sendTopicIntakeMessage(ctx context.Context, bot telegramBot, 
 		Text:            html,
 		ParseMode:       models.ParseModeHTML,
 	}
-	sent, err := bot.SendMessage(ctx, params)
+	sent, err := sendMessageWithRetry(ctx, bot, params)
 	if err == nil {
 		return sent, nil
 	}
 	if strings.Contains(err.Error(), "can't parse") {
 		params.Text = content
 		params.ParseMode = ""
-		return bot.SendMessage(ctx, params)
+		return sendMessageWithRetry(ctx, bot, params)
 	}
 	return nil, err
 }
@@ -1391,7 +1424,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 		ReplyParameters: &models.ReplyParameters{MessageID: rc.messageID},
 	}
 
-	if _, err := bot.SendMessage(ctx, params); err != nil {
+	if _, err := sendMessageWithRetry(ctx, bot, params); err != nil {
 		errMsg := err.Error()
 		// Handle HTML parsing errors by falling back to plain text
 		if strings.Contains(errMsg, "can't parse") {
@@ -1403,7 +1436,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 			)
 			params.Text = content
 			params.ParseMode = ""
-			_, err = bot.SendMessage(ctx, params)
+			_, err = sendMessageWithRetry(ctx, bot, params)
 		} else if strings.Contains(errMsg, "message is too long") {
 			// Handle message too long by splitting and sending as multiple messages
 			slog.Warn("telegram: message too long, splitting into chunks",
@@ -1450,7 +1483,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		ParseMode:       models.ParseModeHTML,
 	}
 
-	if _, err := bot.SendMessage(ctx, params); err != nil {
+	if _, err := sendMessageWithRetry(ctx, bot, params); err != nil {
 		errMsg := err.Error()
 		// Handle HTML parsing errors by falling back to plain text
 		if strings.Contains(errMsg, "can't parse") {
@@ -1462,7 +1495,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 			)
 			params.Text = content
 			params.ParseMode = ""
-			_, err = bot.SendMessage(ctx, params)
+			_, err = sendMessageWithRetry(ctx, bot, params)
 		} else if strings.Contains(errMsg, "message is too long") {
 			// Handle message too long by splitting and sending as multiple messages
 			slog.Warn("telegram: message too long, splitting into chunks",
@@ -1646,7 +1679,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 		ReplyMarkup:     &models.InlineKeyboardMarkup{InlineKeyboard: rows},
 	}
 
-	if _, err := bot.SendMessage(ctx, params); err != nil {
+	if _, err := sendMessageWithRetry(ctx, bot, params); err != nil {
 		errMsg := err.Error()
 		// Handle HTML parsing errors by falling back to plain text
 		if strings.Contains(errMsg, "can't parse") {
@@ -1658,7 +1691,7 @@ func (p *Platform) SendWithButtons(ctx context.Context, rctx any, content string
 			)
 			params.Text = content
 			params.ParseMode = ""
-			_, err = bot.SendMessage(ctx, params)
+			_, err = sendMessageWithRetry(ctx, bot, params)
 		} else if strings.Contains(errMsg, "message is too long") {
 			// Handle message too long: first chunk with buttons, rest without
 			slog.Warn("telegram: message too long, splitting into chunks",
@@ -1782,7 +1815,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 		ParseMode:       models.ParseModeHTML,
 	}
 
-	sent, err := bot.SendMessage(ctx, params)
+	sent, err := sendMessageWithRetry(ctx, bot, params)
 	if err != nil {
 		errMsg := err.Error()
 		// Handle HTML parsing errors by falling back to plain text
@@ -1795,7 +1828,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			)
 			params.Text = content
 			params.ParseMode = ""
-			sent, err = bot.SendMessage(ctx, params)
+			sent, err = sendMessageWithRetry(ctx, bot, params)
 		} else if strings.Contains(errMsg, "message is too long") {
 			// Preview messages shouldn't be chunked; fall back to plain text
 			slog.Warn("telegram: preview too long, sending as plain text",
@@ -1805,7 +1838,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			)
 			params.Text = content
 			params.ParseMode = ""
-			sent, err = bot.SendMessage(ctx, params)
+			sent, err = sendMessageWithRetry(ctx, bot, params)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("telegram: send preview: %w", err)
@@ -1885,12 +1918,12 @@ func (p *Platform) sendChunked(ctx context.Context, bot telegramBot, rc replyCon
 		if i == 0 && rc.messageID != 0 {
 			params.ReplyParameters = &models.ReplyParameters{MessageID: rc.messageID}
 		}
-		if _, err := bot.SendMessage(ctx, params); err != nil {
+		if _, err := sendMessageWithRetry(ctx, bot, params); err != nil {
 			// If HTML fails, try plain text
 			if strings.Contains(err.Error(), "can't parse") {
 				params.Text = chunk
 				params.ParseMode = ""
-				if _, err2 := bot.SendMessage(ctx, params); err2 != nil {
+				if _, err2 := sendMessageWithRetry(ctx, bot, params); err2 != nil {
 					return fmt.Errorf("telegram: send chunk %d: %w", i, err2)
 				}
 			} else {
@@ -1916,12 +1949,12 @@ func (p *Platform) sendChunkedWithButtons(ctx context.Context, bot telegramBot, 
 		if i == 0 {
 			params.ReplyMarkup = &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 		}
-		if _, err := bot.SendMessage(ctx, params); err != nil {
+		if _, err := sendMessageWithRetry(ctx, bot, params); err != nil {
 			// If HTML fails, try plain text
 			if strings.Contains(err.Error(), "can't parse") {
 				params.Text = chunk
 				params.ParseMode = ""
-				if _, err2 := bot.SendMessage(ctx, params); err2 != nil {
+				if _, err2 := sendMessageWithRetry(ctx, bot, params); err2 != nil {
 					return fmt.Errorf("telegram: send chunk %d: %w", i, err2)
 				}
 			} else {
