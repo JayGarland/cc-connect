@@ -66,10 +66,16 @@ func TestExtractResultSummary(t *testing.T) {
 	if got := extractResultSummary(donePath); got != "first answer." {
 		t.Errorf("DONE summary = %q, want %q", got, "first answer.")
 	}
+	if got := extractResultStatus(donePath); got != "" {
+		t.Errorf("missing status = %q, want empty", got)
+	}
 
 	stuckPath := writeResultFile(t, root, "alpha", "L-0101", "---\nID: L-0101\nStatus: STUCK\n---\n\n## Partial Work\nsome\n\n## Blocker\nbudget exhausted.\n")
 	if got := extractResultSummary(stuckPath); got != "budget exhausted." {
 		t.Errorf("STUCK summary = %q, want %q", got, "budget exhausted.")
+	}
+	if got := extractResultStatus(stuckPath); got != "STUCK" {
+		t.Errorf("STUCK status = %q, want STUCK", got)
 	}
 }
 
@@ -194,14 +200,17 @@ func TestPsToastEscape(t *testing.T) {
 
 func TestNotifyStoreReceiptPersistsAndIsIdempotent(t *testing.T) {
 	store := newNotifyStore(t.TempDir())
-	if err := store.recordArrival(indexResultRow{Letter: "L-0430", Thread: "cc-connect-maintenance", Summary: "ready"}); err != nil {
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0430", Thread: "cc-connect-maintenance", Summary: "ready",
+		Path: "F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md", Status: "DONE",
+	}); err != nil {
 		t.Fatalf("recordArrival: %v", err)
 	}
 	first, changed, err := store.acknowledge("L-0430", "jay")
 	if err != nil || !changed {
 		t.Fatalf("first acknowledge = (%+v, %v, %v), want changed receipt", first, changed, err)
 	}
-	if first.AcknowledgedBy != "jay" || first.AcknowledgedAt == "" {
+	if first.AcknowledgedBy != "jay" || first.AcknowledgedAt == "" || first.ResultPath == "" || first.Status != "DONE" {
 		t.Fatalf("first receipt = %+v", first)
 	}
 	second, changed, err := store.acknowledge("L-0430", "other")
@@ -210,6 +219,19 @@ func TestNotifyStoreReceiptPersistsAndIsIdempotent(t *testing.T) {
 	}
 	if second.AcknowledgedBy != "jay" || second.AcknowledgedAt != first.AcknowledgedAt {
 		t.Fatalf("idempotent receipt = %+v, want %+v", second, first)
+	}
+}
+
+func TestReceiptEnvelopeGivesAgentDirectResultContext(t *testing.T) {
+	got := formatReceiptEnvelope("L-0430", receiptRecord{
+		Thread:     "cc-connect-maintenance",
+		Status:     "DONE",
+		Summary:    "notification delivery is now transcript-safe.",
+		ResultPath: "F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md",
+	})
+	want := "[RECEIPT L-0430]\n结果文件：F:\\nexus\\docs\\archive\\threads\\cc-connect-maintenance\\L-0430.result.md\n线程：cc-connect-maintenance\n状态：DONE\n摘要：notification delivery is now transcript-safe.\n\n请直接读取上述 result.md，并按正常译信流程处理。"
+	if got != want {
+		t.Errorf("receipt envelope = %q, want %q", got, want)
 	}
 }
 

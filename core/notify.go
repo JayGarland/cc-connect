@@ -50,6 +50,8 @@ type indexResultRow struct {
 	Letter  string
 	Thread  string
 	Summary string
+	Path    string
+	Status  string
 }
 
 // resultFileInfo describes one threads/**/*.result.md file discovered by
@@ -62,14 +64,16 @@ type resultFileInfo struct {
 }
 
 type notifyLedger struct {
-	Seeded   bool              `json:"seeded"`
-	Notified map[string]string `json:"notified"`
+	Seeded   bool                     `json:"seeded"`
+	Notified map[string]string        `json:"notified"`
 	Receipts map[string]receiptRecord `json:"receipts"`
 }
 
 type receiptRecord struct {
 	Thread         string `json:"thread"`
 	Summary        string `json:"summary"`
+	ResultPath     string `json:"result_path"`
+	Status         string `json:"status"`
 	ArrivedAt      string `json:"arrived_at"`
 	AcknowledgedAt string `json:"acknowledged_at,omitempty"`
 	AcknowledgedBy string `json:"acknowledged_by,omitempty"`
@@ -141,7 +145,8 @@ func (s *notifyStore) recordArrival(row indexResultRow) error {
 	}
 	if _, exists := ledger.Receipts[row.Letter]; !exists {
 		ledger.Receipts[row.Letter] = receiptRecord{
-			Thread: row.Thread, Summary: row.Summary, ArrivedAt: time.Now().UTC().Format(time.RFC3339),
+			Thread: row.Thread, Summary: row.Summary, ResultPath: row.Path, Status: row.Status,
+			ArrivedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 	return s.save(ledger)
@@ -245,6 +250,30 @@ func extractResultSummary(path string) string {
 		}
 	}
 	return ""
+}
+
+// extractResultStatus reads the front-matter status so the receipt can give
+// the secretary enough context without another INDEX lookup.
+func extractResultStatus(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Status:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
+		}
+	}
+	return ""
+}
+
+// formatReceiptEnvelope is the intentional message passed to the secretary
+// after a Boss acknowledges a result. It includes the exact file location so
+// the agent can read the source directly instead of searching the archive.
+func formatReceiptEnvelope(letter string, record receiptRecord) string {
+	return fmt.Sprintf("[RECEIPT %s]\n结果文件：%s\n线程：%s\n状态：%s\n摘要：%s\n\n请直接读取上述 result.md，并按正常译信流程处理。",
+		letter, record.ResultPath, record.Thread, record.Status, record.Summary)
 }
 
 func firstNonEmptyAfter(lines []string, heading string) string {
@@ -361,6 +390,8 @@ func (e *Engine) checkNewResults() {
 			Letter:  f.Letter,
 			Thread:  f.Thread,
 			Summary: extractResultSummary(f.Path),
+			Path:    f.Path,
+			Status:  extractResultStatus(f.Path),
 		})
 	}
 }

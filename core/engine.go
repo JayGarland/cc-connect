@@ -7280,11 +7280,15 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			e.cmdInbox(p, msg)
 			return true
 		}
-		if err := e.markReceipt(args[0], msg.UserName); err != nil {
+		receipt, err := e.markReceipt(args[0], msg.UserName)
+		if err != nil {
 			e.reply(p, msg.ReplyCtx, "无法标记收件："+err.Error())
 			return true
 		}
-		msg.Content = "收件 " + args[0]
+		if receipt.ResultPath == "" && receipt.Thread != "" {
+			receipt.ResultPath = filepath.Join(e.notifyConfig.threadsDir(), receipt.Thread, args[0]+".result.md")
+		}
+		msg.Content = formatReceiptEnvelope(args[0], receipt)
 		return false
 
 	default:
@@ -7323,9 +7327,9 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	return true
 }
 
-func (e *Engine) markReceipt(letter, user string) error {
-	_, _, err := e.notifyStore.acknowledge(letter, user)
-	return err
+func (e *Engine) markReceipt(letter, user string) (receiptRecord, error) {
+	receipt, _, err := e.notifyStore.acknowledge(letter, user)
+	return receipt, err
 }
 
 func (e *Engine) cmdInbox(p Platform, msg *Message) {
