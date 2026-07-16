@@ -7346,7 +7346,7 @@ func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page i
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
-	pages, err := receiptSnapshotPages(receipt)
+	pages, err := receiptSnapshotPages(receipt, e.i18n.T(MsgReceiptEmptyOriginal))
 	if err != nil || page >= len(pages) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
@@ -7356,7 +7356,7 @@ func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page i
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
-	content, buttons := formatReceiptInboxCard(letter, receipt, pages[page], page, len(pages))
+	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, pages[page], page, len(pages))
 	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
 		slog.Warn("receipt: update inbox card failed", "letter", letter, "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
@@ -7374,7 +7374,7 @@ func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
-	content, buttons := formatReceiptInboxCard(letter, receipt, "", 0, 0)
+	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
 	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 	}

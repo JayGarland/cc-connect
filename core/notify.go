@@ -351,7 +351,7 @@ func formatReceiptEnvelope(letter string, record receiptRecord) string {
 		letter, record.SnapshotPath, record.SnapshotSHA256, record.Thread, record.Status)
 }
 
-func receiptSnapshotPages(record receiptRecord) ([]string, error) {
+func receiptSnapshotPages(record receiptRecord, emptyText string) ([]string, error) {
 	data, err := os.ReadFile(record.SnapshotPath)
 	if err != nil {
 		return nil, err
@@ -359,7 +359,7 @@ func receiptSnapshotPages(record receiptRecord) ([]string, error) {
 	const pageSize = 3000
 	runes := []rune(string(data))
 	if len(runes) == 0 {
-		return []string{"（原信为空）"}, nil
+		return []string{emptyText}, nil
 	}
 	var pages []string
 	for len(runes) > 0 {
@@ -375,29 +375,29 @@ func receiptSnapshotPages(record receiptRecord) ([]string, error) {
 
 // formatReceiptInboxCard renders the Boss-facing inbox card. A non-positive
 // pageCount is the compact envelope; positive pageCount is a snapshot page.
-func formatReceiptInboxCard(letter string, record receiptRecord, body string, page, pageCount int) (string, [][]ButtonOption) {
-	content := fmt.Sprintf("📬 %s\n线程：%s\n状态：%s\n摘要：%s\n到货：%s", letter, record.Thread, record.Status, record.Summary, record.ArrivedAt)
+func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, body string, page, pageCount int) (string, [][]ButtonOption) {
+	content := i18n.Tf(MsgReceiptCardCompact, letter, record.Thread, record.Status, record.Summary, record.ArrivedAt)
 	if pageCount <= 0 {
 		return content, [][]ButtonOption{{
-			{Text: "展开原信", Data: "cmd:/receipt page " + letter + " 0"},
-			{Text: "✅ 收件", Data: "cmd:/receipt receive " + letter},
+			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/receipt page " + letter + " 0"},
+			{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter},
 		}}
 	}
-	content += fmt.Sprintf("\n\n原信（第 %d/%d 页）\n%s", page+1, pageCount, body)
+	content += "\n\n" + i18n.Tf(MsgReceiptCardPage, page+1, pageCount, body)
 	var buttons [][]ButtonOption
 	var pageButtons []ButtonOption
 	if page > 0 {
-		pageButtons = append(pageButtons, ButtonOption{Text: "上一页", Data: fmt.Sprintf("cmd:/receipt page %s %d", letter, page-1)})
+		pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardPrev), Data: fmt.Sprintf("cmd:/receipt page %s %d", letter, page-1)})
 	}
 	if page+1 < pageCount {
-		pageButtons = append(pageButtons, ButtonOption{Text: "下一页", Data: fmt.Sprintf("cmd:/receipt page %s %d", letter, page+1)})
+		pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardNext), Data: fmt.Sprintf("cmd:/receipt page %s %d", letter, page+1)})
 	}
 	if len(pageButtons) > 0 {
 		buttons = append(buttons, pageButtons)
 	}
 	buttons = append(buttons, []ButtonOption{
-		{Text: "收起", Data: "cmd:/receipt collapse " + letter},
-		{Text: "✅ 收件", Data: "cmd:/receipt receive " + letter},
+		{Text: i18n.T(MsgReceiptCollapse), Data: "cmd:/receipt collapse " + letter},
+		{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter},
 	})
 	return content, buttons
 }
@@ -544,7 +544,7 @@ func (e *Engine) notifyLetterArrived(row indexResultRow) {
 			if buttons, ok := p.(InlineButtonSender); ok && e.notifyStore != nil {
 				receipt, err := e.notifyStore.receipt(row.Letter)
 				if err == nil {
-					content, cardButtons := formatReceiptInboxCard(row.Letter, receipt, "", 0, 0)
+					content, cardButtons := formatReceiptInboxCard(e.i18n, row.Letter, receipt, "", 0, 0)
 					err = buttons.SendWithButtons(ctx, replyCtx, content, cardButtons)
 				}
 				if err != nil {
