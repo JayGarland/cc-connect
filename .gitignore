@@ -82,9 +82,11 @@ temp/
 *.pid
 *.log
 
-# Multi-workspace test fixtures created by core tests at run time
-# (e.g. TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir)
-core/test_ws_*.json
+# Session-manager test fixtures created by core tests at run time when a test's
+# Engine/SessionManager isn't pointed at a t.TempDir() dataDir — the "<seat>_ws_<hash>.json"
+# name comes straight from the seat name in the test (e.g. "dev-pro", "researcher-seat",
+# "test"), not just the literal "test" prefix (L-0437).
+core/*_ws_*.json
 
 # ============================================================================
 # IDE & Editor
