@@ -31,6 +31,50 @@ type stubAgentSession struct{}
 
 func (s *stubAgentSession) Send(_ string, _ []ImageAttachment, _ []FileAttachment) error { return nil }
 func (s *stubAgentSession) RespondPermission(_ string, _ PermissionResult) error         { return nil }
+
+func TestLetterCommandInjectsExactResultIntoCurrentMessage(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(indexPath, []byte("# INDEX\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeResultFile(t, filepath.Join(root, "threads"), "alpha", "L-0430", "## Conclusion\nsource text\n")
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig = NotifyConfig{IndexPath: indexPath}
+	msg := &Message{Content: "/letter L-0430 what changed?", SessionKey: "telegram:1:2", ReplyCtx: "ctx"}
+
+	if handled := e.handleCommand(p, msg, msg.Content); handled {
+		t.Fatal("/letter should continue into the current agent session")
+	}
+	for _, want := range []string{"[LETTER SOURCE]", "L-ID: L-0430", "source text", "[Boss query]\nwhat changed?"} {
+		if !strings.Contains(msg.Content, want) {
+			t.Fatalf("injected content missing %q: %q", want, msg.Content)
+		}
+	}
+	if msg.SessionKey != "telegram:1:2" || len(p.getSent()) != 0 {
+		t.Fatalf("/letter changed session or sent source to platform: session=%q sent=%#v", msg.SessionKey, p.getSent())
+	}
+}
+
+func TestLetterCommandMissingResultRepliesWithoutInjection(t *testing.T) {
+	root := t.TempDir()
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig = NotifyConfig{IndexPath: filepath.Join(root, "INDEX.md")}
+	msg := &Message{Content: "/letter L-9999", SessionKey: "telegram:1:2", ReplyCtx: "ctx"}
+
+	if handled := e.handleCommand(p, msg, msg.Content); !handled {
+		t.Fatal("missing RESULT must not reach the agent")
+	}
+	if msg.Content != "/letter L-9999" || len(p.getSent()) != 1 {
+		t.Fatalf("missing RESULT content/sent = %q/%#v", msg.Content, p.getSent())
+	}
+	invalid := &Message{Content: "/letter 0430", SessionKey: "telegram:1:2", ReplyCtx: "ctx"}
+	if handled := e.handleCommand(p, invalid, invalid.Content); !handled || len(p.getSent()) != 2 {
+		t.Fatalf("invalid L-ID must reply without injection: handled=%v sent=%#v", handled, p.getSent())
+	}
+}
 func (s *stubAgentSession) Events() <-chan Event                                         { return make(chan Event) }
 func (s *stubAgentSession) CurrentSessionID() string                                     { return "stub-session" }
 func (s *stubAgentSession) Alive() bool                                                  { return true }
@@ -945,23 +989,23 @@ func TestEngineReceiptPrimaryDeleteFailureRestoresPendingReceipt(t *testing.T) {
 
 func TestEngineLetterInjectsCurrentOriginalAndQuestionWithoutAcknowledging(t *testing.T) {
 	root := t.TempDir()
-	resultPath := writeResultFile(t, root, "alpha", "L-0436", "ID: L-0436\nStatus: DONE\n---\n\nimmutable body\n")
-	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
-	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0436", Thread: "alpha", Path: resultPath, Status: "DONE"}); err != nil {
+	indexPath := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(indexPath, []byte("# INDEX\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeResultFile(t, filepath.Join(root, "threads"), "alpha", "L-0436", "ID: L-0436\nStatus: DONE\n---\n\ncurrent body\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig = NotifyConfig{IndexPath: indexPath}
 	msg := &Message{SessionKey: "test:current", ReplyCtx: "ctx"}
 	if handled := e.handleCommand(p, msg, "/letter L-0436 what remains"); handled {
 		t.Fatal("letter must fall through to current agent session")
 	}
-	if !strings.Contains(msg.Content, "immutable body") || !strings.Contains(msg.Content, "what remains") {
+	if !strings.Contains(msg.Content, "current body") || !strings.Contains(msg.Content, "what remains") {
 		t.Fatalf("letter content = %q", msg.Content)
 	}
-	receipt, err := e.notifyStore.receipt("L-0436")
-	if err != nil || receipt.AcknowledgedAt != "" {
-		t.Fatalf("letter changed receipt: %+v, %v", receipt, err)
+	if len(p.getSent()) != 0 {
+		t.Fatalf("letter sent source to platform: %#v", p.getSent())
 	}
 }
 

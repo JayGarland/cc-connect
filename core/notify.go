@@ -135,6 +135,56 @@ type resultFileInfo struct {
 	ModTime time.Time
 }
 
+func resolveLetterResult(threadsDir, letter string) (resultFileInfo, []byte, error) {
+	if !validLetterID(letter) {
+		return resultFileInfo{}, nil, fmt.Errorf("invalid letter ID %q", letter)
+	}
+	files, err := scanResultFiles(threadsDir)
+	if err != nil {
+		return resultFileInfo{}, nil, err
+	}
+	var matches []resultFileInfo
+	for _, file := range files {
+		if file.Letter == letter {
+			matches = append(matches, file)
+		}
+	}
+	if len(matches) != 1 {
+		return resultFileInfo{}, nil, fmt.Errorf("RESULT for %s: expected one match, found %d", letter, len(matches))
+	}
+	body, err := os.ReadFile(matches[0].Path)
+	if err != nil {
+		return resultFileInfo{}, nil, fmt.Errorf("read RESULT for %s: %w", letter, err)
+	}
+	return matches[0], body, nil
+}
+
+func validLetterID(letter string) bool {
+	if len(letter) < 3 || letter[0] != 'L' || letter[1] != '-' {
+		return false
+	}
+	for _, ch := range letter[2:] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func formatLetterSourceEnvelope(letter, path string, source []byte, query string) string {
+	var b strings.Builder
+	b.WriteString("[LETTER SOURCE]\n")
+	fmt.Fprintf(&b, "L-ID: %s\nResult path: %s\n", letter, path)
+	b.WriteString("Instruction: Treat the following as the exact source for this L-ID. Do not search for another copy.\n---\n")
+	b.Write(source)
+	b.WriteString("\n---")
+	if query = strings.TrimSpace(query); query != "" {
+		b.WriteString("\n[Boss query]\n")
+		b.WriteString(query)
+	}
+	return b.String()
+}
+
 type notifyLedger struct {
 	Seeded   bool                     `json:"seeded"`
 	Notified map[string]string        `json:"notified"`

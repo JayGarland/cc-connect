@@ -35,8 +35,7 @@ Instruction: Treat the following as the exact source for this L-ID. Do not searc
 ## Failure and size handling
 
 - Invalid syntax, zero matches, multiple matches, or a read failure return a short error to the invoking chat and never invoke the Secretary.
-- A source under the ordinary message budget is injected in one agent input.
-- A source above that budget is deterministically split into numbered parts with the same L-ID; no agent file read or archive search is requested.
+- The complete source is always injected as one agent input. cc-connect has no universal agent-input limit; splitting here would create multiple user turns and could produce premature Secretary replies.
 
 ## Constraints
 

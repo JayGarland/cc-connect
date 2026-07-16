@@ -7328,23 +7328,7 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		}
 		return e.receiveReceipt(p, msg, letter, generation)
 	case "letter":
-		if len(args) == 0 {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
-			return true
-		}
-		receipt, err := e.notifyStore.receipt(args[0])
-		if err != nil {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
-			return true
-		}
-		original, err := os.ReadFile(receipt.ResultPath)
-		if err != nil {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
-			return true
-		}
-		question := strings.TrimSpace(strings.Join(args[1:], " "))
-		msg.Content = fmt.Sprintf("[RESULT SOURCE]\nL-ID: %s\nOriginal: %s\nThread: %s\n---\n%s\n---\nBoss question:\n%s", args[0], receipt.ResultPath, receipt.Thread, string(original), question)
-		return false
+		return e.cmdLetter(p, msg, args)
 
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
@@ -7380,6 +7364,21 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return false
 	}
 	return true
+}
+
+func (e *Engine) cmdLetter(p Platform, msg *Message, args []string) bool {
+	if len(args) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	result, source, err := resolveLetterResult(e.notifyConfig.threadsDir(), args[0])
+	if err != nil {
+		slog.Warn("letter: result unavailable", "letter", args[0], "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	msg.Content = formatLetterSourceEnvelope(args[0], result.Path, source, strings.Join(args[1:], " "))
+	return false
 }
 
 func (e *Engine) markReceipt(letter, user string) (receiptRecord, bool, error) {

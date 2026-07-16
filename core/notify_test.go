@@ -128,6 +128,37 @@ func TestScanResultFilesMissingThreadsDir(t *testing.T) {
 	}
 }
 
+func TestResolveLetterResultRequiresOneExactResult(t *testing.T) {
+	root := t.TempDir()
+	threadsDir := filepath.Join(root, "threads")
+	path := writeResultFile(t, threadsDir, "alpha", "L-0430", "## Conclusion\nexact source\n")
+	got, body, err := resolveLetterResult(threadsDir, "L-0430")
+	if err != nil || got.Path != path || string(body) != "## Conclusion\nexact source\n" {
+		t.Fatalf("exact result = (%+v, %q, %v)", got, body, err)
+	}
+	if _, _, err := resolveLetterResult(threadsDir, "0430"); err == nil {
+		t.Fatal("accepted an invalid L-ID")
+	}
+	if _, _, err := resolveLetterResult(threadsDir, "L-9999"); err == nil {
+		t.Fatal("resolved a missing RESULT")
+	}
+	writeResultFile(t, threadsDir, "beta", "L-0430", "duplicate")
+	if _, _, err := resolveLetterResult(threadsDir, "L-0430"); err == nil {
+		t.Fatal("resolved an ambiguous RESULT")
+	}
+}
+
+func TestFormatLetterSourceEnvelopeIncludesOnlySuppliedQuery(t *testing.T) {
+	withoutQuery := formatLetterSourceEnvelope("L-0430", "F:\\archive\\L-0430.result.md", []byte("source"), "")
+	if !strings.Contains(withoutQuery, "[LETTER SOURCE]") || strings.Contains(withoutQuery, "[Boss query]") {
+		t.Fatalf("envelope without query = %q", withoutQuery)
+	}
+	withQuery := formatLetterSourceEnvelope("L-0430", "F:\\archive\\L-0430.result.md", []byte("source"), "what changed?")
+	if !strings.Contains(withQuery, "[Boss query]\nwhat changed?") {
+		t.Fatalf("envelope with query = %q", withQuery)
+	}
+}
+
 func TestExtractResultSummary(t *testing.T) {
 	root := t.TempDir()
 	donePath := writeResultFile(t, root, "alpha", "L-0100", "---\nID: L-0100\n---\n\n## Conclusion\nfirst answer.\n\n## Options for Boss\n...\n")
