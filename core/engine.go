@@ -7329,6 +7329,27 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			}
 			return e.handoffReceiptToPrimary(p, msg, args[1], generation)
 		}
+		if args[0] == "close" && (len(args) == 2 || len(args) == 3) {
+			generation := ""
+			if len(args) == 3 {
+				generation = args[2]
+			}
+			return e.showReceiptCloseConfirm(p, msg, args[1], generation)
+		}
+		if args[0] == "closecancel" && (len(args) == 2 || len(args) == 3) {
+			generation := ""
+			if len(args) == 3 {
+				generation = args[2]
+			}
+			return e.cancelReceiptClose(p, msg, args[1], generation)
+		}
+		if args[0] == "closeconfirm" && (len(args) == 2 || len(args) == 3) {
+			generation := ""
+			if len(args) == 3 {
+				generation = args[2]
+			}
+			return e.closeReceiptFromInbox(p, msg, args[1], generation)
+		}
 		letter := args[0]
 		generation := ""
 		if args[0] == "receive" && (len(args) == 2 || len(args) == 3) {
@@ -7450,6 +7471,7 @@ func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, 
 		buttons = append(buttons, nav)
 	}
 	buttons = append(buttons, []ButtonOption{{Text: e.i18n.T(MsgReceiptCollapse), Data: "cmd:/receipt collapse " + letter + " " + receipt.Generation}, {Text: e.i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter + " " + receipt.Generation}, {Text: e.i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + receipt.Generation}})
+	buttons = append(buttons, []ButtonOption{{Text: e.i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + receipt.Generation}})
 	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 	}
@@ -7543,6 +7565,145 @@ func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string
 	msg.ReplyCtx = targetReplyCtx
 	msg.Content = string(original)
 	return false
+}
+
+// showReceiptCloseConfirm renders the two-stage confirmation prompt for the
+// 🔒封信 button. Closing a letter registers Boss's acceptance in the archive
+// and (per L-0449) pushes it to the shared remote, so it is never a single
+// click — the card must be confirmed or cancelled explicitly.
+func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string, generation ...string) bool {
+	if !e.isAdmin(msg.UserID) {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/receipt close"))
+		return true
+	}
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	updater, ok := p.(InlineMessageUpdater)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	content := e.i18n.Tf(MsgReceiptCloseConfirm, letter)
+	buttons := [][]ButtonOption{{
+		{Text: e.i18n.T(MsgReceiptCloseConfirmBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation},
+		{Text: e.i18n.T(MsgReceiptCloseCancelBtn), Data: "cmd:/receipt closecancel " + letter + " " + receipt.Generation},
+	}}
+	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+	}
+	return true
+}
+
+// cancelReceiptClose restores the normal inbox card after Boss backs out of
+// the close confirmation.
+func (e *Engine) cancelReceiptClose(p Platform, msg *Message, letter string, generation ...string) bool {
+	if !e.isAdmin(msg.UserID) {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/receipt close"))
+		return true
+	}
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	updater, ok := p.(InlineMessageUpdater)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+	}
+	return true
+}
+
+// closeReceiptFromInbox runs the confirmed close: it shells out to
+// archive-daily.ps1 -Close -Push (see L-0449), which is idempotent on the
+// INDEX row (archive-write.ps1 reports already_exists on a repeat), so
+// retrying this handler after a partial failure never double-closes the
+// letter. Local CLOSED registration and remote sync are reported
+// separately: a local-only success (push failed) intentionally leaves the
+// card in place with a retry button rather than silently declaring victory
+// or discarding the fact that the ledger isn't synced yet.
+func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, generation ...string) bool {
+	if !e.isAdmin(msg.UserID) {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/receipt close"))
+		return true
+	}
+	receipt, err := e.notifyStore.receipt(letter)
+	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	updater, hasUpdater := p.(InlineMessageUpdater)
+	pushed, closeErr := e.runArchiveClose(letter, receipt)
+	if closeErr != nil {
+		slog.Warn("receipt: close failed", "letter", letter, "error", closeErr)
+		if hasUpdater {
+			content := e.i18n.Tf(MsgReceiptCloseFailed, letter, closeErr.Error())
+			retry := [][]ButtonOption{{{Text: e.i18n.T(MsgReceiptCloseRetryBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation}}}
+			_ = updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, retry)
+		} else {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		}
+		return true
+	}
+	if !pushed {
+		slog.Warn("receipt: closed locally but push failed", "letter", letter)
+		if hasUpdater {
+			content := e.i18n.Tf(MsgReceiptClosePending, letter, "push failed — see cc-connect logs")
+			retry := [][]ButtonOption{{{Text: e.i18n.T(MsgReceiptCloseRetryBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation}}}
+			_ = updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, retry)
+		} else {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		}
+		return true
+	}
+	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
+		slog.Warn("receipt: close succeeded but local receipt bookkeeping failed", "letter", letter, "error", err)
+	}
+	if deleter, ok := p.(MessageDeleter); !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
+		slog.Warn("receipt: close succeeded but card delete failed", "letter", letter)
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptCloseSuccess, letter))
+	return true
+}
+
+// runArchiveClose shells out to archive-daily.ps1 -Close -Push and reports
+// whether the remote sync succeeded. A nil error means the CLOSED row landed
+// in the local archive commit; pushed distinguishes "and synced to origin"
+// from "committed locally, remote sync pending."
+func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed bool, err error) {
+	archiveRoot := filepath.Dir(e.notifyConfig.IndexPath)
+	script := filepath.Join(archiveRoot, "scripts", "archive-daily.ps1")
+	summary := fmt.Sprintf("✅ 总裁验收（Telegram 一键封信）：%s", receipt.Summary)
+	ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-File", script,
+		"-ArchiveRoot", archiveRoot,
+		"-LetterPath", receipt.ResultPath,
+		"-Summary", summary,
+		"-Close", "-Push")
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		return false, fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
+	}
+	var receiptJSON struct {
+		Pushed    bool   `json:"pushed"`
+		PushError string `json:"push_error"`
+	}
+	if jsonErr := json.Unmarshal(out, &receiptJSON); jsonErr != nil {
+		return false, fmt.Errorf("could not parse archive-daily output: %v (output: %s)", jsonErr, strings.TrimSpace(string(out)))
+	}
+	if !receiptJSON.Pushed {
+		slog.Warn("receipt: archive close committed but push failed", "letter", letter, "push_error", receiptJSON.PushError)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (e *Engine) cmdInbox(p Platform, msg *Message) {
