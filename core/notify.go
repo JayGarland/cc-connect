@@ -212,6 +212,7 @@ type receiptRecord struct {
 	AcknowledgedAt       string          `json:"acknowledged_at,omitempty"`
 	AcknowledgedBy       string          `json:"acknowledged_by,omitempty"`
 	ForwardedAt          string          `json:"forwarded_at,omitempty"`
+	ClosedAt             string          `json:"closed_at,omitempty"`
 	OpenPoints           []string        `json:"open_points,omitempty"`
 	Update               receiptUpdate   `json:"update,omitempty"`
 }
@@ -389,6 +390,10 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 			record.ForwardedAt = ""
 			record.Card = nil
 		}
+		// A new generation supersedes any prior close too (L-0455): the archived
+		// CLOSED row belongs to the previous content, not this update, so close
+		// must be reachable again for the freshly-arrived generation.
+		record.ClosedAt = ""
 	}
 	if record.ResultPath == "" {
 		record.ResultPath = row.Path
@@ -458,6 +463,32 @@ func (s *notifyStore) acknowledge(letter, user string) (receiptRecord, bool, err
 	}
 	record.AcknowledgedAt = time.Now().UTC().Format(time.RFC3339)
 	record.AcknowledgedBy = user
+	ledger.Receipts[letter] = record
+	return record, true, s.save(ledger)
+}
+
+// markClosed records that a letter has completed archive-daily.ps1 -Close
+// -Push. It is independent of AcknowledgedAt: a letter can be closed before,
+// during, or after 收件/交主秘书, so this must not reuse acknowledge's state
+// or its "already set" semantics would block a legitimate post-ack close.
+func (s *notifyStore) markClosed(letter string) (receiptRecord, bool, error) {
+	if s == nil {
+		return receiptRecord{}, false, fmt.Errorf("receipt store unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger, err := s.load()
+	if err != nil {
+		return receiptRecord{}, false, err
+	}
+	record, exists := ledger.Receipts[letter]
+	if !exists {
+		return receiptRecord{}, false, fmt.Errorf("receipt %s not found", letter)
+	}
+	if record.ClosedAt != "" {
+		return record, false, nil
+	}
+	record.ClosedAt = time.Now().UTC().Format(time.RFC3339)
 	ledger.Receipts[letter] = record
 	return record, true, s.save(ledger)
 }
@@ -677,9 +708,22 @@ func inboxDate(arrivedAt string) string {
 }
 
 func collectPendingInboxEntries(ledger notifyLedger) []inboxQueueEntry {
-	var pending []inboxQueueEntry
+	return collectInboxEntries(ledger, func(r receiptRecord) bool { return r.AcknowledgedAt == "" })
+}
+
+// collectPendingCloseEntries lists letters that have been acknowledged
+// (收件/交主秘书) but not yet closed. It is the read-only /inbox fallback for
+// locating a letter whose pending-close card (L-0455) was scrolled away or
+// predates this change — it does not carry buttons itself, since each such
+// letter already has its own actionable pending-close card in the topic.
+func collectPendingCloseEntries(ledger notifyLedger) []inboxQueueEntry {
+	return collectInboxEntries(ledger, func(r receiptRecord) bool { return r.AcknowledgedAt != "" && r.ClosedAt == "" })
+}
+
+func collectInboxEntries(ledger notifyLedger, include func(receiptRecord) bool) []inboxQueueEntry {
+	var entries []inboxQueueEntry
 	for letter, record := range ledger.Receipts {
-		if record.AcknowledgedAt != "" {
+		if !include(record) {
 			continue
 		}
 		to := record.To
@@ -690,7 +734,7 @@ func collectPendingInboxEntries(ledger notifyLedger) []inboxQueueEntry {
 		if from == "" && record.ResultPath != "" {
 			from = extractResultFromFromPath(record.ResultPath)
 		}
-		pending = append(pending, inboxQueueEntry{
+		entries = append(entries, inboxQueueEntry{
 			Letter:  letter,
 			Thread:  record.Thread,
 			To:      to,
@@ -699,13 +743,13 @@ func collectPendingInboxEntries(ledger notifyLedger) []inboxQueueEntry {
 			Summary: truncateRunes(record.Summary, inboxSummaryMaxRunes),
 		})
 	}
-	sort.Slice(pending, func(i, j int) bool {
-		if pending[i].Date != pending[j].Date {
-			return pending[i].Date < pending[j].Date
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Date != entries[j].Date {
+			return entries[i].Date < entries[j].Date
 		}
-		return pending[i].Letter < pending[j].Letter
+		return entries[i].Letter < entries[j].Letter
 	})
-	return pending
+	return entries
 }
 
 func formatInboxQueueLine(entry inboxQueueEntry) string {
@@ -739,15 +783,27 @@ func formatInboxQueueLine(entry inboxQueueEntry) string {
 	}
 }
 
-func formatInboxBoard(i18n *I18n, entries []inboxQueueEntry) string {
-	if len(entries) == 0 {
+func formatInboxBoard(i18n *I18n, entries []inboxQueueEntry, pendingClose []inboxQueueEntry) string {
+	if len(entries) == 0 && len(pendingClose) == 0 {
 		return i18n.T(MsgInboxEmpty)
 	}
 	var b strings.Builder
-	b.WriteString(i18n.Tf(MsgInboxQueueHeader, len(entries)))
-	for _, entry := range entries {
-		b.WriteByte('\n')
-		b.WriteString(formatInboxQueueLine(entry))
+	if len(entries) > 0 {
+		b.WriteString(i18n.Tf(MsgInboxQueueHeader, len(entries)))
+		for _, entry := range entries {
+			b.WriteByte('\n')
+			b.WriteString(formatInboxQueueLine(entry))
+		}
+	}
+	if len(pendingClose) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(i18n.Tf(MsgInboxPendingCloseHeader, len(pendingClose)))
+		for _, entry := range pendingClose {
+			b.WriteByte('\n')
+			b.WriteString(formatInboxQueueLine(entry))
+		}
 	}
 	return b.String()
 }
@@ -878,6 +934,21 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 		{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
 	})
 	buttons = append(buttons, []ButtonOption{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}})
+	return content, buttons
+}
+
+// formatPendingCloseCard renders the minimal successor card posted after
+// 收件/交主秘书 acknowledges a letter that has not yet been closed (L-0455).
+// It carries only the 🔒封信 button so the close flow — deleted along with
+// the original card once AcknowledgedAt was (incorrectly) reused as the
+// close gate — stays reachable without resurrecting the full inbox card.
+func formatPendingCloseCard(i18n *I18n, letter string, record receiptRecord) (string, [][]ButtonOption) {
+	generation := record.Generation
+	if generation == "" {
+		generation = record.ArrivedAt
+	}
+	content := i18n.Tf(MsgReceiptPendingClose, letter)
+	buttons := [][]ButtonOption{{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}}}
 	return content, buttons
 }
 

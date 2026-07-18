@@ -538,6 +538,8 @@ const (
 	MsgReceiptCloseUnconfirmed MsgKey = "receipt_close_unconfirmed"
 	MsgReceiptCloseFailed      MsgKey = "receipt_close_failed"
 	MsgReceiptCloseRetryBtn    MsgKey = "receipt_close_retry_btn"
+	MsgReceiptPendingClose     MsgKey = "receipt_pending_close"
+	MsgInboxPendingCloseHeader MsgKey = "inbox_pending_close_header"
 	MsgReceiptEmptyOriginal    MsgKey = "receipt_empty_original"
 	MsgReceiptUpdated          MsgKey = "receipt_updated"
 	MsgReceiptOpenPoints       MsgKey = "receipt_open_points"
@@ -865,6 +867,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "📥 受信箱の未処理キュー (%d)",
 		LangSpanish:            "📥 Cola pendiente de la bandeja (%d)",
 	},
+	MsgInboxPendingCloseHeader: {
+		LangEnglish:            "🔒 Pending close (%d)",
+		LangChinese:            "🔒 待封信 (%d)",
+		LangTraditionalChinese: "🔒 待封信 (%d)",
+		LangJapanese:           "🔒 結案待ち (%d)",
+		LangSpanish:            "🔒 Pendiente de cierre (%d)",
+	},
 	MsgReceiptInbox: {
 		LangEnglish:            "Pending receipts:%s",
 		LangChinese:            "待收件：%s",
@@ -956,6 +965,13 @@ var messages = map[MsgKey]map[Language]string{
 	},
 	MsgReceiptCloseRetryBtn: {
 		LangEnglish: "🔄 Retry sync", LangChinese: "🔄 重试同步", LangTraditionalChinese: "🔄 重試同步", LangJapanese: "🔄 同期を再試行", LangSpanish: "🔄 Reintentar sincronización",
+	},
+	MsgReceiptPendingClose: {
+		LangEnglish:            "🔒 %s pending close — acknowledged, waiting to be archived.",
+		LangChinese:            "🔒 %s 待封信——已收件/交主秘书，等待归档结案。",
+		LangTraditionalChinese: "🔒 %s 待封信——已收件/交主秘書，等待歸檔結案。",
+		LangJapanese:           "🔒 %s 結案待ち——受領済み、アーカイブ待ちです。",
+		LangSpanish:            "🔒 %s pendiente de cierre — recibido, en espera de ser archivado.",
 	},
 	MsgReceiptEmptyOriginal: {
 		LangEnglish:            "(Original is empty)",
