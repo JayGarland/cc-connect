@@ -6918,7 +6918,7 @@ var builtinCommands = []struct {
 	{[]string{"name", "rename"}, "name"},
 	{[]string{"current"}, "current"},
 	{[]string{"status"}, "status"},
-	{[]string{"mail", "inbox"}, "mail"},
+	{[]string{"mail"}, "mail"},
 	{[]string{"usage", "quota"}, "usage"},
 	{[]string{"history"}, "history"},
 	{[]string{"allow"}, "allow"},

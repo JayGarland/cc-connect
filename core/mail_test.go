@@ -163,8 +163,8 @@ func TestCmdMail_ZeroAIPath(t *testing.T) {
 		t.Fatalf("other threads leaked:\n%s", got)
 	}
 
-	if id := matchPrefix("inbox", builtinCommands); id != "mail" {
-		t.Fatalf("inbox alias = %q", id)
+	if id := matchPrefix("inbox", builtinCommands); id != "receipt" {
+		t.Fatalf("inbox alias = %q, want receipt", id)
 	}
 	if id := matchPrefix("mail", builtinCommands); id != "mail" {
 		t.Fatalf("mail id = %q", id)
