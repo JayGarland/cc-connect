@@ -608,6 +608,12 @@ const (
 	MsgMailNoArchive       MsgKey = "mail_no_archive"
 	MsgMailUnreadable      MsgKey = "mail_unreadable"
 	MsgMailUsageError      MsgKey = "mail_usage_error"
+	MsgMailTitle           MsgKey = "mail_title"
+	MsgMailFilterThread    MsgKey = "mail_filter_thread"
+	MsgMailFilterSince     MsgKey = "mail_filter_since"
+	MsgMailEmpty           MsgKey = "mail_empty"
+	MsgMailUsageHint       MsgKey = "mail_usage_hint"
+	MsgMailItem            MsgKey = "mail_item"
 	MsgBuiltinCmdHelp      MsgKey = "help"
 	MsgBuiltinCmdBind      MsgKey = "bind"
 	MsgBuiltinCmdShell     MsgKey = "shell"
@@ -3930,6 +3936,48 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "📬 /mail 參數錯誤: %s\n用法: /mail [--thread <slug>] [--since MM-DD]",
 		LangJapanese:           "📬 /mail 引数エラー: %s\n用法: /mail [--thread <slug>] [--since MM-DD]",
 		LangSpanish:            "📬 Error de uso /mail: %s\nUso: /mail [--thread <slug>] [--since MM-DD]",
+	},
+	MsgMailTitle: {
+		LangEnglish:            "📬 Active letters (INDEX tail %d lines)\n",
+		LangChinese:            "📬 活跃信件（INDEX 尾部 %d 行）\n",
+		LangTraditionalChinese: "📬 活躍信件（INDEX 尾部 %d 行）\n",
+		LangJapanese:           "📬 アクティブ手紙（INDEX 末尾 %d 行）\n",
+		LangSpanish:            "📬 Cartas activas (cola INDEX %d líneas)\n",
+	},
+	MsgMailFilterThread: {
+		LangEnglish:            "filter thread: %s\n",
+		LangChinese:            "筛选 thread: %s\n",
+		LangTraditionalChinese: "篩選 thread: %s\n",
+		LangJapanese:           "thread 絞り込み: %s\n",
+		LangSpanish:            "filtro thread: %s\n",
+	},
+	MsgMailFilterSince: {
+		LangEnglish:            "filter since: %s\n",
+		LangChinese:            "筛选 since: %s\n",
+		LangTraditionalChinese: "篩選 since: %s\n",
+		LangJapanese:           "since 絞り込み: %s\n",
+		LangSpanish:            "filtro since: %s\n",
+	},
+	MsgMailEmpty: {
+		LangEnglish:            "(no active QUERY/RESULT)\n",
+		LangChinese:            "（无活跃 QUERY/RESULT）\n",
+		LangTraditionalChinese: "（無活躍 QUERY/RESULT）\n",
+		LangJapanese:           "（アクティブな QUERY/RESULT なし）\n",
+		LangSpanish:            "(sin QUERY/RESULT activos)\n",
+	},
+	MsgMailUsageHint: {
+		LangEnglish:            "Usage: /mail [--thread <slug>] [--since MM-DD]",
+		LangChinese:            "用法: /mail [--thread <slug>] [--since MM-DD]",
+		LangTraditionalChinese: "用法: /mail [--thread <slug>] [--since MM-DD]",
+		LangJapanese:           "用法: /mail [--thread <slug>] [--since MM-DD]",
+		LangSpanish:            "Uso: /mail [--thread <slug>] [--since MM-DD]",
+	},
+	MsgMailItem: {
+		LangEnglish:            "• %s %s [%s] — %s\n",
+		LangChinese:            "• %s %s [%s] — %s\n",
+		LangTraditionalChinese: "• %s %s [%s] — %s\n",
+		LangJapanese:           "• %s %s [%s] — %s\n",
+		LangSpanish:            "• %s %s [%s] — %s\n",
 	},
 	MsgBuiltinCmdUsage: {
 		LangEnglish:            "Show account/model quota usage",

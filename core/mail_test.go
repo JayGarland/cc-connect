@@ -59,7 +59,14 @@ func TestNormalizeIndexDateAndCompare(t *testing.T) {
 		t.Fatal("07-14 should not be >= 07-15")
 	}
 	if !dateOnOrAfter("2026-07-16", "07-15") {
-		t.Fatal("YYYY-MM-DD should compare via MM-DD")
+		t.Fatal("mixed YYYY-MM-DD vs MM-DD should compare via MM-DD")
+	}
+	// Year-aware: Jan 2027 is after Dec 2026 (would fail if truncated to MM-DD).
+	if !dateOnOrAfter("2027-01-01", "2026-12-31") {
+		t.Fatal("2027-01-01 should be >= 2026-12-31")
+	}
+	if dateOnOrAfter("2026-12-31", "2027-01-01") {
+		t.Fatal("2026-12-31 should not be >= 2027-01-01")
 	}
 }
 
@@ -119,7 +126,7 @@ func TestCollectActiveMailLetters_ThreadAndSince(t *testing.T) {
 
 func TestFormatMailOverview(t *testing.T) {
 	letters := collectActiveMailLetters(sampleIndexTail(), mailOpts{})
-	body := formatMailOverview(letters, mailOpts{}, 200)
+	body := formatMailOverview(NewI18n(LangEnglish), letters, mailOpts{}, 200)
 	if !strings.Contains(body, "## cc-connect-maintenance") {
 		t.Fatalf("missing thread header:\n%s", body)
 	}
@@ -128,6 +135,15 @@ func TestFormatMailOverview(t *testing.T) {
 	}
 	if strings.Contains(body, "L-0435") {
 		t.Fatalf("CLOSED letter leaked:\n%s", body)
+	}
+	// First-seen thread order: maintenance appears before permission-mode in sample.
+	mi := strings.Index(body, "## cc-connect-maintenance")
+	pi := strings.Index(body, "## cc-connect-permission-mode")
+	if mi < 0 || pi < 0 || mi > pi {
+		t.Fatalf("want first-seen thread order, got:\n%s", body)
+	}
+	if !strings.Contains(body, "Active letters") {
+		t.Fatalf("want English i18n title:\n%s", body)
 	}
 }
 

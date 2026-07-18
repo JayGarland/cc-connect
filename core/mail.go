@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -57,25 +56,35 @@ func parseMailArgs(args []string) (mailOpts, error) {
 	return opts, nil
 }
 
-// normalizeIndexDate collapses YYYY-MM-DD → MM-DD for lexicographic compare.
+func isFullIndexDate(d string) bool {
+	return len(d) == 10 && d[4] == '-' && d[7] == '-'
+}
+
+// normalizeIndexDate returns the MM-DD portion of an INDEX date cell.
 func normalizeIndexDate(d string) string {
 	d = strings.TrimSpace(d)
-	if len(d) == 10 && d[4] == '-' && d[7] == '-' {
+	if isFullIndexDate(d) {
 		return d[5:]
 	}
 	return d
 }
 
+// dateOnOrAfter reports whether rowDate is on or after since.
+// When both sides are YYYY-MM-DD, compare full dates (year-aware).
+// Otherwise fall back to MM-DD lexicographic compare (INDEX often omits the year).
 func dateOnOrAfter(rowDate, since string) bool {
 	if since == "" {
 		return true
 	}
-	rd := normalizeIndexDate(rowDate)
-	sd := normalizeIndexDate(since)
-	if rd == "" {
+	rowDate = strings.TrimSpace(rowDate)
+	since = strings.TrimSpace(since)
+	if rowDate == "" {
 		return false
 	}
-	return rd >= sd
+	if isFullIndexDate(rowDate) && isFullIndexDate(since) {
+		return rowDate >= since
+	}
+	return normalizeIndexDate(rowDate) >= normalizeIndexDate(since)
 }
 
 // mailLetter is the latest non-CLOSED state for one letter ID.
@@ -160,24 +169,25 @@ func collectActiveMailLetters(indexTail string, opts mailOpts) []mailLetter {
 }
 
 // formatMailOverview groups active letters by thread for Telegram.
-func formatMailOverview(letters []mailLetter, opts mailOpts, tailLines int) string {
+// Thread sections follow first-seen order in the INDEX tail (not alphabetical).
+func formatMailOverview(i18n *I18n, letters []mailLetter, opts mailOpts, tailLines int) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📬 活跃信件（INDEX 尾部 %d 行）\n", tailLines))
+	fmt.Fprintf(&b, i18n.T(MsgMailTitle), tailLines)
 	if opts.Thread != "" {
-		b.WriteString(fmt.Sprintf("筛选 thread: %s\n", opts.Thread))
+		fmt.Fprintf(&b, i18n.T(MsgMailFilterThread), opts.Thread)
 	}
 	if opts.Since != "" {
-		b.WriteString(fmt.Sprintf("筛选 since: %s\n", opts.Since))
+		fmt.Fprintf(&b, i18n.T(MsgMailFilterSince), opts.Since)
 	}
 	b.WriteString("\n")
 
 	if len(letters) == 0 {
-		b.WriteString("（无活跃 QUERY/RESULT）\n")
-		b.WriteString("\n用法: /mail [--thread <slug>] [--since MM-DD]")
+		b.WriteString(i18n.T(MsgMailEmpty))
+		b.WriteString("\n")
+		b.WriteString(i18n.T(MsgMailUsageHint))
 		return b.String()
 	}
 
-	// Preserve first-seen thread order, letters already in INDEX order.
 	threads := make([]string, 0)
 	byThread := map[string][]mailLetter{}
 	for _, l := range letters {
@@ -186,9 +196,6 @@ func formatMailOverview(letters []mailLetter, opts mailOpts, tailLines int) stri
 		}
 		byThread[l.Thread] = append(byThread[l.Thread], l)
 	}
-	sort.SliceStable(threads, func(i, j int) bool {
-		return threads[i] < threads[j]
-	})
 
 	for _, th := range threads {
 		b.WriteString("## ")
@@ -196,11 +203,11 @@ func formatMailOverview(letters []mailLetter, opts mailOpts, tailLines int) stri
 		b.WriteString("\n")
 		for _, l := range byThread[th] {
 			sum := truncateRunes(l.Summary, mailSummaryMaxRunes)
-			b.WriteString(fmt.Sprintf("• %s %s [%s] — %s\n", l.ID, l.Type, l.Status, sum))
+			fmt.Fprintf(&b, i18n.T(MsgMailItem), l.ID, l.Type, l.Status, sum)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("用法: /mail [--thread <slug>] [--since MM-DD]")
+	b.WriteString(i18n.T(MsgMailUsageHint))
 	return strings.TrimSpace(b.String())
 }
 
@@ -239,7 +246,7 @@ func (e *Engine) cmdMail(p Platform, msg *Message, args []string) {
 	}
 
 	letters := collectActiveMailLetters(tail, opts)
-	body := formatMailOverview(letters, opts, mailDefaultTailLines)
+	body := formatMailOverview(e.i18n, letters, opts, mailDefaultTailLines)
 
 	for _, chunk := range splitMessage(body, maxPlatformMessageLen) {
 		e.reply(p, msg.ReplyCtx, chunk)
