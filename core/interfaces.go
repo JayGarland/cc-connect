@@ -229,6 +229,25 @@ type SystemPromptSupporter interface {
 	HasSystemPromptSupport() bool
 }
 
+// PromptFootprint estimates the non-history prompt overhead an agent injects
+// into each turn. context_guard uses this as a fallback when provider-reported
+// usage is unavailable (L-0428 P1-C).
+type PromptFootprint struct {
+	StaticTokens  int // durable: system rules, persona, workspace instructions, skills
+	SessionTokens int // per-session: platform formatting, rehydration digest, runtime preamble
+}
+
+// Total returns StaticTokens + SessionTokens.
+func (p PromptFootprint) Total() int {
+	return p.StaticTokens + p.SessionTokens
+}
+
+// PromptFootprintProvider is an optional interface for agents that can report
+// harness-aware prompt overhead instead of relying on name-based flat allowances.
+type PromptFootprintProvider interface {
+	PromptFootprint() PromptFootprint
+}
+
 // SessionIDValidator is an optional interface for agents that can validate
 // whether a stored session ID actually belongs to the current project's
 // session store. The engine uses this to prevent cross-project session

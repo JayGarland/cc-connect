@@ -155,3 +155,92 @@ func TestSyncArchiveFirstAGENTSMD_ConsumesRehydrationDigest(t *testing.T) {
 		t.Fatal("expected AGENTS.md to exclude session-scoped rehydration digest")
 	}
 }
+
+func TestSyncArchiveFirstAGENTSMD_IncludesSystemPromptAndSeatPersona(t *testing.T) {
+	workDir := t.TempDir()
+	personasDir := t.TempDir()
+	preambleDir := filepath.Join(personasDir, "_preamble")
+	if err := os.MkdirAll(preambleDir, 0o755); err != nil {
+		t.Fatalf("mkdir preamble dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(preambleDir, "archive-first.write.md"), []byte("WRITE PREAMBLE"), 0o644); err != nil {
+		t.Fatalf("write preamble: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personasDir, "dev-pro.md"), []byte("DEV PRO PERSONA"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+
+	syncArchiveFirstAGENTSMD(workDir, []string{
+		"CC_PROJECT=dev-pro",
+		"CC_PERSONAS_DIR=" + personasDir,
+		"CC_PERSONA_CLASS=write",
+	})
+
+	data, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	content := string(data)
+
+	systemMarker := "You are running inside cc-connect"
+	systemIndex := strings.Index(content, systemMarker)
+	preambleIndex := strings.Index(content, "WRITE PREAMBLE")
+	personaIndex := strings.Index(content, "DEV PRO PERSONA")
+	if systemIndex < 0 || preambleIndex < 0 || personaIndex < 0 {
+		t.Fatalf("AGENTS.md must contain system rules, preamble, and seat persona, got:\n%s", content)
+	}
+	if systemIndex >= preambleIndex || preambleIndex >= personaIndex {
+		t.Fatalf("expected order system → preamble → persona, got indexes %d/%d/%d\n%s",
+			systemIndex, preambleIndex, personaIndex, content)
+	}
+}
+
+func TestSyncArchiveFirstAGENTSMD_SystemPromptOnlyWithoutPersonaEnv(t *testing.T) {
+	workDir := t.TempDir()
+	syncArchiveFirstAGENTSMD(workDir, nil)
+
+	data, err := os.ReadFile(filepath.Join(workDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(data), "You are running inside cc-connect") {
+		t.Fatalf("expected system rules even without persona env, got:\n%s", data)
+	}
+}
+
+func TestPromptFootprint_CountsManagedStaticAndRuntimeDigest(t *testing.T) {
+	personasDir := t.TempDir()
+	preambleDir := filepath.Join(personasDir, "_preamble")
+	if err := os.MkdirAll(preambleDir, 0o755); err != nil {
+		t.Fatalf("mkdir preamble: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(preambleDir, "archive-first.write.md"), []byte("WRITE PREAMBLE"), 0o644); err != nil {
+		t.Fatalf("write preamble: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(personasDir, "architect-codex.md"), []byte("CODEX PERSONA"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+
+	agent := &Agent{
+		workDir:      t.TempDir(),
+		systemPrompt: "SYS",
+		appendPrompt: "APPEND",
+		sessionEnv: []string{
+			"CC_PROJECT=architect-codex",
+			"CC_PERSONAS_DIR=" + personasDir,
+			"CC_PERSONA_CLASS=write",
+			"CC_REHYDRATION_DIGEST=" + strings.Repeat("DIGEST ", 100),
+		},
+	}
+
+	fp := agent.PromptFootprint()
+	if fp.StaticTokens <= 0 {
+		t.Fatalf("StaticTokens = %d, want > 0", fp.StaticTokens)
+	}
+	if fp.SessionTokens <= 0 {
+		t.Fatalf("SessionTokens = %d, want > 0 (runtime preamble/digest)", fp.SessionTokens)
+	}
+	if fp.Total() != fp.StaticTokens+fp.SessionTokens {
+		t.Fatalf("Total() = %d, want %d", fp.Total(), fp.StaticTokens+fp.SessionTokens)
+	}
+}

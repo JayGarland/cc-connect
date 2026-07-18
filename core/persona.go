@@ -57,6 +57,57 @@ func ComposePersona(personasDir string, class PersonaClass, personaContent strin
 	return preamble + "\n\n---\n\n" + personaContent
 }
 
+// ParsePersonaEnv extracts CC_PROJECT / CC_PERSONAS_DIR / CC_PERSONA_CLASS from
+// a session or spawn env slice.
+func ParsePersonaEnv(extraEnv []string) (project, personasDir, personaClass string) {
+	for _, kv := range extraEnv {
+		idx := strings.Index(kv, "=")
+		if idx < 0 {
+			continue
+		}
+		switch kv[:idx] {
+		case "CC_PROJECT":
+			project = kv[idx+1:]
+		case "CC_PERSONAS_DIR":
+			personasDir = kv[idx+1:]
+		case "CC_PERSONA_CLASS":
+			personaClass = kv[idx+1:]
+		}
+	}
+	return project, personasDir, personaClass
+}
+
+// EnvValue returns the last value for key in an KEY=VALUE env slice.
+// Later entries win, matching exec.Cmd.Env / MergeEnv override semantics
+// (configEnv then sessionEnv).
+func EnvValue(extraEnv []string, key string) string {
+	prefix := key + "="
+	value := ""
+	for _, kv := range extraEnv {
+		if strings.HasPrefix(kv, prefix) {
+			value = kv[len(prefix):]
+		}
+	}
+	return value
+}
+
+// LoadComposedPersonaFromEnv loads the seat persona file named by CC_PROJECT
+// and composes it with the archive-first preamble selected by CC_PERSONA_CLASS.
+// Returns "" when neither a persona file nor a class is available.
+func LoadComposedPersonaFromEnv(extraEnv []string) string {
+	project, personasDir, personaClass := ParsePersonaEnv(extraEnv)
+	var rawPersona string
+	if project != "" && personasDir != "" {
+		if data, err := os.ReadFile(filepath.Join(personasDir, project+".md")); err == nil {
+			rawPersona = strings.TrimSpace(string(data))
+		}
+	}
+	if personaClass != "" {
+		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona)
+	}
+	return rawPersona
+}
+
 // Markers bounding the archive-first block that gets synced into Codex's
 // AGENTS.md, since Codex has no native persona/system-prompt injection path
 // (L-0131) and reads project memory from that file instead.

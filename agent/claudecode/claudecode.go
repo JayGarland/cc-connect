@@ -72,6 +72,8 @@ type Agent struct {
 	// means legacy spawn as the supervisor user. See core/runas.go.
 	spawnOpts core.SpawnOptions
 
+	skillTokenCache core.SkillTokenCache // memoizes PromptFootprint skill scan
+
 	mu sync.RWMutex
 }
 
@@ -442,6 +444,43 @@ func (a *Agent) SetPlatformPrompt(prompt string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.platformPrompt = prompt
+}
+
+// PromptFootprint reports harness-aware overhead for context_guard (L-0428 P1-C):
+// AgentSystemPrompt + composed persona + skills + platform/rehydration session bits.
+func (a *Agent) PromptFootprint() core.PromptFootprint {
+	a.mu.RLock()
+	platformPrompt := a.platformPrompt
+	workDir := a.workDir
+	sessionEnv := append([]string(nil), a.sessionEnv...)
+	a.mu.RUnlock()
+
+	absDir, err := filepath.Abs(workDir)
+	if err != nil {
+		absDir = workDir
+	}
+
+	var staticParts []string
+	if sys := strings.TrimSpace(core.AgentSystemPrompt()); sys != "" {
+		staticParts = append(staticParts, sys)
+	}
+	if persona := core.LoadComposedPersonaFromEnv(sessionEnv); persona != "" {
+		staticParts = append(staticParts, persona)
+	}
+	staticTokens := core.EstimatePromptTokens(strings.Join(staticParts, "\n\n"))
+	staticTokens += a.skillTokenCache.Get(appendProjectClaudeSkillDirs(absDir, claudeConfigHomeDir()))
+
+	var sessionParts []string
+	if platformPrompt = strings.TrimSpace(platformPrompt); platformPrompt != "" {
+		sessionParts = append(sessionParts, platformPrompt)
+	}
+	if digest := strings.TrimSpace(core.EnvValue(sessionEnv, "CC_REHYDRATION_DIGEST")); digest != "" {
+		sessionParts = append(sessionParts, digest)
+	}
+	return core.PromptFootprint{
+		StaticTokens:  staticTokens,
+		SessionTokens: core.EstimatePromptTokens(strings.Join(sessionParts, "\n\n")),
+	}
 }
 
 // ValidateSessionID reports whether the given session ID exists in this

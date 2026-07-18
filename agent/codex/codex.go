@@ -48,6 +48,7 @@ type Agent struct {
 	activeIdx       int      // -1 = no provider set
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
+	skillTokenCache core.SkillTokenCache // memoizes PromptFootprint skill scan
 	mu              sync.RWMutex
 }
 
@@ -685,47 +686,77 @@ func uniqueCodexSkillDirs(paths []string) []string {
 	return out
 }
 
-// syncArchiveFirstAGENTSMD writes the archive-first preamble (L-0216) into a
-// cc-managed block in workDir/AGENTS.md, overwriting it on every spawn.
-// Codex has no native persona/system-prompt injection path (L-0131) — it
-// reads project memory from AGENTS.md instead, so this is Codex's equivalent
-// of the persona-preamble injection every other harness gets in its session
-// constructor. No-op when the seat has no CC_PERSONAS_DIR/CC_PERSONA_CLASS
-// (i.e. this Engine wiring hasn't reached the seat, or workDir is unset).
+// syncArchiveFirstAGENTSMD writes durable cc-connect rules into a managed
+// block in workDir/AGENTS.md on every spawn: AgentSystemPrompt (platform
+// interaction rules) plus archive-first preamble and seat persona (L-0416 /
+// L-0428 P1-A). Session-scoped rehydration stays out of this file (L-0418).
+// No-op when workDir is unset or there is nothing durable to write.
 func syncArchiveFirstAGENTSMD(workDir string, extraEnv []string) {
 	if workDir == "" {
 		return
 	}
-	var personasDir, personaClass string
-	for _, kv := range extraEnv {
-		if idx := strings.Index(kv, "="); idx >= 0 {
-			switch kv[:idx] {
-			case "CC_PERSONAS_DIR":
-				personasDir = kv[idx+1:]
-			case "CC_PERSONA_CLASS":
-				personaClass = kv[idx+1:]
-			}
-		}
-	}
-	if personasDir == "" || personaClass == "" {
+	content := buildManagedAGENTSMDContent(extraEnv)
+	if content == "" {
 		return
 	}
-	preamble := core.ComposePersona(personasDir, core.PersonaClass(personaClass), "")
-	content := preamble
 	agentsPath := filepath.Join(workDir, "AGENTS.md")
 	if err := core.SyncManagedBlock(agentsPath, core.ArchiveFirstMarkerStart, core.ArchiveFirstMarkerEnd, content); err != nil {
 		slog.Warn("codex: failed to sync archive-first AGENTS.md block", "path", agentsPath, "error", err)
 	}
 }
 
+// buildManagedAGENTSMDContent assembles the durable managed-block payload for
+// Codex AGENTS.md. Order matches Claude's injection: system rules, then
+// composed persona (preamble + seat file).
+func buildManagedAGENTSMDContent(extraEnv []string) string {
+	systemRules := strings.TrimSpace(core.AgentSystemPrompt())
+	personaBlock := core.LoadComposedPersonaFromEnv(extraEnv)
+	var parts []string
+	if systemRules != "" {
+		parts = append(parts, systemRules)
+	}
+	if personaBlock != "" {
+		parts = append(parts, personaBlock)
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
 // extractRehydrationDigest reads CC_REHYDRATION_DIGEST from extraEnv.
 func extractRehydrationDigest(extraEnv []string) string {
-	for _, kv := range extraEnv {
-		if idx := strings.Index(kv, "="); idx >= 0 && kv[:idx] == "CC_REHYDRATION_DIGEST" {
-			return kv[idx+1:]
-		}
+	return core.EnvValue(extraEnv, "CC_REHYDRATION_DIGEST")
+}
+
+// HasSystemPromptSupport reports that Codex injects AgentSystemPrompt via the
+// managed AGENTS.md block on every spawn, so /bind setup must not append a
+// second copy outside that block.
+func (a *Agent) HasSystemPromptSupport() bool { return true }
+
+// PromptFootprint reports harness-aware overhead for context_guard (L-0428 P1-C):
+// managed AGENTS.md static content + discovered skills + runtime preamble/digest.
+func (a *Agent) PromptFootprint() core.PromptFootprint {
+	a.mu.RLock()
+	systemPrompt := a.systemPrompt
+	appendPrompt := a.appendPrompt
+	workDir := a.workDir
+	codexHome := a.codexHome
+	extraEnv := append([]string(nil), a.configEnv...)
+	extraEnv = append(extraEnv, a.sessionEnv...)
+	a.mu.RUnlock()
+
+	absDir, err := filepath.Abs(workDir)
+	if err != nil {
+		absDir = workDir
 	}
-	return ""
+
+	staticTokens := core.EstimatePromptTokens(buildManagedAGENTSMDContent(extraEnv))
+	staticTokens += a.skillTokenCache.Get(codexSkillDirs(absDir, codexHome))
+
+	digest := extractRehydrationDigest(extraEnv)
+	sessionTokens := core.EstimatePromptTokens(buildCodexPromptPreamble(systemPrompt, appendPrompt, digest))
+	return core.PromptFootprint{
+		StaticTokens:  staticTokens,
+		SessionTokens: sessionTokens,
+	}
 }
 
 // ── MemoryFileProvider implementation ─────────────────────────
