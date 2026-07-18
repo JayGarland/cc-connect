@@ -520,6 +520,8 @@ const (
 	MsgPsNoSession             MsgKey = "ps_no_session"
 	MsgReceiptUnavailable      MsgKey = "receipt_unavailable"
 	MsgInboxUnavailable        MsgKey = "inbox_unavailable"
+	MsgInboxEmpty              MsgKey = "inbox_empty"
+	MsgInboxQueueHeader        MsgKey = "inbox_queue_header"
 	MsgReceiptInbox            MsgKey = "receipt_inbox"
 	MsgReceiptCardCompact      MsgKey = "receipt_card_compact"
 	MsgReceiptCardPage         MsgKey = "receipt_card_page"
@@ -838,6 +840,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 收件箱暫不可用。",
 		LangJapanese:           "❌ 受信箱は現在利用できません。",
 		LangSpanish:            "❌ La bandeja de recibos no está disponible.",
+	},
+	MsgInboxEmpty: {
+		LangEnglish:            "📥 Inbox is empty — no pending RESULT cards.",
+		LangChinese:            "📥 收件箱为空——无待处理 RESULT 卡片。",
+		LangTraditionalChinese: "📥 收件箱為空——無待處理 RESULT 卡片。",
+		LangJapanese:           "📥 受信箱は空です — 未処理の RESULT カードはありません。",
+		LangSpanish:            "📥 La bandeja está vacía: no hay tarjetas RESULT pendientes.",
+	},
+	MsgInboxQueueHeader: {
+		LangEnglish:            "📥 Pending inbox queue (%d)",
+		LangChinese:            "📥 收件箱待处理队列 (%d)",
+		LangTraditionalChinese: "📥 收件箱待處理隊列 (%d)",
+		LangJapanese:           "📥 受信箱の未処理キュー (%d)",
+		LangSpanish:            "📥 Cola pendiente de la bandeja (%d)",
 	},
 	MsgReceiptInbox: {
 		LangEnglish:            "Pending receipts:%s",

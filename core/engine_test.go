@@ -1030,8 +1030,68 @@ func TestEngineReceiptCommandsUseLocalizedReplies(t *testing.T) {
 	if handled := e.handleCommand(p, msg, "/receipt"); !handled {
 		t.Fatal("receipt without an ID should render inbox locally")
 	}
-	if got, want := p.getSent()[0], "Pending receipts:"; got != want {
+	if got, want := p.getSent()[0], "📥 Inbox is empty — no pending RESULT cards."; got != want {
 		t.Fatalf("inbox reply = %q, want %q", got, want)
+	}
+	p.clearSent()
+
+	if handled := e.handleCommand(p, msg, "/inbox"); !handled {
+		t.Fatal("/inbox should render inbox locally without agent turn")
+	}
+	if got, want := p.getSent()[0], "📥 Inbox is empty — no pending RESULT cards."; got != want {
+		t.Fatalf("/inbox reply = %q, want %q", got, want)
+	}
+}
+
+func TestEngineInboxListsPendingReceiptCardsCompactly(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "cc-connect-maintenance", "L-0447",
+		"ID: L-0447\nTo: architect\nStatus: DONE\n---\n\n## Conclusion\n设计 Telegram Outbox 发件箱卡片\n")
+	ackedPath := writeResultFile(t, root, "other", "L-0440",
+		"ID: L-0440\nTo: architect\nStatus: DONE\n---\n\n## Conclusion\nalready received\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangChinese)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	if err := e.notifyStore.recordArrival(indexResultRow{
+		Letter: "L-0447", Thread: "cc-connect-maintenance", Path: resultPath,
+		To: "architect", Summary: "设计 Telegram Outbox 发件箱卡片",
+		Status: "DONE", Generation: "2026-07-18T10:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.notifyStore.recordArrival(indexResultRow{
+		Letter: "L-0440", Thread: "other", Path: ackedPath,
+		To: "architect", Summary: "already received",
+		Status: "DONE", Generation: "2026-07-17T10:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.notifyStore.acknowledge("L-0440", "jay"); err != nil {
+		t.Fatal(err)
+	}
+
+	msg := &Message{UserName: "jay", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/inbox"); !handled {
+		t.Fatal("/inbox must be handled locally")
+	}
+	got := p.getSent()[0]
+	if !strings.Contains(got, "📥 收件箱待处理队列 (1)") {
+		t.Fatalf("header missing: %q", got)
+	}
+	if !strings.Contains(got, "• [L-0447] (cc-connect-maintenance) To: architect — 设计 Telegram Outbox 发件箱卡片 (2026-07-18)") {
+		t.Fatalf("compact line missing: %q", got)
+	}
+	if strings.Contains(got, "L-0440") {
+		t.Fatalf("acknowledged receipt must leave /inbox: %q", got)
+	}
+}
+
+func TestInboxCommandIsNotMailAlias(t *testing.T) {
+	if id := matchPrefix("inbox", builtinCommands); id != "inbox" {
+		t.Fatalf("inbox command id = %q, want inbox (not mail/receipt alias)", id)
+	}
+	if id := matchPrefix("receipt", builtinCommands); id != "receipt" {
+		t.Fatalf("receipt command id = %q", id)
 	}
 }
 

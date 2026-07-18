@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,8 @@ type indexResultRow struct {
 	Thread               string
 	Summary              string
 	Path                 string
+	To                   string
+	From                 string
 	SourceAgentSessionID string
 	SourceSessionPath    string
 	Status               string
@@ -198,6 +201,8 @@ type receiptRecord struct {
 	Thread               string          `json:"thread"`
 	Summary              string          `json:"summary"`
 	ResultPath           string          `json:"result_path"`
+	To                   string          `json:"to,omitempty"`
+	From                 string          `json:"from,omitempty"`
 	SourceAgentSessionID string          `json:"source_agent_session_id,omitempty"`
 	SourceSessionPath    string          `json:"source_session_path,omitempty"`
 	Generation           string          `json:"generation"`
@@ -209,6 +214,18 @@ type receiptRecord struct {
 	ForwardedAt          string          `json:"forwarded_at,omitempty"`
 	OpenPoints           []string        `json:"open_points,omitempty"`
 	Update               receiptUpdate   `json:"update,omitempty"`
+}
+
+const inboxSummaryMaxRunes = 60
+
+// inboxQueueEntry is one pending RESULT card for the /inbox board.
+type inboxQueueEntry struct {
+	Letter  string
+	Thread  string
+	To      string
+	From    string
+	Date    string
+	Summary string
 }
 
 type notifyStore struct {
@@ -347,6 +364,7 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 	if !exists {
 		record = receiptRecord{
 			Thread: row.Thread, Summary: row.Summary, ResultPath: row.Path,
+			To: row.To, From: row.From,
 			SourceSessionPath:    row.SourceSessionPath,
 			SourceAgentSessionID: row.SourceAgentSessionID,
 			Status:               row.Status, Generation: generation, ArrivedAt: generation,
@@ -356,6 +374,8 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 		record.Thread = row.Thread
 		record.Summary = row.Summary
 		record.ResultPath = row.Path
+		record.To = row.To
+		record.From = row.From
 		record.SourceSessionPath = row.SourceSessionPath
 		record.SourceAgentSessionID = row.SourceAgentSessionID
 		record.Status = row.Status
@@ -381,6 +401,12 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 	}
 	if record.Summary == "" {
 		record.Summary = row.Summary
+	}
+	if record.To == "" {
+		record.To = row.To
+	}
+	if record.From == "" {
+		record.From = row.From
 	}
 	ledger.Receipts[row.Letter] = record
 	if err := s.save(ledger); err != nil {
@@ -582,6 +608,17 @@ func extractResultStatus(path string) string {
 }
 
 func extractResultStatusFromBody(body string) string {
+	return extractResultHeaderField(body, "Status")
+}
+
+// extractResultHeaderField reads a simple Key: value from the RESULT header
+// block (before the closing ---). Supports both leading-fence and bare headers.
+func extractResultHeaderField(body, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	prefix := key + ":"
 	lines := strings.Split(body, "\n")
 	start := 0
 	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
@@ -599,11 +636,120 @@ func extractResultStatusFromBody(body string) string {
 	}
 	for _, line := range lines[start:end] {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Status:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
 		}
 	}
 	return ""
+}
+
+func extractResultToFromPath(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return extractResultHeaderField(string(data), "To")
+}
+
+func extractResultFromFromPath(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return extractResultHeaderField(string(data), "From")
+}
+
+func inboxDate(arrivedAt string) string {
+	arrivedAt = strings.TrimSpace(arrivedAt)
+	if arrivedAt == "" {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339Nano, arrivedAt); err == nil {
+		return t.UTC().Format("2006-01-02")
+	}
+	if t, err := time.Parse(time.RFC3339, arrivedAt); err == nil {
+		return t.UTC().Format("2006-01-02")
+	}
+	if len(arrivedAt) >= 10 {
+		return arrivedAt[:10]
+	}
+	return arrivedAt
+}
+
+func collectPendingInboxEntries(ledger notifyLedger) []inboxQueueEntry {
+	var pending []inboxQueueEntry
+	for letter, record := range ledger.Receipts {
+		if record.AcknowledgedAt != "" {
+			continue
+		}
+		to := record.To
+		from := record.From
+		if to == "" && record.ResultPath != "" {
+			to = extractResultToFromPath(record.ResultPath)
+		}
+		if from == "" && record.ResultPath != "" {
+			from = extractResultFromFromPath(record.ResultPath)
+		}
+		pending = append(pending, inboxQueueEntry{
+			Letter:  letter,
+			Thread:  record.Thread,
+			To:      to,
+			From:    from,
+			Date:    inboxDate(record.ArrivedAt),
+			Summary: truncateRunes(record.Summary, inboxSummaryMaxRunes),
+		})
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Date != pending[j].Date {
+			return pending[i].Date < pending[j].Date
+		}
+		return pending[i].Letter < pending[j].Letter
+	})
+	return pending
+}
+
+func formatInboxQueueLine(entry inboxQueueEntry) string {
+	seat := ""
+	switch {
+	case entry.To != "":
+		seat = "To: " + entry.To
+	case entry.From != "":
+		seat = "From: " + entry.From
+	}
+	summary := strings.TrimSpace(entry.Summary)
+	thread := strings.TrimSpace(entry.Thread)
+	if thread == "" {
+		thread = "?"
+	}
+	switch {
+	case seat != "" && summary != "" && entry.Date != "":
+		return fmt.Sprintf("• [%s] (%s) %s — %s (%s)", entry.Letter, thread, seat, summary, entry.Date)
+	case seat != "" && summary != "":
+		return fmt.Sprintf("• [%s] (%s) %s — %s", entry.Letter, thread, seat, summary)
+	case seat != "" && entry.Date != "":
+		return fmt.Sprintf("• [%s] (%s) %s (%s)", entry.Letter, thread, seat, entry.Date)
+	case summary != "" && entry.Date != "":
+		return fmt.Sprintf("• [%s] (%s) — %s (%s)", entry.Letter, thread, summary, entry.Date)
+	case seat != "":
+		return fmt.Sprintf("• [%s] (%s) %s", entry.Letter, thread, seat)
+	case summary != "":
+		return fmt.Sprintf("• [%s] (%s) — %s", entry.Letter, thread, summary)
+	default:
+		return fmt.Sprintf("• [%s] (%s)", entry.Letter, thread)
+	}
+}
+
+func formatInboxBoard(i18n *I18n, entries []inboxQueueEntry) string {
+	if len(entries) == 0 {
+		return i18n.T(MsgInboxEmpty)
+	}
+	var b strings.Builder
+	b.WriteString(i18n.Tf(MsgInboxQueueHeader, len(entries)))
+	for _, entry := range entries {
+		b.WriteByte('\n')
+		b.WriteString(formatInboxQueueLine(entry))
+	}
+	return b.String()
 }
 
 // declaredSourceSessionPath accepts only the exact RESULT front-matter key.
@@ -872,6 +1018,8 @@ func (e *Engine) checkNewResults() {
 			Thread:               f.Thread,
 			Summary:              extractResultSummaryFromBody(string(body)),
 			Path:                 f.Path,
+			To:                   extractResultHeaderField(string(body), "To"),
+			From:                 extractResultHeaderField(string(body), "From"),
 			SourceAgentSessionID: sourceAgentSessionID,
 			SourceSessionPath:    sourceSessionPath,
 			Status:               extractResultStatusFromBody(string(body)),

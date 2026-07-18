@@ -6956,7 +6956,8 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
-	{[]string{"receipt", "inbox"}, "receipt"},
+	{[]string{"inbox"}, "inbox"},
+	{[]string{"receipt"}, "receipt"},
 	{[]string{"outbox"}, "outbox"},
 	{[]string{"letter"}, "letter"},
 }
@@ -7292,6 +7293,9 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			return true
 		}
 		e.cmdPs(p, msg, args)
+	case "inbox":
+		e.cmdInbox(p, msg)
+		return true
 	case "receipt":
 		if len(args) == 0 {
 			e.cmdInbox(p, msg)
@@ -7727,29 +7731,16 @@ func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed b
 }
 
 func (e *Engine) cmdInbox(p Platform, msg *Message) {
+	if e.notifyStore == nil {
+		e.notifyStore = newNotifyStore(e.dataDir)
+	}
 	ledger, err := e.notifyStore.load()
 	if err != nil {
 		slog.Warn("receipt: inbox unavailable", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgInboxUnavailable))
 		return
 	}
-	var pending []string
-	for letter, record := range ledger.Receipts {
-		if record.AcknowledgedAt != "" {
-			continue
-		}
-		line := fmt.Sprintf("%s · %s", letter, record.Thread)
-		pending = append(pending, line)
-	}
-	sort.Strings(pending)
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptInbox, receiptInboxSection(pending)))
-}
-
-func receiptInboxSection(items []string) string {
-	if len(items) == 0 {
-		return ""
-	}
-	return "\n" + strings.Join(items, "\n")
+	e.reply(p, msg.ReplyCtx, formatInboxBoard(e.i18n, collectPendingInboxEntries(ledger)))
 }
 
 func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string) {
