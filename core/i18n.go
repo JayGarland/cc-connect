@@ -510,37 +510,38 @@ const (
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
-	MsgBannedWordBlocked      MsgKey = "banned_word_blocked"
-	MsgCommandDisabled        MsgKey = "command_disabled"
-	MsgAdminRequired          MsgKey = "admin_required"
-	MsgRateLimited            MsgKey = "rate_limited"
-	MsgPsSent                 MsgKey = "ps_sent"
-	MsgPsSendFailed           MsgKey = "ps_send_failed"
-	MsgPsEmpty                MsgKey = "ps_empty"
-	MsgPsNoSession            MsgKey = "ps_no_session"
-	MsgReceiptUnavailable     MsgKey = "receipt_unavailable"
-	MsgInboxUnavailable       MsgKey = "inbox_unavailable"
-	MsgReceiptInbox           MsgKey = "receipt_inbox"
-	MsgReceiptCardCompact     MsgKey = "receipt_card_compact"
-	MsgReceiptCardPage        MsgKey = "receipt_card_page"
-	MsgReceiptViewOriginal    MsgKey = "receipt_view_original"
-	MsgReceiptCollapse        MsgKey = "receipt_collapse"
-	MsgReceiptReceive         MsgKey = "receipt_receive"
-	MsgReceiptHandoffPrimary  MsgKey = "receipt_handoff_primary"
-	MsgReceiptClose           MsgKey = "receipt_close"
-	MsgReceiptCloseConfirm    MsgKey = "receipt_close_confirm"
-	MsgReceiptCloseConfirmBtn MsgKey = "receipt_close_confirm_btn"
-	MsgReceiptCloseCancelBtn  MsgKey = "receipt_close_cancel_btn"
-	MsgReceiptCloseSuccess    MsgKey = "receipt_close_success"
-	MsgReceiptClosePending    MsgKey = "receipt_close_pending"
-	MsgReceiptCloseFailed     MsgKey = "receipt_close_failed"
-	MsgReceiptCloseRetryBtn   MsgKey = "receipt_close_retry_btn"
-	MsgReceiptEmptyOriginal   MsgKey = "receipt_empty_original"
-	MsgReceiptUpdated         MsgKey = "receipt_updated"
-	MsgReceiptOpenPoints      MsgKey = "receipt_open_points"
-	MsgReceiptChanges         MsgKey = "receipt_changes"
-	MsgReceiptViewUpdate      MsgKey = "receipt_view_update"
-	MsgReceiptUpdatePage      MsgKey = "receipt_update_page"
+	MsgBannedWordBlocked       MsgKey = "banned_word_blocked"
+	MsgCommandDisabled         MsgKey = "command_disabled"
+	MsgAdminRequired           MsgKey = "admin_required"
+	MsgRateLimited             MsgKey = "rate_limited"
+	MsgPsSent                  MsgKey = "ps_sent"
+	MsgPsSendFailed            MsgKey = "ps_send_failed"
+	MsgPsEmpty                 MsgKey = "ps_empty"
+	MsgPsNoSession             MsgKey = "ps_no_session"
+	MsgReceiptUnavailable      MsgKey = "receipt_unavailable"
+	MsgInboxUnavailable        MsgKey = "inbox_unavailable"
+	MsgReceiptInbox            MsgKey = "receipt_inbox"
+	MsgReceiptCardCompact      MsgKey = "receipt_card_compact"
+	MsgReceiptCardPage         MsgKey = "receipt_card_page"
+	MsgReceiptViewOriginal     MsgKey = "receipt_view_original"
+	MsgReceiptCollapse         MsgKey = "receipt_collapse"
+	MsgReceiptReceive          MsgKey = "receipt_receive"
+	MsgReceiptHandoffPrimary   MsgKey = "receipt_handoff_primary"
+	MsgReceiptClose            MsgKey = "receipt_close"
+	MsgReceiptCloseConfirm     MsgKey = "receipt_close_confirm"
+	MsgReceiptCloseConfirmBtn  MsgKey = "receipt_close_confirm_btn"
+	MsgReceiptCloseCancelBtn   MsgKey = "receipt_close_cancel_btn"
+	MsgReceiptCloseSuccess     MsgKey = "receipt_close_success"
+	MsgReceiptClosePending     MsgKey = "receipt_close_pending"
+	MsgReceiptCloseUnconfirmed MsgKey = "receipt_close_unconfirmed"
+	MsgReceiptCloseFailed      MsgKey = "receipt_close_failed"
+	MsgReceiptCloseRetryBtn    MsgKey = "receipt_close_retry_btn"
+	MsgReceiptEmptyOriginal    MsgKey = "receipt_empty_original"
+	MsgReceiptUpdated          MsgKey = "receipt_updated"
+	MsgReceiptOpenPoints       MsgKey = "receipt_open_points"
+	MsgReceiptChanges          MsgKey = "receipt_changes"
+	MsgReceiptViewUpdate       MsgKey = "receipt_view_update"
+	MsgReceiptUpdatePage       MsgKey = "receipt_update_page"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -912,6 +913,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⚠️ %s\n已在本地登記為 CLOSED，但推送到歸檔遠端失敗：\n%s",
 		LangJapanese:           "⚠️ %s\nローカルでは CLOSED として登録済みですが、アーカイブのリモートへの同期に失敗しました：\n%s",
 		LangSpanish:            "⚠️ %s\nRegistrado como CLOSED localmente, pero falló la sincronización con el remoto del archivo:\n%s",
+	},
+	MsgReceiptCloseUnconfirmed: {
+		LangEnglish:            "⚠️ %s CLOSED and synced to the archive, but cc-connect's local tracking failed to update. Retry is safe — the archive close is idempotent.",
+		LangChinese:            "⚠️ %s 已结案归档并同步云端，但 cc-connect 本地状态记录更新失败。重试是安全的——归档关信操作是幂等的。",
+		LangTraditionalChinese: "⚠️ %s 已結案歸檔並同步雲端，但 cc-connect 本地狀態記錄更新失敗。重試是安全的——歸檔關信操作是冪等的。",
+		LangJapanese:           "⚠️ %s は結案・アーカイブ済みで、クラウドにも同期されましたが、cc-connect のローカル記録の更新に失敗しました。アーカイブの結案処理は冪等なので、再試行しても安全です。",
+		LangSpanish:            "⚠️ %s se cerró y sincronizó con el archivo, pero el seguimiento local de cc-connect no se pudo actualizar. Reintentar es seguro — el cierre del archivo es idempotente.",
 	},
 	MsgReceiptCloseFailed: {
 		LangEnglish:            "❌ %s\nFailed to close: %s",

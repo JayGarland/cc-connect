@@ -341,6 +341,7 @@ type receiptActionPlatform struct {
 	buttonRows          [][]ButtonOption
 	deleted             bool
 	deleteErr           error
+	updateErr           error
 	reconstructed       string
 	receiptCardsSent    int
 	receiptCardsUpdated int
@@ -365,6 +366,9 @@ func (p *receiptActionPlatform) SendWithButtons(_ context.Context, _ any, conten
 }
 
 func (p *receiptActionPlatform) UpdateMessageWithButtons(_ context.Context, _ any, content string, buttons [][]ButtonOption) error {
+	if p.updateErr != nil {
+		return p.updateErr
+	}
 	p.updatedContent = content
 	p.updatedButtons = buttons
 	return nil
@@ -1241,9 +1245,41 @@ func TestEngineReceiptCloseConfirmPushFailureKeepsCardWithRetry(t *testing.T) {
 	if len(p.updatedButtons) == 0 || !strings.Contains(p.updatedButtons[0][0].Data, "closeconfirm") {
 		t.Fatalf("pending-sync card must offer a retry button: %#v", p.updatedButtons)
 	}
+	if !strings.Contains(p.updatedContent, "non-fast-forward") {
+		t.Fatalf("pending-sync card must surface archive-daily.ps1's actual push_error, not a placeholder: %q", p.updatedContent)
+	}
 	record, err := e.notifyStore.receipt("L-0449")
 	if err != nil || record.AcknowledgedAt != "" {
 		t.Fatalf("unsynced close must not acknowledge the receipt yet: %+v, err=%v", record, err)
+	}
+}
+
+// TestEngineReceiptCloseConfirmUpdateFailureFallsBackToReply covers the
+// Copilot review finding on PR #37: if the inline card update itself fails
+// (not the archive close), the admin must still get a plain-text message
+// instead of silence.
+func TestEngineReceiptCloseConfirmUpdateFailureFallsBackToReply(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `Write-Error 'correspondence error: boom'; exit 1`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, updateErr: errors.New("telegram edit failed")}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0449"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if p.updatedContent != "" {
+		t.Fatalf("a failed card update must not report itself as applied: %q", p.updatedContent)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[len(sent)-1], "boom") {
+		t.Fatalf("a failed card update must fall back to a plain reply describing the failure, got %#v", sent)
 	}
 }
 

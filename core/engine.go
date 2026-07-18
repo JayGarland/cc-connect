@@ -7640,31 +7640,41 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 		return true
 	}
 	updater, hasUpdater := p.(InlineMessageUpdater)
-	pushed, closeErr := e.runArchiveClose(letter, receipt)
+	retryButtons := [][]ButtonOption{{{Text: e.i18n.T(MsgReceiptCloseRetryBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation}}}
+	// showRetry leaves the card in place with a retry affordance. Retrying is
+	// always safe here: archive-write.ps1's append-closed is idempotent, so
+	// re-running the close (whatever stage it failed at) never double-closes
+	// the letter. Falls back to a plain reply if the card update itself fails
+	// — an admin who sees neither an updated card nor a message has no signal
+	// anything happened at all.
+	showRetry := func(content string) {
+		if hasUpdater {
+			if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, retryButtons); err == nil {
+				return
+			}
+		}
+		e.reply(p, msg.ReplyCtx, content)
+	}
+	pushed, pushErr, closeErr := e.runArchiveClose(letter, receipt)
 	if closeErr != nil {
 		slog.Warn("receipt: close failed", "letter", letter, "error", closeErr)
-		if hasUpdater {
-			content := e.i18n.Tf(MsgReceiptCloseFailed, letter, closeErr.Error())
-			retry := [][]ButtonOption{{{Text: e.i18n.T(MsgReceiptCloseRetryBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation}}}
-			_ = updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, retry)
-		} else {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
-		}
+		showRetry(e.i18n.Tf(MsgReceiptCloseFailed, letter, closeErr.Error()))
 		return true
 	}
 	if !pushed {
-		slog.Warn("receipt: closed locally but push failed", "letter", letter)
-		if hasUpdater {
-			content := e.i18n.Tf(MsgReceiptClosePending, letter, "push failed — see cc-connect logs")
-			retry := [][]ButtonOption{{{Text: e.i18n.T(MsgReceiptCloseRetryBtn), Data: "cmd:/receipt closeconfirm " + letter + " " + receipt.Generation}}}
-			_ = updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, retry)
-		} else {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
-		}
+		slog.Warn("receipt: closed locally but push failed", "letter", letter, "push_error", pushErr)
+		showRetry(e.i18n.Tf(MsgReceiptClosePending, letter, pushErr))
 		return true
 	}
 	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
+		// The archive close+push already landed durably — only cc-connect's own
+		// local receipt bookkeeping failed. Don't report success (the card and
+		// the receipt store would then permanently disagree with each other),
+		// but don't roll back the archive either; retrying is safe and simply
+		// redoes this bookkeeping step on an already-closed letter.
 		slog.Warn("receipt: close succeeded but local receipt bookkeeping failed", "letter", letter, "error", err)
+		showRetry(e.i18n.Tf(MsgReceiptCloseUnconfirmed, letter))
+		return true
 	}
 	if deleter, ok := p.(MessageDeleter); !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
 		slog.Warn("receipt: close succeeded but card delete failed", "letter", letter)
@@ -7676,8 +7686,9 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 // runArchiveClose shells out to archive-daily.ps1 -Close -Push and reports
 // whether the remote sync succeeded. A nil error means the CLOSED row landed
 // in the local archive commit; pushed distinguishes "and synced to origin"
-// from "committed locally, remote sync pending."
-func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed bool, err error) {
+// from "committed locally, remote sync pending" (in which case pushErr holds
+// archive-daily.ps1's own push_error text).
+func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed bool, pushErr string, err error) {
 	archiveRoot := filepath.Dir(e.notifyConfig.IndexPath)
 	script := filepath.Join(archiveRoot, "scripts", "archive-daily.ps1")
 	summary := fmt.Sprintf("✅ 总裁验收（Telegram 一键封信）：%s", receipt.Summary)
@@ -7690,20 +7701,19 @@ func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed b
 		"-Close", "-Push")
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
-		return false, fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
+		return false, "", fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}
 	var receiptJSON struct {
 		Pushed    bool   `json:"pushed"`
 		PushError string `json:"push_error"`
 	}
 	if jsonErr := json.Unmarshal(out, &receiptJSON); jsonErr != nil {
-		return false, fmt.Errorf("could not parse archive-daily output: %v (output: %s)", jsonErr, strings.TrimSpace(string(out)))
+		return false, "", fmt.Errorf("could not parse archive-daily output: %v (output: %s)", jsonErr, strings.TrimSpace(string(out)))
 	}
 	if !receiptJSON.Pushed {
-		slog.Warn("receipt: archive close committed but push failed", "letter", letter, "push_error", receiptJSON.PushError)
-		return false, nil
+		return false, receiptJSON.PushError, nil
 	}
-	return true, nil
+	return true, "", nil
 }
 
 func (e *Engine) cmdInbox(p Platform, msg *Message) {
