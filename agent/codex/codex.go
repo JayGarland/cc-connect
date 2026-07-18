@@ -48,6 +48,7 @@ type Agent struct {
 	activeIdx       int      // -1 = no provider set
 	configEnv       []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv      []string
+	skillTokenCache core.SkillTokenCache // memoizes PromptFootprint skill scan
 	mu              sync.RWMutex
 }
 
@@ -748,7 +749,7 @@ func (a *Agent) PromptFootprint() core.PromptFootprint {
 	}
 
 	staticTokens := core.EstimatePromptTokens(buildManagedAGENTSMDContent(extraEnv))
-	staticTokens += core.EstimateSkillMarkdownTokens(codexSkillDirs(absDir, codexHome))
+	staticTokens += a.skillTokenCache.Get(codexSkillDirs(absDir, codexHome))
 
 	digest := extractRehydrationDigest(extraEnv)
 	sessionTokens := core.EstimatePromptTokens(buildCodexPromptPreamble(systemPrompt, appendPrompt, digest))

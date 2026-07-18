@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -126,6 +127,32 @@ func EstimateSkillMarkdownTokens(dirs []string) int {
 		}
 	}
 	return total
+}
+
+// SkillTokenCache memoizes EstimateSkillMarkdownTokens keyed by the joined
+// skill-dir list so PromptFootprint can be called every turn without re-reading
+// SKILL.md files when the discovered dirs are unchanged.
+type SkillTokenCache struct {
+	mu     sync.Mutex
+	key    string
+	tokens int
+}
+
+// Get returns the cached skill-token estimate for dirs, recomputing only when
+// the dir list changes.
+func (c *SkillTokenCache) Get(dirs []string) int {
+	if c == nil {
+		return EstimateSkillMarkdownTokens(dirs)
+	}
+	key := strings.Join(dirs, "\n")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.key == key {
+		return c.tokens
+	}
+	c.tokens = EstimateSkillMarkdownTokens(dirs)
+	c.key = key
+	return c.tokens
 }
 
 type contextGuardResult struct {

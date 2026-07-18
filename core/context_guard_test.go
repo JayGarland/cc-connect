@@ -174,9 +174,22 @@ func TestEstimatePromptTokensAndSkillMarkdown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("abcdefgh"), 0o644); err != nil {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
-	got := EstimateSkillMarkdownTokens([]string{filepath.Join(root, "skills")})
+	dirs := []string{filepath.Join(root, "skills")}
+	got := EstimateSkillMarkdownTokens(dirs)
 	if got != 2 {
 		t.Fatalf("EstimateSkillMarkdownTokens = %d, want 2", got)
+	}
+
+	var cache SkillTokenCache
+	if cache.Get(dirs) != 2 {
+		t.Fatalf("SkillTokenCache.Get = %d, want 2", cache.Get(dirs))
+	}
+	// Mutate on disk; same dir key must keep the cached estimate.
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(strings.Repeat("x", 40)), 0o644); err != nil {
+		t.Fatalf("rewrite SKILL.md: %v", err)
+	}
+	if cache.Get(dirs) != 2 {
+		t.Fatalf("SkillTokenCache should reuse prior estimate for unchanged dir key")
 	}
 }
 

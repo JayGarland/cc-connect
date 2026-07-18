@@ -137,4 +137,10 @@ func TestLoadComposedPersonaFromEnv(t *testing.T) {
 	if EnvValue([]string{"CC_REHYDRATION_DIGEST=abc"}, "CC_REHYDRATION_DIGEST") != "abc" {
 		t.Fatal("EnvValue failed")
 	}
+	if got := EnvValue([]string{
+		"CC_REHYDRATION_DIGEST=old",
+		"CC_REHYDRATION_DIGEST=new",
+	}, "CC_REHYDRATION_DIGEST"); got != "new" {
+		t.Fatalf("EnvValue last-wins = %q, want new", got)
+	}
 }

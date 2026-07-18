@@ -189,7 +189,7 @@ func TestSyncArchiveFirstAGENTSMD_IncludesSystemPromptAndSeatPersona(t *testing.
 	if systemIndex < 0 || preambleIndex < 0 || personaIndex < 0 {
 		t.Fatalf("AGENTS.md must contain system rules, preamble, and seat persona, got:\n%s", content)
 	}
-	if !(systemIndex < preambleIndex && preambleIndex < personaIndex) {
+	if systemIndex >= preambleIndex || preambleIndex >= personaIndex {
 		t.Fatalf("expected order system → preamble → persona, got indexes %d/%d/%d\n%s",
 			systemIndex, preambleIndex, personaIndex, content)
 	}

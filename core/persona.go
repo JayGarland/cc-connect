@@ -77,15 +77,18 @@ func ParsePersonaEnv(extraEnv []string) (project, personasDir, personaClass stri
 	return project, personasDir, personaClass
 }
 
-// EnvValue returns the first value for key in an KEY=VALUE env slice.
+// EnvValue returns the last value for key in an KEY=VALUE env slice.
+// Later entries win, matching exec.Cmd.Env / MergeEnv override semantics
+// (configEnv then sessionEnv).
 func EnvValue(extraEnv []string, key string) string {
 	prefix := key + "="
+	value := ""
 	for _, kv := range extraEnv {
 		if strings.HasPrefix(kv, prefix) {
-			return kv[len(prefix):]
+			value = kv[len(prefix):]
 		}
 	}
-	return ""
+	return value
 }
 
 // LoadComposedPersonaFromEnv loads the seat persona file named by CC_PROJECT

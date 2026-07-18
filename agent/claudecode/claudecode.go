@@ -72,6 +72,8 @@ type Agent struct {
 	// means legacy spawn as the supervisor user. See core/runas.go.
 	spawnOpts core.SpawnOptions
 
+	skillTokenCache core.SkillTokenCache // memoizes PromptFootprint skill scan
+
 	mu sync.RWMutex
 }
 
@@ -466,7 +468,7 @@ func (a *Agent) PromptFootprint() core.PromptFootprint {
 		staticParts = append(staticParts, persona)
 	}
 	staticTokens := core.EstimatePromptTokens(strings.Join(staticParts, "\n\n"))
-	staticTokens += core.EstimateSkillMarkdownTokens(appendProjectClaudeSkillDirs(absDir, claudeConfigHomeDir()))
+	staticTokens += a.skillTokenCache.Get(appendProjectClaudeSkillDirs(absDir, claudeConfigHomeDir()))
 
 	var sessionParts []string
 	if platformPrompt = strings.TrimSpace(platformPrompt); platformPrompt != "" {
