@@ -6957,6 +6957,7 @@ var builtinCommands = []struct {
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
 	{[]string{"receipt", "inbox"}, "receipt"},
+	{[]string{"outbox"}, "outbox"},
 	{[]string{"letter"}, "letter"},
 }
 
