@@ -470,6 +470,51 @@ func TestNotifyStorePreservesFullReceiptSummaryWithoutCreatingSnapshot(t *testin
 	}
 }
 
+func TestFormatInboxBoardCompactQueue(t *testing.T) {
+	entries := []inboxQueueEntry{
+		{Letter: "L-0448", Thread: "agent-memory-evolution", To: "architect", Date: "2026-07-18", Summary: "评估单体 Agent 记忆沉淀与进化设计"},
+		{Letter: "L-0447", Thread: "cc-connect-maintenance", To: "architect", Date: "2026-07-18", Summary: "设计 Telegram Outbox 发件箱卡片"},
+	}
+	got := formatInboxBoard(NewI18n(LangChinese), entries)
+	want := "📥 收件箱待处理队列 (2)\n" +
+		"• [L-0448] (agent-memory-evolution) To: architect — 评估单体 Agent 记忆沉淀与进化设计 (2026-07-18)\n" +
+		"• [L-0447] (cc-connect-maintenance) To: architect — 设计 Telegram Outbox 发件箱卡片 (2026-07-18)"
+	if got != want {
+		t.Fatalf("board =\n%s\nwant\n%s", got, want)
+	}
+	if empty := formatInboxBoard(NewI18n(LangEnglish), nil); empty != "📥 Inbox is empty — no pending RESULT cards." {
+		t.Fatalf("empty board = %q", empty)
+	}
+}
+
+func TestCollectPendingInboxEntriesSkipsAcknowledged(t *testing.T) {
+	root := t.TempDir()
+	path := writeResultFile(t, root, "alpha", "L-0451", "ID: L-0451\nTo: architect\nFrom: secretary-seat\nStatus: DONE\n---\n\n## Conclusion\nready\n")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0451", Thread: "alpha", Path: path, To: "architect", From: "secretary-seat",
+		Summary: "ready", Status: "DONE", Generation: "2026-07-18T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0449", Thread: "alpha", Path: path, Summary: "done", Status: "DONE", Generation: "2026-07-17T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.acknowledge("L-0449", "jay"); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := collectPendingInboxEntries(ledger)
+	if len(entries) != 1 || entries[0].Letter != "L-0451" || entries[0].To != "architect" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestReceiptEnvelopeGivesAgentOriginalResultPath(t *testing.T) {
 	got := formatReceiptEnvelope("L-0430", receiptRecord{
 		Thread:     "cc-connect-maintenance",
