@@ -708,7 +708,13 @@ func inboxDate(arrivedAt string) string {
 }
 
 func collectPendingInboxEntries(ledger notifyLedger) []inboxQueueEntry {
-	return collectInboxEntries(ledger, func(r receiptRecord) bool { return r.AcknowledgedAt == "" })
+	// ClosedAt must be excluded here too, not just AcknowledgedAt: L-0455
+	// decoupled the two, so a letter can be closed directly from the
+	// still-open original card without ever being acknowledged. Without this
+	// check such a letter would keep showing up as "pending" with a card
+	// whose every button (收件/交主秘书/查看原文) now replies
+	// MsgReceiptUnavailable, since those handlers also gate on ClosedAt.
+	return collectInboxEntries(ledger, func(r receiptRecord) bool { return r.AcknowledgedAt == "" && r.ClosedAt == "" })
 }
 
 // collectPendingCloseEntries lists letters that have been acknowledged

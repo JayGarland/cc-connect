@@ -621,6 +621,37 @@ func TestCollectPendingInboxEntriesSkipsAcknowledged(t *testing.T) {
 	}
 }
 
+// TestCollectPendingInboxEntriesSkipsClosedButUnacknowledged covers a gap
+// L-0455's own decoupling opened: a letter can now be closed directly from
+// the still-open original card without ever being acknowledged, so
+// AcknowledgedAt alone is no longer sufficient to detect "still pending".
+// Without also excluding ClosedAt, such a letter would keep showing up in
+// /inbox with a card whose every button now replies MsgReceiptUnavailable.
+func TestCollectPendingInboxEntriesSkipsClosedButUnacknowledged(t *testing.T) {
+	root := t.TempDir()
+	path := writeResultFile(t, root, "alpha", "L-0455", "ID: L-0455\nTo: architect\nStatus: DONE\n---\n\n## Conclusion\nready\n")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0455", Thread: "alpha", Path: path, To: "architect",
+		Summary: "ready", Status: "DONE", Generation: "2026-07-18T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.markClosed("L-0455"); err != nil || !changed {
+		t.Fatalf("markClosed = (%v, %v)", changed, err)
+	}
+	ledger, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := collectPendingInboxEntries(ledger); len(entries) != 0 {
+		t.Fatalf("closed-but-unacknowledged letter must not appear as pending: %#v", entries)
+	}
+	if entries := collectPendingCloseEntries(ledger); len(entries) != 0 {
+		t.Fatalf("closed letter must not appear in the pending-close section either: %#v", entries)
+	}
+}
+
 func TestReceiptEnvelopeGivesAgentOriginalResultPath(t *testing.T) {
 	got := formatReceiptEnvelope("L-0430", receiptRecord{
 		Thread:     "cc-connect-maintenance",
