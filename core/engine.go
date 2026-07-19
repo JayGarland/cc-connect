@@ -7680,13 +7680,11 @@ func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 			return true
 		}
-		var content string
-		var buttons [][]ButtonOption
-		if receipt.AcknowledgedAt != "" {
-			content, buttons = formatPendingCloseCard(e.i18n, letter, receipt)
-		} else {
-			content, buttons = formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
-		}
+		// Do not redraw the full RESULT card here: the stale card can be old
+		// precisely because a later, much longer RESULT update could not fit in
+		// Telegram's message limit. The compact close-only card carries the fresh
+		// generation without replaying that unbounded summary.
+		content, buttons := formatPendingCloseCard(e.i18n, letter, receipt)
 		if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
 			slog.Warn("receipt: stale close card refresh failed", "letter", letter, "error", err)
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))

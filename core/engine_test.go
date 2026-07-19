@@ -1313,10 +1313,11 @@ func TestEngineReceiptCloseStaleGenerationRefreshesCurrentCard(t *testing.T) {
 	e.SetAdminFrom("boss-id")
 	oldGeneration := "2026-07-19T16:39:18.0180878Z"
 	currentGeneration := "2026-07-19T16:51:49.5592535Z"
-	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: oldGeneration}); err != nil {
+	longSummary := strings.Repeat("x", 5000)
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Summary: longSummary, Status: "DONE", Generation: oldGeneration}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: currentGeneration}); err != nil {
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Summary: longSummary, Status: "DONE", Generation: currentGeneration}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1333,6 +1334,9 @@ func TestEngineReceiptCloseStaleGenerationRefreshesCurrentCard(t *testing.T) {
 	}
 	if !strings.Contains(closeData, currentGeneration) {
 		t.Fatalf("refreshed close button = %q, want current generation %q", closeData, currentGeneration)
+	}
+	if len(p.updatedContent) > 1024 {
+		t.Fatalf("stale refresh must avoid replaying an oversized result summary: %d bytes", len(p.updatedContent))
 	}
 	for _, sent := range p.getSent() {
 		if strings.Contains(sent, "unavailable") {
