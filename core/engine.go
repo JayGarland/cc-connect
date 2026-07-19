@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -7779,11 +7780,30 @@ func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed b
 		return false, "", fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}
 	var receiptJSON struct {
-		Pushed    bool   `json:"pushed"`
-		PushError string `json:"push_error"`
+		Status    string   `json:"status"`
+		IDs       []string `json:"ids"`
+		Pushed    bool     `json:"pushed"`
+		PushError string   `json:"push_error"`
 	}
 	if jsonErr := json.Unmarshal(out, &receiptJSON); jsonErr != nil {
 		return false, "", fmt.Errorf("could not parse archive-daily output: %v (output: %s)", jsonErr, strings.TrimSpace(string(out)))
+	}
+	// "ready" means this invocation staged and committed the letter's own
+	// CLOSED row; "noop" means nothing new was staged, which is only
+	// legitimate on a retry of an already-committed-but-unpushed close (see
+	// the comment in archive-reconcile.ps1). Any other value (including
+	// empty, e.g. from a script that changed its output shape) means the
+	// script's own success signal can't be trusted — refuse rather than
+	// assume the close actually landed (L-0460).
+	if receiptJSON.Status != "ready" && receiptJSON.Status != "noop" {
+		return false, "", fmt.Errorf("unexpected archive-daily status %q (output: %s)", receiptJSON.Status, strings.TrimSpace(string(out)))
+	}
+	// On "ready", the letter being closed must actually be among the ids this
+	// invocation committed — otherwise some other pending commit got pushed
+	// while this letter's own close silently didn't happen (exactly the
+	// failure mode a swallowed postflight/validator error produces).
+	if receiptJSON.Status == "ready" && !slices.Contains(receiptJSON.IDs, letter) {
+		return false, "", fmt.Errorf("archive-daily reported ready but %s is not among committed ids %v", letter, receiptJSON.IDs)
 	}
 	if !receiptJSON.Pushed {
 		return false, receiptJSON.PushError, nil

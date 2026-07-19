@@ -1388,6 +1388,70 @@ func TestEngineReceiptCloseConfirmPushFailureKeepsCardWithRetry(t *testing.T) {
 	}
 }
 
+// TestEngineReceiptCloseConfirmReportedSuccessRequiresLetterInCommittedIDs is
+// a regression test for L-0460's "false success" bug: cc-connect used to
+// trust a bare pushed=true from archive-daily.ps1 without checking that the
+// letter it thinks it just closed is actually among the ids the script
+// reports as committed. A silently swallowed validation failure further up
+// the archive-side chain (see archive-postflight.ps1's now-checked call into
+// validate-index.ps1) could previously let a push go through that never
+// actually contained this letter's CLOSED row, while cc-connect still
+// reported success and deleted the card.
+func TestEngineReceiptCloseConfirmReportedSuccessRequiresLetterInCommittedIDs(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `Write-Output '{"status":"ready","ids":["L-9999"],"pushed":true,"push_error":""}'`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0449"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if p.deleted {
+		t.Fatal("a ready/pushed report for a different letter must not be trusted as this letter's success")
+	}
+	record, err := e.notifyStore.receipt("L-0449")
+	if err != nil || record.ClosedAt != "" {
+		t.Fatalf("must not mark the receipt closed when the letter is absent from committed ids: %+v, err=%v", record, err)
+	}
+}
+
+// TestEngineReceiptCloseConfirmRejectsUnexpectedStatus guards against a
+// future archive-daily.ps1 output shape change (or a corrupted/truncated
+// script run) silently being read as success because cc-connect only looked
+// at the pushed field. Any status outside the two the script contract
+// documents ("ready", "noop") must be treated as untrustworthy.
+func TestEngineReceiptCloseConfirmRejectsUnexpectedStatus(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `Write-Output '{"status":"","ids":[],"pushed":true,"push_error":""}'`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0449"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if p.deleted {
+		t.Fatal("an unrecognized status must not be trusted as success")
+	}
+	record, err := e.notifyStore.receipt("L-0449")
+	if err != nil || record.ClosedAt != "" {
+		t.Fatalf("must not mark the receipt closed on an unexpected status: %+v, err=%v", record, err)
+	}
+}
+
 // TestEngineReceiptCloseConfirmUpdateFailureFallsBackToReply covers the
 // Copilot review finding on PR #37: if the inline card update itself fails
 // (not the archive close), the admin must still get a plain-text message
