@@ -32,8 +32,9 @@ type RehydrationBudget struct {
 // RehydrationConfig controls the depth and scope of a spawn-time
 // Rehydration Digest (L-0251).
 type RehydrationConfig struct {
-	// ArchiveDir is the root of the letter archive, e.g. F:\nexus-archive.
-	// Prefer an explicit archive_dir config; fall back to DeriveArchiveDir(dataDir).
+	// ArchiveDir is the letter-archive root already resolved by the caller
+	// (typically via ResolveArchiveDir). BuildRehydrationDigest does not
+	// derive paths itself — an empty ArchiveDir yields an empty digest.
 	ArchiveDir string
 
 	// IndexTailLines controls how many lines from INDEX.md to include.
@@ -145,10 +146,12 @@ func DeriveArchiveDir(dataDir string) string {
 //  1. explicit archive_dir config when non-empty
 //  2. else DeriveArchiveDir(dataDir)
 //
-// When the chosen path is missing or not a directory, logs a Warn and still
-// returns the path so BuildRehydrationDigest can safely degrade to "".
+// When an explicit archive_dir is set but missing/not a directory, logs a
+// Warn (misconfiguration). Derived fallbacks stay quiet — BuildRehydrationDigest
+// already degrades to "" when INDEX.md is unreadable.
 func ResolveArchiveDir(explicit, dataDir string) string {
-	dir := strings.TrimSpace(explicit)
+	explicit = strings.TrimSpace(explicit)
+	dir := explicit
 	if dir == "" {
 		dir = DeriveArchiveDir(dataDir)
 	}
@@ -156,8 +159,8 @@ func ResolveArchiveDir(explicit, dataDir string) string {
 		return ""
 	}
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
-		slog.Warn("rehydration: archive_dir missing or not a directory; digest will be empty",
+	if explicit != "" && (err != nil || !info.IsDir()) {
+		slog.Warn("rehydration: explicit archive_dir missing or not a directory; digest will be empty",
 			"archive_dir", dir, "error", err)
 	}
 	return dir
@@ -181,12 +184,12 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 
 	var b strings.Builder
 	b.WriteString("## Rehydration Digest (spawn-time snapshot)\n\n")
-	b.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&b,
 		"_Budget: %d rough tokens; INDEX tail: %d lines; parent depth: %d; open/STUCK/BLOCKED rows: %d._\n\n",
-		cfg.MaxTokens, cfg.IndexTailLines, cfg.ParentChainDepth, cfg.OpenSummaryEntries))
-	b.WriteString(fmt.Sprintf(
+		cfg.MaxTokens, cfg.IndexTailLines, cfg.ParentChainDepth, cfg.OpenSummaryEntries)
+	fmt.Fprintf(&b,
 		"This digest is frozen at process spawn. Before writing a RESULT or acting on a latest/follow-up request, reread `%s` tail to catch newer letters.\n\n",
-		filepath.Join(cfg.ArchiveDir, "INDEX.md")))
+		filepath.Join(cfg.ArchiveDir, "INDEX.md"))
 
 	// 1. INDEX tail — recent fleet activity.
 	indexTail := readTail(indexPath, cfg.IndexTailLines)
@@ -195,8 +198,7 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 			"path", indexPath)
 		return ""
 	}
-	b.WriteString("### 当前舰队状态（INDEX 尾部——最近 " +
-		fmt.Sprintf("%d 行）\n", cfg.IndexTailLines))
+	fmt.Fprintf(&b, "### 当前舰队状态（INDEX 尾部——最近 %d 行）\n", cfg.IndexTailLines)
 	b.WriteString("```\n")
 	b.WriteString(indexTail)
 	b.WriteString("\n```\n\n")

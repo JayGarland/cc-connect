@@ -1539,7 +1539,8 @@ func (e *Engine) SetDataDir(dir string) {
 }
 
 // SetArchiveDir sets the explicit letter-archive root used by rehydration
-// (and related archive readers). Empty means "derive from dataDir".
+// and archive readers that fall back when notify_index_path is unset
+// (e.g. /mail via mailIndexPath). Empty means "derive from dataDir".
 func (e *Engine) SetArchiveDir(dir string) {
 	e.archiveDir = strings.TrimSpace(dir)
 }
