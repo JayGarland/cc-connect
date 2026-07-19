@@ -125,6 +125,34 @@ func TestConfigValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "rejects archive_dir with a TOML-escaped newline",
+			cfg: Config{
+				// Simulates the real-world mistake this guards against: a
+				// Windows path written with a single backslash in a TOML
+				// basic string ("F:\nexus-archive") gets \n interpreted as
+				// an escape by the TOML parser before Go ever sees the
+				// string, silently corrupting the path (L-0469).
+				ArchiveDir: "F:" + "\n" + "exus-archive",
+				Projects:   []ProjectConfig{validProject("demo")},
+			},
+			wantErr: "archive_dir contains a newline/tab character",
+		},
+		{
+			name: "rejects archive_dir with a TOML-escaped tab",
+			cfg: Config{
+				ArchiveDir: "F:" + "\t" + "exus-archive",
+				Projects:   []ProjectConfig{validProject("demo")},
+			},
+			wantErr: "archive_dir contains a newline/tab character",
+		},
+		{
+			name: "accepts archive_dir with properly escaped Windows backslashes",
+			cfg: Config{
+				ArchiveDir: `F:\nexus-archive`,
+				Projects:   []ProjectConfig{validProject("demo")},
+			},
+		},
+		{
 			name: "accepts valid references config",
 			cfg: Config{
 				Projects: []ProjectConfig{

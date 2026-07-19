@@ -508,6 +508,7 @@ func main() {
 			archiveDir = strings.TrimSpace(v)
 		}
 		engine.SetArchiveDir(archiveDir)
+		engine.SetArchiveFirstFallbackTemplate(cfg.ArchiveFirstFallback)
 		if proj.DispatchTopicIsolation {
 			engine.SetDispatchTopicIsolation(true)
 		}

@@ -16,11 +16,34 @@ const (
 	PersonaClassSecretary PersonaClass = "secretary"
 )
 
-// archiveFirstFallback is injected when a seat's preamble file is missing or
-// unreadable. Nexus is live production — a broken preamble file must not
-// stop a seat from starting, but the seat must never run without at least
-// this one-line truth (L-0216 P1, fail-loud-not-fail-stop per L-0215).
-const archiveFirstFallback = "你是无状态的壳。F:\\nexus-archive\\ 是 Nexus 唯一的持久记忆与心脏。"
+// defaultArchiveFirstFallbackTemplate is the innermost Go-level default for
+// archiveFirstFallback, used only when config `archive_first_fallback` is
+// unset. This one string is unavoidably compiled in: it is what's left when
+// every external source (the _preamble/*.md file AND config.toml) has
+// already failed, so something has to exist that can't itself go missing
+// (L-0469 pursuit — the wording is now Boss-editable via config without a
+// cc-connect rebuild; only this innermost floor stays in Go).
+const defaultArchiveFirstFallbackTemplate = "你是无状态的壳。{ARCHIVE_DIR} 是 Nexus 唯一的持久记忆与心脏。"
+
+// archiveFirstFallback builds the one-line truth injected when a seat's
+// preamble file is missing or unreadable. Nexus is live production — a
+// broken preamble file must not stop a seat from starting, but the seat
+// must never run without at least this line (L-0216 P1, fail-loud-not-
+// fail-stop per L-0215). archiveDir is caller-resolved (config `archive_dir`,
+// falling back to DeriveArchiveDir); template is caller-resolved (config
+// `archive_first_fallback`, falling back to defaultArchiveFirstFallbackTemplate
+// when unset) with an {ARCHIVE_DIR} placeholder substituted in — so neither
+// the path nor the surrounding wording is hardcoded here (L-0469 pursuit).
+func archiveFirstFallback(archiveDir, template string) string {
+	if template == "" {
+		template = defaultArchiveFirstFallbackTemplate
+	}
+	dirText := archiveDir
+	if dirText == "" {
+		dirText = "配置的 archive_dir（当前未知，检查 config.toml 顶层 archive_dir 或 data_dir）"
+	}
+	return strings.ReplaceAll(template, "{ARCHIVE_DIR}", dirText)
+}
 
 // ResolvePersonaClass determines which archive-first preamble variant a seat
 // gets. secretary-seat is the sole read-side seat with archive write
@@ -38,10 +61,12 @@ func ResolvePersonaClass(projectName string, hasWorkspacePattern bool) PersonaCl
 }
 
 // ComposePersona prepends the archive-first preamble (selected by class) to
-// personaContent. Missing/unreadable preamble files fall back to a hardcoded
-// one-line truth plus a WARN log rather than failing the spawn.
-func ComposePersona(personasDir string, class PersonaClass, personaContent string) string {
-	preamble := archiveFirstFallback
+// personaContent. Missing/unreadable preamble files fall back to a one-line
+// truth (built from archiveDir, the caller-resolved archive root — config
+// `archive_dir` with a DeriveArchiveDir fallback, never guessed here) plus a
+// WARN log rather than failing the spawn.
+func ComposePersona(personasDir string, class PersonaClass, personaContent string, archiveDir string, fallbackTemplate string) string {
+	preamble := archiveFirstFallback(archiveDir, fallbackTemplate)
 	if personasDir != "" {
 		path := filepath.Join(personasDir, "_preamble", "archive-first."+string(class)+".md")
 		if data, err := os.ReadFile(path); err == nil {
@@ -96,6 +121,8 @@ func EnvValue(extraEnv []string, key string) string {
 // Returns "" when neither a persona file nor a class is available.
 func LoadComposedPersonaFromEnv(extraEnv []string) string {
 	project, personasDir, personaClass := ParsePersonaEnv(extraEnv)
+	archiveDir := EnvValue(extraEnv, "CC_ARCHIVE_DIR")
+	fallbackTemplate := EnvValue(extraEnv, "CC_ARCHIVE_FIRST_FALLBACK")
 	var rawPersona string
 	if project != "" && personasDir != "" {
 		if data, err := os.ReadFile(filepath.Join(personasDir, project+".md")); err == nil {
@@ -103,7 +130,7 @@ func LoadComposedPersonaFromEnv(extraEnv []string) string {
 		}
 	}
 	if personaClass != "" {
-		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona)
+		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona, archiveDir, fallbackTemplate)
 	}
 	return rawPersona
 }

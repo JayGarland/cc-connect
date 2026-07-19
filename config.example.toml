@@ -39,6 +39,23 @@
 # 会话数据存储目录（默认 ~/.cc-connect），以 JSON 文件保存对话历史和会话状态。
 # data_dir = "/path/to/custom/dir"
 
+# Letter-archive physical root (L-0444/L-0467/L-0469). Rehydration and the
+# archive-first preamble fallback both prefer this over deriving a path from
+# data_dir. Set explicitly if your archive doesn't live at <data_dir>/../docs/archive.
+# 信件档案物理根目录，若未设置则从 data_dir 推导（旧约定，通常已失效，建议显式设置）。
+# On Windows, TOML basic strings ("...") treat \n / \t as escapes — a single
+# backslash before n/t will silently corrupt the path. Use doubled backslashes
+# ("F:\\nexus-archive") or a literal string ('F:\nexus-archive') instead.
+# Windows 路径务必用双反斜杠或单引号字面量，单反斜杠遇到 \n \t 会被 TOML 转义成控制字符。
+# archive_dir = "/path/to/letter/archive"
+
+# Override wording for the archive-first fallback preamble — the one-line
+# truth injected when a seat's _preamble/archive-first.{class}.md file is
+# missing or unreadable (L-0469). {ARCHIVE_DIR} is substituted with the
+# resolved archive_dir. Leave unset to use the built-in Chinese default.
+# 兜底前言文案覆盖项，仅在 _preamble 文件缺失/不可读时生效；{ARCHIVE_DIR} 会被替换为实际 archive_dir。
+# archive_first_fallback = "You are a stateless shell. {ARCHIVE_DIR} is Nexus's sole persistent memory."
+
 # Attachment send-back switch for `cc-connect send --image/--file`.
 # Independent from the agent's /mode. Set to "off" to block IM image/file send-back.
 # `cc-connect send --message` without attachments is unaffected.

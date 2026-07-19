@@ -1,6 +1,7 @@
 package core
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -106,6 +107,37 @@ func TestAppendRehydrationEnvUsesDispatchLetter(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Rehydration Digest") || !strings.Contains(joined, "实现方案 B") {
 		t.Fatalf("digest did not include active letter context:\n%s", joined)
+	}
+}
+
+// TestAppendRehydrationEnvPrefersConfiguredArchiveDir verifies the L-0469
+// fix: an explicit SetArchiveDir wins over the DeriveArchiveDir(dataDir)
+// fallback, even when the derived path also resolves to a real archive.
+func TestAppendRehydrationEnvPrefersConfiguredArchiveDir(t *testing.T) {
+	root := t.TempDir()
+	seedArchive(t, root) // seeds a derivable archive at root/docs/archive (decoy)
+
+	explicitRoot := t.TempDir()
+	explicitArchive := filepath.Join(explicitRoot, "nexus-archive")
+	if err := os.MkdirAll(explicitArchive, 0o755); err != nil {
+		t.Fatalf("mkdir explicit archive: %v", err)
+	}
+	explicitIndex := "# EXPLICIT_ARCHIVE_MARKER\n\n| ID | Type | Thread | Parent | 一句话摘要 | Date |\n|---|---|---|---|---|---|\n"
+	if err := os.WriteFile(filepath.Join(explicitArchive, "INDEX.md"), []byte(explicitIndex), 0o644); err != nil {
+		t.Fatalf("write explicit INDEX.md: %v", err)
+	}
+
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(filepath.Join(root, "data")) // derives to root/docs/archive (the decoy)
+	e.SetArchiveDir(explicitArchive)
+
+	env := e.appendRehydrationEnv(nil, "no-such-session", "", "", PersonaClassWrite)
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "EXPLICIT_ARCHIVE_MARKER") {
+		t.Fatalf("expected digest to use the explicitly configured archive dir, not the derived one:\n%s", joined)
+	}
+	if strings.Contains(joined, "rehydration-mechanism") {
+		t.Fatalf("digest leaked content from the decoy derived archive:\n%s", joined)
 	}
 }
 

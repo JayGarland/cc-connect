@@ -482,6 +482,11 @@ type Engine struct {
 	// When empty, rehydration falls back to DeriveArchiveDir(dataDir) (L-0467).
 	archiveDir string
 
+	// archiveFirstFallbackTemplate overrides the wording of the archive-first
+	// fallback preamble (config `archive_first_fallback`). Empty means "use
+	// the built-in default template" (L-0469).
+	archiveFirstFallbackTemplate string
+
 	// configPath is the absolute path to the TOML config file used at startup.
 	// Injected into agent sessions as CC_CONNECT_CONFIG so agents (e.g. reasonix)
 	// can invoke `cc-connect relay send --config <path>` without hardcoding paths.
@@ -1543,6 +1548,12 @@ func (e *Engine) SetDataDir(dir string) {
 // (e.g. /mail via mailIndexPath). Empty means "derive from dataDir".
 func (e *Engine) SetArchiveDir(dir string) {
 	e.archiveDir = strings.TrimSpace(dir)
+}
+
+// SetArchiveFirstFallbackTemplate stores the configured override wording for
+// the archive-first fallback preamble (config `archive_first_fallback`).
+func (e *Engine) SetArchiveFirstFallbackTemplate(template string) {
+	e.archiveFirstFallbackTemplate = template
 }
 
 func (e *Engine) SetDispatchConfig(cfg DispatchConfig) {
@@ -4603,6 +4614,10 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
 			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
+			envVars = append(envVars, "CC_ARCHIVE_DIR="+ResolveArchiveDir(e.archiveDir, e.dataDir))
+			if e.archiveFirstFallbackTemplate != "" {
+				envVars = append(envVars, "CC_ARCHIVE_FIRST_FALLBACK="+e.archiveFirstFallbackTemplate)
+			}
 			messageContent := ""
 			if hist := session.GetHistory(1); len(hist) > 0 {
 				messageContent = hist[0].Content
@@ -17131,6 +17146,10 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
 			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
+			envVars = append(envVars, "CC_ARCHIVE_DIR="+ResolveArchiveDir(e.archiveDir, e.dataDir))
+			if e.archiveFirstFallbackTemplate != "" {
+				envVars = append(envVars, "CC_ARCHIVE_FIRST_FALLBACK="+e.archiveFirstFallbackTemplate)
+			}
 			envVars = e.appendRehydrationEnv(envVars, sourceSessionKey, "", message, personaClass)
 		}
 		if e.configPath != "" {

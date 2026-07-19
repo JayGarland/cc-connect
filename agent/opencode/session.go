@@ -73,7 +73,7 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 	// CompareAndSwap (not Load/Store) atomically claims the slot — two concurrent
 	// Send() calls can't both run the injection.
 	if s.identityInjected.CompareAndSwap(false, true) {
-		var project, sessionKey, ccBin, ccDataDir, ccPersonasDir, personaClass, relayTarget, rehydrationDigest string
+		var project, sessionKey, ccBin, ccDataDir, ccPersonasDir, personaClass, relayTarget, rehydrationDigest, archiveDir, fallbackTemplate string
 		for _, kv := range s.sessionEnv {
 			if idx := strings.IndexByte(kv, '='); idx >= 0 {
 				switch kv[:idx] {
@@ -89,6 +89,10 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 					ccPersonasDir = kv[idx+1:]
 				case "CC_PERSONA_CLASS":
 					personaClass = kv[idx+1:]
+				case "CC_ARCHIVE_DIR":
+					archiveDir = kv[idx+1:]
+				case "CC_ARCHIVE_FIRST_FALLBACK":
+					fallbackTemplate = kv[idx+1:]
 				case "CC_RELAY_TARGET":
 					relayTarget = kv[idx+1:]
 				case "CC_REHYDRATION_DIGEST":
@@ -150,7 +154,7 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 				}
 			}
 			if personaClass != "" {
-				prompt += "\n\n" + core.ComposePersona(ccPersonasDir, core.PersonaClass(personaClass), rawPersona) + "\n"
+				prompt += "\n\n" + core.ComposePersona(ccPersonasDir, core.PersonaClass(personaClass), rawPersona, archiveDir, fallbackTemplate) + "\n"
 			} else if rawPersona != "" {
 				prompt += "\n\n" + rawPersona + "\n"
 			}
