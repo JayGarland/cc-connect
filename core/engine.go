@@ -7663,7 +7663,18 @@ func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil {
+		slog.Warn("receipt: close unavailable", "letter", letter, "reason", "receipt lookup failed", "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if receipt.ClosedAt != "" {
+		slog.Warn("receipt: close unavailable", "letter", letter, "reason", "already closed")
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0] {
+		slog.Warn("receipt: close unavailable", "letter", letter, "reason", "stale generation", "expected_generation", receipt.Generation, "callback_generation", generation[0])
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
