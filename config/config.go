@@ -87,8 +87,11 @@ type Config struct {
 	DataDir string `toml:"data_dir"` // session store directory, default ~/.cc-connect
 	// ArchiveDir is the letter-archive physical root (e.g. F:\nexus-archive).
 	// When set, rehydration prefers this over DeriveArchiveDir(data_dir) (L-0467).
-	ArchiveDir     string `toml:"archive_dir,omitempty"`
-	AttachmentSend string `toml:"attachment_send"`
+	ArchiveDir string `toml:"archive_dir,omitempty"`
+	// ArchiveFirstFallback overrides the wording of the archive-first fallback
+	// preamble; {ARCHIVE_DIR} is substituted; empty = built-in default (L-0469).
+	ArchiveFirstFallback string `toml:"archive_first_fallback,omitempty"`
+	AttachmentSend       string `toml:"attachment_send"`
 	ContextWindow  *int   `toml:"context_window,omitempty"` // fallback model context window for heuristic ctx %, default 666000
 	// Quiet is legacy: when true and [display] does not set thinking_messages / tool_messages,
 	// engines behave as if those flags were false. Per-project quiet overrides when set.

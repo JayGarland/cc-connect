@@ -16,18 +16,33 @@ const (
 	PersonaClassSecretary PersonaClass = "secretary"
 )
 
+// defaultArchiveFirstFallbackTemplate is the innermost Go-level default for
+// archiveFirstFallback, used only when config `archive_first_fallback` is
+// unset. This one string is unavoidably compiled in: it is what's left when
+// every external source (the _preamble/*.md file AND config.toml) has
+// already failed, so something has to exist that can't itself go missing
+// (L-0469 pursuit — the wording is now Boss-editable via config without a
+// cc-connect rebuild; only this innermost floor stays in Go).
+const defaultArchiveFirstFallbackTemplate = "你是无状态的壳。{ARCHIVE_DIR} 是 Nexus 唯一的持久记忆与心脏。"
+
 // archiveFirstFallback builds the one-line truth injected when a seat's
 // preamble file is missing or unreadable. Nexus is live production — a
 // broken preamble file must not stop a seat from starting, but the seat
 // must never run without at least this line (L-0216 P1, fail-loud-not-
 // fail-stop per L-0215). archiveDir is caller-resolved (config `archive_dir`,
-// falling back to DeriveArchiveDir) so this never hardcodes a path that can
-// go stale under a future archive relocation (L-0469 pursuit).
-func archiveFirstFallback(archiveDir string) string {
-	if archiveDir == "" {
-		return "你是无状态的壳。Nexus 的持久记忆与心脏是配置的 archive_dir——当前未知，检查 config.toml 顶层 archive_dir 或 data_dir。"
+// falling back to DeriveArchiveDir); template is caller-resolved (config
+// `archive_first_fallback`, falling back to defaultArchiveFirstFallbackTemplate
+// when unset) with an {ARCHIVE_DIR} placeholder substituted in — so neither
+// the path nor the surrounding wording is hardcoded here (L-0469 pursuit).
+func archiveFirstFallback(archiveDir, template string) string {
+	if template == "" {
+		template = defaultArchiveFirstFallbackTemplate
 	}
-	return "你是无状态的壳。" + archiveDir + " 是 Nexus 唯一的持久记忆与心脏。"
+	dirText := archiveDir
+	if dirText == "" {
+		dirText = "配置的 archive_dir（当前未知，检查 config.toml 顶层 archive_dir 或 data_dir）"
+	}
+	return strings.ReplaceAll(template, "{ARCHIVE_DIR}", dirText)
 }
 
 // ResolvePersonaClass determines which archive-first preamble variant a seat
@@ -50,8 +65,8 @@ func ResolvePersonaClass(projectName string, hasWorkspacePattern bool) PersonaCl
 // truth (built from archiveDir, the caller-resolved archive root — config
 // `archive_dir` with a DeriveArchiveDir fallback, never guessed here) plus a
 // WARN log rather than failing the spawn.
-func ComposePersona(personasDir string, class PersonaClass, personaContent string, archiveDir string) string {
-	preamble := archiveFirstFallback(archiveDir)
+func ComposePersona(personasDir string, class PersonaClass, personaContent string, archiveDir string, fallbackTemplate string) string {
+	preamble := archiveFirstFallback(archiveDir, fallbackTemplate)
 	if personasDir != "" {
 		path := filepath.Join(personasDir, "_preamble", "archive-first."+string(class)+".md")
 		if data, err := os.ReadFile(path); err == nil {
@@ -107,6 +122,7 @@ func EnvValue(extraEnv []string, key string) string {
 func LoadComposedPersonaFromEnv(extraEnv []string) string {
 	project, personasDir, personaClass := ParsePersonaEnv(extraEnv)
 	archiveDir := EnvValue(extraEnv, "CC_ARCHIVE_DIR")
+	fallbackTemplate := EnvValue(extraEnv, "CC_ARCHIVE_FIRST_FALLBACK")
 	var rawPersona string
 	if project != "" && personasDir != "" {
 		if data, err := os.ReadFile(filepath.Join(personasDir, project+".md")); err == nil {
@@ -114,7 +130,7 @@ func LoadComposedPersonaFromEnv(extraEnv []string) string {
 		}
 	}
 	if personaClass != "" {
-		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona, archiveDir)
+		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona, archiveDir, fallbackTemplate)
 	}
 	return rawPersona
 }
