@@ -1081,8 +1081,14 @@ func TestEngineInboxListsPendingReceiptCardsCompactly(t *testing.T) {
 	if !strings.Contains(got, "• [L-0447] (cc-connect-maintenance) To: architect — 设计 Telegram Outbox 发件箱卡片 (2026-07-18)") {
 		t.Fatalf("compact line missing: %q", got)
 	}
-	if strings.Contains(got, "L-0440") {
-		t.Fatalf("acknowledged receipt must leave /inbox: %q", got)
+	// Acknowledged-but-not-closed receipts leave the pending queue but resurface
+	// under the pending-close section (L-0455) so a scrolled-away pending-close
+	// card can still be found — they must not vanish from /inbox entirely.
+	if !strings.Contains(got, "🔒 待封信 (1)") {
+		t.Fatalf("pending-close section missing: %q", got)
+	}
+	if !strings.Contains(got, "L-0440") {
+		t.Fatalf("acknowledged-but-open receipt must appear in pending-close section: %q", got)
 	}
 }
 
@@ -1340,8 +1346,14 @@ func TestEngineReceiptCloseConfirmSuccessPushesAndDeletesCard(t *testing.T) {
 		t.Fatal("successful close+push must delete the inbox card")
 	}
 	record, err := e.notifyStore.receipt("L-0449")
-	if err != nil || record.AcknowledgedAt == "" {
-		t.Fatalf("successful close must acknowledge the receipt: %+v, err=%v", record, err)
+	if err != nil || record.ClosedAt == "" {
+		t.Fatalf("successful close must mark the receipt closed: %+v, err=%v", record, err)
+	}
+	// Closing directly from the still-open original card (never went through
+	// 收件/交主秘书) must not fabricate an acknowledgment — the two are
+	// independent states as of L-0455.
+	if record.AcknowledgedAt != "" {
+		t.Fatalf("close must not set AcknowledgedAt on its own: %+v", record)
 	}
 }
 
@@ -1371,8 +1383,8 @@ func TestEngineReceiptCloseConfirmPushFailureKeepsCardWithRetry(t *testing.T) {
 		t.Fatalf("pending-sync card must surface archive-daily.ps1's actual push_error, not a placeholder: %q", p.updatedContent)
 	}
 	record, err := e.notifyStore.receipt("L-0449")
-	if err != nil || record.AcknowledgedAt != "" {
-		t.Fatalf("unsynced close must not acknowledge the receipt yet: %+v, err=%v", record, err)
+	if err != nil || record.ClosedAt != "" {
+		t.Fatalf("unsynced close must not mark the receipt closed yet: %+v, err=%v", record, err)
 	}
 }
 
@@ -1430,6 +1442,97 @@ func TestEngineReceiptCloseConfirmHardFailureKeepsCardWithRetry(t *testing.T) {
 	record, err := e.notifyStore.receipt("L-0449")
 	if err != nil || record.AcknowledgedAt != "" {
 		t.Fatalf("failed close must not acknowledge the receipt: %+v, err=%v", record, err)
+	}
+}
+
+// TestEngineReceiptCloseReachableAfterReceive reproduces Boss's reported dead
+// end (L-0455): once 收件 acknowledges a letter and deletes its inbox card,
+// AcknowledgedAt used to double as the close gate, so 🔒封信 became
+// permanently unreachable for that letter. This verifies receive now posts a
+// minimal pending-close card and that closing from it actually succeeds.
+func TestEngineReceiptCloseReachableAfterReceive(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0455", "ID: L-0455\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `Write-Output '{"status":"ready","ids":["L-0455"],"pushed":true,"push_error":""}'`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyConfig.Platform = "test"
+	e.notifyConfig.SessionKey = "boss-inbox"
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0455", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if handled := e.receiveReceipt(p, &Message{UserName: "jay", ReplyCtx: "inbox"}, "L-0455"); !handled {
+		t.Fatal("manual receipt must not start an agent turn")
+	}
+	if !p.deleted {
+		t.Fatal("receive must delete the original card")
+	}
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("receive must post exactly one pending-close card, sent=%d", p.receiptCardsSent)
+	}
+	if !strings.Contains(p.buttonContent, "L-0455") {
+		t.Fatalf("pending-close card missing letter id: %q", p.buttonContent)
+	}
+	if len(p.buttonRows) != 1 || len(p.buttonRows[0]) != 1 || !strings.Contains(p.buttonRows[0][0].Data, "cmd:/receipt close L-0455") {
+		t.Fatalf("pending-close card must carry only the close button: %#v", p.buttonRows)
+	}
+
+	p.deleted = false
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0455"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if !p.deleted {
+		t.Fatal("successful close after receive must delete the pending-close card")
+	}
+	record, err := e.notifyStore.receipt("L-0455")
+	if err != nil || record.ClosedAt == "" {
+		t.Fatalf("letter must be closed after receive: %+v, err=%v", record, err)
+	}
+	if record.AcknowledgedAt == "" {
+		t.Fatalf("receive's own acknowledgment must be preserved through close: %+v", record)
+	}
+}
+
+// TestEngineReceiptCancelCloseAfterReceiveRestoresPendingCloseCard covers the
+// L-0449 stale-generation regression (background arrival redraw invalidating
+// the Cancel button) in the post-acknowledgment case newly introduced by
+// L-0455: cancelling from the pending-close card's confirm dialog must
+// restore the minimal pending-close card, not the full original inbox card
+// (whose 收件/交主秘书 buttons would be dead — the letter is already
+// acknowledged).
+func TestEngineReceiptCancelCloseAfterReceiveRestoresPendingCloseCard(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0455", "ID: L-0455\nStatus: DONE\n---\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.Platform = "test"
+	e.notifyConfig.SessionKey = "boss-inbox"
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0455", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	if handled := e.receiveReceipt(p, &Message{UserName: "jay", ReplyCtx: "inbox"}, "L-0455"); !handled {
+		t.Fatal("manual receipt must not start an agent turn")
+	}
+
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt close L-0455"); !handled {
+		t.Fatal("close confirm dialog must not start an agent turn")
+	}
+	if handled := e.handleCommand(p, msg, "/receipt closecancel L-0455"); !handled {
+		t.Fatal("close cancel must not start an agent turn")
+	}
+	if strings.Contains(p.updatedContent, e.i18n.T(MsgReceiptReceive)) {
+		t.Fatalf("cancel must not resurrect the dead 收件/交主秘书 buttons post-acknowledgment: %q", p.updatedContent)
+	}
+	if !strings.Contains(p.updatedContent, "L-0455") {
+		t.Fatalf("cancel must restore a pending-close card referencing the letter: %q", p.updatedContent)
 	}
 }
 

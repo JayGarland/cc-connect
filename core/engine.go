@@ -7434,7 +7434,7 @@ func (e *Engine) markReceipt(letter, user string) (receiptRecord, bool, error) {
 
 func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page int, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
@@ -7457,7 +7457,7 @@ func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page i
 
 func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, page int, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
@@ -7492,7 +7492,7 @@ func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, 
 
 func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return
 	}
@@ -7509,7 +7509,7 @@ func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string, gen
 
 func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string, generation ...string) bool {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7525,6 +7525,7 @@ func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string, generat
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
+	e.sendPendingCloseCard(letter, receipt)
 	return true
 }
 
@@ -7544,7 +7545,7 @@ func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7574,10 +7575,52 @@ func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
+	e.sendPendingCloseCard(letter, receipt)
 	msg.SessionKey = targetSession
 	msg.ReplyCtx = targetReplyCtx
 	msg.Content = string(original)
 	return false
+}
+
+// sendPendingCloseCard posts the minimal 🔒封信-only successor after
+// 收件/交主秘书 deletes the original inbox card, so the close flow stays
+// reachable once acknowledged instead of dead-ending (L-0455). It targets
+// the same notify session the original inbox card was posted to (see
+// notifyLetterArrived), independent of whichever reply context the
+// acknowledging handler used. Best-effort: a send failure only means Boss
+// falls back to typing /receipt close <letter> manually — it must not roll
+// back the acknowledgment that already succeeded.
+func (e *Engine) sendPendingCloseCard(letter string, receipt receiptRecord) {
+	if receipt.ClosedAt != "" || strings.TrimSpace(e.notifyConfig.SessionKey) == "" {
+		return
+	}
+	for _, p := range e.platforms {
+		if p.Name() != e.notifyConfig.Platform {
+			continue
+		}
+		cards, ok := p.(ReceiptCardManager)
+		if !ok {
+			return
+		}
+		replyCtx := any(e.notifyConfig.SessionKey)
+		if rc, ok := p.(ReplyContextReconstructor); ok {
+			if reconstructed, err := rc.ReconstructReplyCtx(e.notifyConfig.SessionKey); err == nil {
+				replyCtx = reconstructed
+			}
+		}
+		content, buttons := formatPendingCloseCard(e.i18n, letter, receipt)
+		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
+		defer cancel()
+		card, err := cards.SendReceiptCard(ctx, replyCtx, content, buttons)
+		if err != nil {
+			slog.Warn("receipt: failed to send pending-close card", "letter", letter, "error", err)
+			return
+		}
+		if err := e.notifyStore.storeReceiptCard(letter, card); err != nil {
+			slog.Warn("receipt: failed to persist pending-close card", "letter", letter, "error", err)
+		}
+		return
+	}
 }
 
 // showReceiptCloseConfirm renders the two-stage confirmation prompt for the
@@ -7590,7 +7633,7 @@ func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7626,7 +7669,7 @@ func (e *Engine) cancelReceiptClose(p Platform, msg *Message, letter string) boo
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" {
+	if err != nil || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7635,7 +7678,18 @@ func (e *Engine) cancelReceiptClose(p Platform, msg *Message, letter string) boo
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
-	content, buttons := formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+	// The confirm dialog can have been opened from either the still-open
+	// original inbox card (not yet acknowledged) or the minimal pending-close
+	// card posted after 收件/交主秘书 (L-0455). Restore whichever one applies —
+	// rendering the full card with 收件/交主秘书 buttons post-acknowledgment
+	// would offer actions that are already gated off and fail as "unavailable".
+	var content string
+	var buttons [][]ButtonOption
+	if receipt.AcknowledgedAt != "" {
+		content, buttons = formatPendingCloseCard(e.i18n, letter, receipt)
+	} else {
+		content, buttons = formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+	}
 	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 	}
@@ -7656,7 +7710,7 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 		return true
 	}
@@ -7687,7 +7741,7 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 		showRetry(e.i18n.Tf(MsgReceiptClosePending, letter, pushErr))
 		return true
 	}
-	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
+	if _, changed, err := e.notifyStore.markClosed(letter); err != nil || !changed {
 		// The archive close+push already landed durably — only cc-connect's own
 		// local receipt bookkeeping failed. Don't report success (the card and
 		// the receipt store would then permanently disagree with each other),
@@ -7747,7 +7801,7 @@ func (e *Engine) cmdInbox(p Platform, msg *Message) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgInboxUnavailable))
 		return
 	}
-	e.reply(p, msg.ReplyCtx, formatInboxBoard(e.i18n, collectPendingInboxEntries(ledger)))
+	e.reply(p, msg.ReplyCtx, formatInboxBoard(e.i18n, collectPendingInboxEntries(ledger), collectPendingCloseEntries(ledger)))
 }
 
 func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string) {

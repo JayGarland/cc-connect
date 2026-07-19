@@ -402,6 +402,65 @@ func TestNotifyStoreReceiptPersistsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestNotifyStoreMarkClosedIsIndependentOfAcknowledge verifies the L-0455
+// fix at the storage layer: markClosed must succeed regardless of whether
+// acknowledge ran first (closed via a pending-close card after 收件/交主秘书)
+// or never ran at all (closed directly from the still-open original card),
+// and it must not itself set AcknowledgedAt — the two states are independent.
+func TestNotifyStoreMarkClosedIsIndependentOfAcknowledge(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "cc-connect-maintenance", "L-0455", "ID: L-0455\nStatus: DONE\n---\n\nbody\n")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	if err := store.recordArrival(indexResultRow{Letter: "L-0455", Thread: "cc-connect-maintenance", Summary: "ready", Path: resultPath, Status: "DONE"}); err != nil {
+		t.Fatalf("recordArrival: %v", err)
+	}
+
+	// Close reachable without ever acknowledging first.
+	closed, changed, err := store.markClosed("L-0455")
+	if err != nil || !changed {
+		t.Fatalf("markClosed = (%+v, %v, %v), want changed", closed, changed, err)
+	}
+	if closed.AcknowledgedAt != "" {
+		t.Fatalf("markClosed must not set AcknowledgedAt: %+v", closed)
+	}
+	if closed.ClosedAt == "" {
+		t.Fatalf("markClosed did not record ClosedAt: %+v", closed)
+	}
+
+	// Idempotent: a retry (e.g. after a push-failure retry button) must not
+	// error and must not move ClosedAt.
+	again, changed, err := store.markClosed("L-0455")
+	if err != nil || changed {
+		t.Fatalf("second markClosed = (%+v, %v, %v), want idempotent no-op", again, changed, err)
+	}
+	if again.ClosedAt != closed.ClosedAt {
+		t.Fatalf("idempotent markClosed moved ClosedAt: %q -> %q", closed.ClosedAt, again.ClosedAt)
+	}
+}
+
+// TestNotifyStoreMarkClosedAfterAcknowledgeLeavesAcknowledgedAtIntact covers
+// the other order: 收件/交主秘书 first, then close from the resulting
+// pending-close card. Closing must not disturb the existing acknowledgment.
+func TestNotifyStoreMarkClosedAfterAcknowledgeLeavesAcknowledgedAtIntact(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "cc-connect-maintenance", "L-0455", "ID: L-0455\nStatus: DONE\n---\n\nbody\n")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	if err := store.recordArrival(indexResultRow{Letter: "L-0455", Thread: "cc-connect-maintenance", Summary: "ready", Path: resultPath, Status: "DONE"}); err != nil {
+		t.Fatalf("recordArrival: %v", err)
+	}
+	acked, _, err := store.acknowledge("L-0455", "jay")
+	if err != nil {
+		t.Fatalf("acknowledge: %v", err)
+	}
+	closed, changed, err := store.markClosed("L-0455")
+	if err != nil || !changed {
+		t.Fatalf("markClosed after acknowledge = (%+v, %v, %v), want changed", closed, changed, err)
+	}
+	if closed.AcknowledgedAt != acked.AcknowledgedAt || closed.AcknowledgedBy != "jay" {
+		t.Fatalf("close disturbed the existing acknowledgment: %+v", closed)
+	}
+}
+
 func TestNotifyStoreKeepsOriginalResultPathAtArrival(t *testing.T) {
 	root := t.TempDir()
 	resultPath := writeResultFile(t, root, "alpha", "L-0431", "ID: L-0431\nStatus: DONE\n---\n\n## Conclusion\noriginal\n")
@@ -444,6 +503,30 @@ func TestNotifyStoreReceiptGenerationReplacesPendingAndReopensAcknowledged(t *te
 	}
 }
 
+// TestNotifyStoreNewGenerationResetsClosedAt mirrors the existing
+// AcknowledgedAt-reset-on-new-generation behavior for ClosedAt (L-0455): a
+// freshly-arrived RESULT update supersedes a prior close the same way it
+// already supersedes a prior acknowledgment, since the archived CLOSED row
+// belongs to the old content, not the new one.
+func TestNotifyStoreNewGenerationResetsClosedAt(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0430", "body")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	first := indexResultRow{Letter: "L-0430", Thread: "alpha", Path: resultPath, Summary: "first", Status: "DONE", Generation: "2026-07-16T20:00:00Z"}
+	if _, err := store.recordArrivalTransition(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.markClosed("L-0430"); err != nil || !changed {
+		t.Fatalf("markClosed = (%v, %v)", changed, err)
+	}
+	second := first
+	second.Summary, second.Generation = "second", "2026-07-16T20:01:00Z"
+	arrival, err := store.recordArrivalTransition(second)
+	if err != nil || !arrival.Replaced || arrival.Receipt.ClosedAt != "" {
+		t.Fatalf("new generation must reset ClosedAt = %+v, %v", arrival, err)
+	}
+}
+
 func TestNotifyStorePreservesFullReceiptSummaryWithoutCreatingSnapshot(t *testing.T) {
 	root := t.TempDir()
 	body := "ID: L-0430\nStatus: DONE\n---\n\nimmutable body\n"
@@ -475,15 +558,38 @@ func TestFormatInboxBoardCompactQueue(t *testing.T) {
 		{Letter: "L-0448", Thread: "agent-memory-evolution", To: "architect", Date: "2026-07-18", Summary: "评估单体 Agent 记忆沉淀与进化设计"},
 		{Letter: "L-0447", Thread: "cc-connect-maintenance", To: "architect", Date: "2026-07-18", Summary: "设计 Telegram Outbox 发件箱卡片"},
 	}
-	got := formatInboxBoard(NewI18n(LangChinese), entries)
+	got := formatInboxBoard(NewI18n(LangChinese), entries, nil)
 	want := "📥 收件箱待处理队列 (2)\n" +
 		"• [L-0448] (agent-memory-evolution) To: architect — 评估单体 Agent 记忆沉淀与进化设计 (2026-07-18)\n" +
 		"• [L-0447] (cc-connect-maintenance) To: architect — 设计 Telegram Outbox 发件箱卡片 (2026-07-18)"
 	if got != want {
 		t.Fatalf("board =\n%s\nwant\n%s", got, want)
 	}
-	if empty := formatInboxBoard(NewI18n(LangEnglish), nil); empty != "📥 Inbox is empty — no pending RESULT cards." {
+	if empty := formatInboxBoard(NewI18n(LangEnglish), nil, nil); empty != "📥 Inbox is empty — no pending RESULT cards." {
 		t.Fatalf("empty board = %q", empty)
+	}
+}
+
+func TestFormatInboxBoardIncludesPendingCloseSection(t *testing.T) {
+	entries := []inboxQueueEntry{
+		{Letter: "L-0448", Thread: "agent-memory-evolution", To: "architect", Date: "2026-07-18", Summary: "评估单体 Agent 记忆沉淀与进化设计"},
+	}
+	pendingClose := []inboxQueueEntry{
+		{Letter: "L-0449", Thread: "cc-connect-maintenance", To: "architect", Date: "2026-07-17", Summary: "一键封信按钮设计交付"},
+	}
+	got := formatInboxBoard(NewI18n(LangChinese), entries, pendingClose)
+	want := "📥 收件箱待处理队列 (1)\n" +
+		"• [L-0448] (agent-memory-evolution) To: architect — 评估单体 Agent 记忆沉淀与进化设计 (2026-07-18)\n\n" +
+		"🔒 待封信 (1)\n" +
+		"• [L-0449] (cc-connect-maintenance) To: architect — 一键封信按钮设计交付 (2026-07-17)"
+	if got != want {
+		t.Fatalf("board =\n%s\nwant\n%s", got, want)
+	}
+	pendingOnly := formatInboxBoard(NewI18n(LangChinese), nil, pendingClose)
+	wantPendingOnly := "🔒 待封信 (1)\n" +
+		"• [L-0449] (cc-connect-maintenance) To: architect — 一键封信按钮设计交付 (2026-07-17)"
+	if pendingOnly != wantPendingOnly {
+		t.Fatalf("pending-only board =\n%s\nwant\n%s", pendingOnly, wantPendingOnly)
 	}
 }
 
@@ -512,6 +618,37 @@ func TestCollectPendingInboxEntriesSkipsAcknowledged(t *testing.T) {
 	entries := collectPendingInboxEntries(ledger)
 	if len(entries) != 1 || entries[0].Letter != "L-0451" || entries[0].To != "architect" {
 		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+// TestCollectPendingInboxEntriesSkipsClosedButUnacknowledged covers a gap
+// L-0455's own decoupling opened: a letter can now be closed directly from
+// the still-open original card without ever being acknowledged, so
+// AcknowledgedAt alone is no longer sufficient to detect "still pending".
+// Without also excluding ClosedAt, such a letter would keep showing up in
+// /inbox with a card whose every button now replies MsgReceiptUnavailable.
+func TestCollectPendingInboxEntriesSkipsClosedButUnacknowledged(t *testing.T) {
+	root := t.TempDir()
+	path := writeResultFile(t, root, "alpha", "L-0455", "ID: L-0455\nTo: architect\nStatus: DONE\n---\n\n## Conclusion\nready\n")
+	store := newNotifyStore(filepath.Join(root, "data"))
+	if err := store.recordArrival(indexResultRow{
+		Letter: "L-0455", Thread: "alpha", Path: path, To: "architect",
+		Summary: "ready", Status: "DONE", Generation: "2026-07-18T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.markClosed("L-0455"); err != nil || !changed {
+		t.Fatalf("markClosed = (%v, %v)", changed, err)
+	}
+	ledger, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries := collectPendingInboxEntries(ledger); len(entries) != 0 {
+		t.Fatalf("closed-but-unacknowledged letter must not appear as pending: %#v", entries)
+	}
+	if entries := collectPendingCloseEntries(ledger); len(entries) != 0 {
+		t.Fatalf("closed letter must not appear in the pending-close section either: %#v", entries)
 	}
 }
 
