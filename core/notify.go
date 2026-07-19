@@ -888,7 +888,43 @@ const receiptCompactTextLimit = 3500
 
 // formatReceiptInboxCard renders the Boss-facing inbox card. A non-positive
 // pageCount is the compact envelope; positive pageCount is an original page.
+//
+// The compact envelope (pageCount<=0) and a page (pageCount>0) intentionally
+// build their content independently rather than sharing one preamble: the
+// compact envelope's summary/open-points/result-path block was already shown
+// once when the letter arrived, so a page — whose only job is to surface the
+// raw original bytes, paginated by receiptOriginalPages — uses a short
+// header instead. Reusing the full compact preamble on every page
+// previously let a long Summary/OpenPoints combination (see L-0458) push the
+// rendered message past Telegram's ~4096-character limit and fail the
+// UpdateMessageWithButtons call outright with MESSAGE_TOO_LONG, which surfaced
+// to Boss as the misleading "Receipt is unavailable" (L-0460 follow-up).
 func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, body string, page, pageCount int) (string, [][]ButtonOption) {
+	generation := record.Generation
+	if generation == "" {
+		generation = record.ArrivedAt
+	}
+	if pageCount > 0 {
+		content := i18n.Tf(MsgReceiptCardPageHeader, letter, record.Thread) + "\n\n" + i18n.Tf(MsgReceiptCardPage, page+1, pageCount, body)
+		var buttons [][]ButtonOption
+		var pageButtons []ButtonOption
+		if page > 0 {
+			pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardPrev), Data: fmt.Sprintf("cmd:/receipt page %s %s %d", letter, generation, page-1)})
+		}
+		if page+1 < pageCount {
+			pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardNext), Data: fmt.Sprintf("cmd:/receipt page %s %s %d", letter, generation, page+1)})
+		}
+		if len(pageButtons) > 0 {
+			buttons = append(buttons, pageButtons)
+		}
+		buttons = append(buttons, []ButtonOption{
+			{Text: i18n.T(MsgReceiptCollapse), Data: "cmd:/receipt collapse " + letter + " " + generation},
+			{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter + " " + generation},
+			{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
+		})
+		buttons = append(buttons, []ButtonOption{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}})
+		return content, buttons
+	}
 	content := i18n.Tf(MsgReceiptCardCompact, letter, record.Thread, record.Status, record.Summary, record.ArrivedAt, record.ResultPath)
 	if record.SourceSessionPath != "" {
 		content += "\nSource session: " + record.SourceSessionPath
@@ -906,41 +942,16 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 	if inlineUpdate {
 		content += "\n\n" + i18n.T(MsgReceiptChanges) + "\n" + update
 	}
-	generation := record.Generation
-	if generation == "" {
-		generation = record.ArrivedAt
-	}
-	if pageCount <= 0 {
-		buttons := []ButtonOption{
-			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/receipt page " + letter + " " + generation + " 0"},
-			{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter + " " + generation},
-			{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
-		}
-		if update != "" && !inlineUpdate {
-			buttons = append([]ButtonOption{{Text: i18n.T(MsgReceiptViewUpdate), Data: "cmd:/receipt update " + letter + " " + generation + " 0"}}, buttons...)
-		}
-		closeRow := []ButtonOption{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}}
-		return content, [][]ButtonOption{buttons, closeRow}
-	}
-	content += "\n\n" + i18n.Tf(MsgReceiptCardPage, page+1, pageCount, body)
-	var buttons [][]ButtonOption
-	var pageButtons []ButtonOption
-	if page > 0 {
-		pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardPrev), Data: fmt.Sprintf("cmd:/receipt page %s %s %d", letter, generation, page-1)})
-	}
-	if page+1 < pageCount {
-		pageButtons = append(pageButtons, ButtonOption{Text: i18n.T(MsgCardNext), Data: fmt.Sprintf("cmd:/receipt page %s %s %d", letter, generation, page+1)})
-	}
-	if len(pageButtons) > 0 {
-		buttons = append(buttons, pageButtons)
-	}
-	buttons = append(buttons, []ButtonOption{
-		{Text: i18n.T(MsgReceiptCollapse), Data: "cmd:/receipt collapse " + letter + " " + generation},
+	buttons := []ButtonOption{
+		{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/receipt page " + letter + " " + generation + " 0"},
 		{Text: i18n.T(MsgReceiptReceive), Data: "cmd:/receipt receive " + letter + " " + generation},
 		{Text: i18n.T(MsgReceiptHandoffPrimary), Data: "cmd:/receipt primary " + letter + " " + generation},
-	})
-	buttons = append(buttons, []ButtonOption{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}})
-	return content, buttons
+	}
+	if update != "" && !inlineUpdate {
+		buttons = append([]ButtonOption{{Text: i18n.T(MsgReceiptViewUpdate), Data: "cmd:/receipt update " + letter + " " + generation + " 0"}}, buttons...)
+	}
+	closeRow := []ButtonOption{{Text: i18n.T(MsgReceiptClose), Data: "cmd:/receipt close " + letter + " " + generation}}
+	return content, [][]ButtonOption{buttons, closeRow}
 }
 
 // formatPendingCloseCard renders the minimal successor card posted after
