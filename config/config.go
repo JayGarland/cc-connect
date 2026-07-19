@@ -1056,6 +1056,9 @@ func (c *Config) validate() error {
 }
 
 func (c *Config) validateInternal(permissive bool) error {
+	if strings.ContainsAny(c.ArchiveDir, "\n\r\t") {
+		return fmt.Errorf("config: archive_dir contains a newline/tab character — likely a Windows path written with single backslashes (e.g. \"F:\\nexus-archive\", where TOML's basic-string \\n is interpreted as an escape, not a path separator); use doubled backslashes (\"F:\\\\nexus-archive\") or a literal string ('F:\\nexus-archive') instead. archive_dir is now actively parsed (L-0469) and a corrupted path silently breaks the Rehydration Digest")
+	}
 	if err := validateDisplayConfig("display", &c.Display); err != nil {
 		return err
 	}

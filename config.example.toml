@@ -43,6 +43,10 @@
 # archive-first preamble fallback both prefer this over deriving a path from
 # data_dir. Set explicitly if your archive doesn't live at <data_dir>/../docs/archive.
 # 信件档案物理根目录，若未设置则从 data_dir 推导（旧约定，通常已失效，建议显式设置）。
+# On Windows, TOML basic strings ("...") treat \n / \t as escapes — a single
+# backslash before n/t will silently corrupt the path. Use doubled backslashes
+# ("F:\\nexus-archive") or a literal string ('F:\nexus-archive') instead.
+# Windows 路径务必用双反斜杠或单引号字面量，单反斜杠遇到 \n \t 会被 TOML 转义成控制字符。
 # archive_dir = "/path/to/letter/archive"
 
 # Override wording for the archive-first fallback preamble — the one-line
