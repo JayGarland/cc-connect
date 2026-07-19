@@ -307,19 +307,23 @@ func captureStderr(t *testing.T, fn func()) string {
 		os.Stderr = old
 	}()
 
+	outCh := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		outCh <- buf.String()
+	}()
+
 	fn()
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("copy stderr: %v", err)
-	}
+	out := <-outCh
 	if err := r.Close(); err != nil {
 		t.Fatalf("close reader: %v", err)
 	}
-	return buf.String()
+	return out
 }
 
 func TestPrintUsage_ListsCronExecCommand(t *testing.T) {
