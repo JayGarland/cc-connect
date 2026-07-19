@@ -503,6 +503,11 @@ func main() {
 		engine.SetBaseWorkDir(workDir)
 		engine.SetProjectStateStore(projectState)
 		engine.SetDataDir(cfg.DataDir)
+		archiveDir := strings.TrimSpace(cfg.ArchiveDir)
+		if v, ok := proj.Agent.Options["archive_dir"].(string); ok && strings.TrimSpace(v) != "" {
+			archiveDir = strings.TrimSpace(v)
+		}
+		engine.SetArchiveDir(archiveDir)
 		if proj.DispatchTopicIsolation {
 			engine.SetDispatchTopicIsolation(true)
 		}

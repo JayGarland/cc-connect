@@ -1355,6 +1355,16 @@ func TestEngineReceiptCloseConfirmSuccessPushesAndDeletesCard(t *testing.T) {
 	if record.AcknowledgedAt != "" {
 		t.Fatalf("close must not set AcknowledgedAt on its own: %+v", record)
 	}
+	// L-0467: success note carries optional Extract Preferences button.
+	if len(p.buttonRows) == 0 || len(p.buttonRows[0]) == 0 {
+		t.Fatalf("close success must SendWithButtons including extractprefs, got rows=%#v content=%q", p.buttonRows, p.buttonContent)
+	}
+	if !strings.Contains(p.buttonRows[0][0].Data, "extractprefs L-0449") {
+		t.Fatalf("extractprefs button missing: %#v", p.buttonRows)
+	}
+	if !strings.Contains(p.buttonContent, "L-0449") {
+		t.Fatalf("close success content missing letter: %q", p.buttonContent)
+	}
 }
 
 // TestSanitizeArchiveSummaryReplacesTableUnsafeCharacters is a unit test for

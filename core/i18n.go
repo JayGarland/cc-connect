@@ -538,8 +538,13 @@ const (
 	MsgReceiptClosePending     MsgKey = "receipt_close_pending"
 	MsgReceiptCloseUnconfirmed MsgKey = "receipt_close_unconfirmed"
 	MsgReceiptCloseFailed      MsgKey = "receipt_close_failed"
-	MsgReceiptCloseRetryBtn    MsgKey = "receipt_close_retry_btn"
-	MsgReceiptPendingClose     MsgKey = "receipt_pending_close"
+	MsgReceiptCloseRetryBtn         MsgKey = "receipt_close_retry_btn"
+	MsgReceiptExtractPrefs          MsgKey = "receipt_extract_prefs"
+	MsgReceiptExtractPrefsNoSession MsgKey = "receipt_extract_prefs_no_session"
+	MsgReceiptExtractPrefsPersonal  MsgKey = "receipt_extract_prefs_personal"
+	MsgReceiptExtractPrefsFailed    MsgKey = "receipt_extract_prefs_failed"
+	MsgReceiptExtractPrefsDispatched MsgKey = "receipt_extract_prefs_dispatched"
+	MsgReceiptPendingClose          MsgKey = "receipt_pending_close"
 	MsgInboxPendingCloseHeader MsgKey = "inbox_pending_close_header"
 	MsgReceiptEmptyOriginal    MsgKey = "receipt_empty_original"
 	MsgReceiptUpdated          MsgKey = "receipt_updated"
@@ -979,6 +984,37 @@ var messages = map[MsgKey]map[Language]string{
 	},
 	MsgReceiptCloseRetryBtn: {
 		LangEnglish: "🔄 Retry sync", LangChinese: "🔄 重试同步", LangTraditionalChinese: "🔄 重試同步", LangJapanese: "🔄 同期を再試行", LangSpanish: "🔄 Reintentar sincronización",
+	},
+	MsgReceiptExtractPrefs: {
+		LangEnglish: "🔍 Extract Preferences", LangChinese: "🔍 提取偏好", LangTraditionalChinese: "🔍 提取偏好", LangJapanese: "🔍 好みを抽出", LangSpanish: "🔍 Extraer preferencias",
+	},
+	MsgReceiptExtractPrefsNoSession: {
+		LangEnglish:            "⚠️ %s: no Source-Session-Path / chat_history available for preference extract.",
+		LangChinese:            "⚠️ %s：找不到可用于提取偏好的 Source-Session-Path / chat_history。",
+		LangTraditionalChinese: "⚠️ %s：找不到可用於提取偏好的 Source-Session-Path / chat_history。",
+		LangJapanese:           "⚠️ %s：好み抽出用の Source-Session-Path / chat_history がありません。",
+		LangSpanish:            "⚠️ %s: no hay Source-Session-Path / chat_history para extraer preferencias.",
+	},
+	MsgReceiptExtractPrefsPersonal: {
+		LangEnglish:            "🚫 %s: personal-domain session path — preference extract skipped (fail-closed).",
+		LangChinese:            "🚫 %s：personal 域会话路径——已 Fail-Closed 跳过偏好提取。",
+		LangTraditionalChinese: "🚫 %s：personal 域會話路徑——已 Fail-Closed 跳過偏好提取。",
+		LangJapanese:           "🚫 %s：personal ドメインのセッションのため、好み抽出をスキップしました。",
+		LangSpanish:            "🚫 %s: ruta de sesión personal — extracción omitida (fail-closed).",
+	},
+	MsgReceiptExtractPrefsFailed: {
+		LangEnglish:            "❌ %s: preference extract failed: %s",
+		LangChinese:            "❌ %s：偏好提取失败：%s",
+		LangTraditionalChinese: "❌ %s：偏好提取失敗：%s",
+		LangJapanese:           "❌ %s：好み抽出に失敗しました：%s",
+		LangSpanish:            "❌ %s: falló la extracción de preferencias: %s",
+	},
+	MsgReceiptExtractPrefsDispatched: {
+		LangEnglish:            "✅ %s: preference-extract QUERY %s registered and dispatched to reviewer-seat.",
+		LangChinese:            "✅ %s：偏好提取 QUERY %s 已登记并派发给 reviewer-seat。",
+		LangTraditionalChinese: "✅ %s：偏好提取 QUERY %s 已登記並派發給 reviewer-seat。",
+		LangJapanese:           "✅ %s：好み抽出 QUERY %s を登録し reviewer-seat に派遣しました。",
+		LangSpanish:            "✅ %s: QUERY %s de extracción registrada y enviada a reviewer-seat.",
 	},
 	MsgReceiptPendingClose: {
 		LangEnglish:            "🔒 %s pending close — acknowledged, waiting to be archived.",

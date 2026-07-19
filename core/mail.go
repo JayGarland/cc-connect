@@ -211,15 +211,13 @@ func formatMailOverview(i18n *I18n, letters []mailLetter, opts mailOpts, tailLin
 	return strings.TrimSpace(b.String())
 }
 
-// mailIndexPath resolves INDEX.md: prefer notify_index_path, else dataDir-derived archive.
+// mailIndexPath resolves INDEX.md: prefer notify_index_path, else
+// ResolveArchiveDir(archive_dir, data_dir).
 func (e *Engine) mailIndexPath() string {
 	if p := strings.TrimSpace(e.notifyConfig.IndexPath); p != "" {
 		return p
 	}
-	if e.dataDir == "" {
-		return ""
-	}
-	archiveDir := DeriveArchiveDir(e.dataDir)
+	archiveDir := ResolveArchiveDir(e.archiveDir, e.dataDir)
 	if archiveDir == "" {
 		return ""
 	}

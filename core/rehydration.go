@@ -32,8 +32,9 @@ type RehydrationBudget struct {
 // RehydrationConfig controls the depth and scope of a spawn-time
 // Rehydration Digest (L-0251).
 type RehydrationConfig struct {
-	// ArchiveDir is the root of the letter archive, e.g. F:\nexus\docs\archive.
-	// Derived from the engine's dataDir when empty.
+	// ArchiveDir is the letter-archive root already resolved by the caller
+	// (typically via ResolveArchiveDir). BuildRehydrationDigest does not
+	// derive paths itself — an empty ArchiveDir yields an empty digest.
 	ArchiveDir string
 
 	// IndexTailLines controls how many lines from INDEX.md to include.
@@ -56,6 +57,11 @@ type RehydrationConfig struct {
 	// triggered from (e.g. "L-0251"). When set, the digest includes the
 	// letter's context + parent chain up to ParentChainDepth.
 	ActiveLetterID string
+
+	// MemoryRadarLines is how many tail lines to pull from each of
+	// agent/cases/INDEX.md and agent/tools/INDEX.md (L-0467). Never injects
+	// full case/tool bodies. 0 = default (12); negative disables Memory Radar.
+	MemoryRadarLines int
 }
 
 // RehydrationBudgetForPersonaClass returns the default digest budget for a
@@ -107,20 +113,23 @@ func (c RehydrationConfig) fillDefaults() RehydrationConfig {
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = budget.MaxTokens
 	}
+	if out.MemoryRadarLines == 0 {
+		out.MemoryRadarLines = 12
+	}
 	out.ActiveLetterID = normalizeLetterID(out.ActiveLetterID)
 	return out
 }
 
-// ── DeriveArchiveDir ──────────────────────────────────────────────
+// ── DeriveArchiveDir / ResolveArchiveDir ──────────────────────────
 
-// DeriveArchiveDir returns the expected letter-archive directory derived
-// from the engine's dataDir. Convention:
+// DeriveArchiveDir returns the legacy letter-archive directory derived
+// from the engine's dataDir. Convention (pre-L-0444):
 //
 //	dataDir = F:\nexus\data  →  archive = F:\nexus\docs\archive
 //	dataDir = /opt/nexus/data → archive = /opt/nexus/docs/archive
 //
-// Both / and \ are treated as separators so a Windows-style dataDir string
-// still derives correctly if the process later runs on Linux (migration/CI).
+// Prefer ResolveArchiveDir with an explicit archive_dir config — the
+// derived path is often stale after archive relocation (L-0444 / L-0467).
 // Returns "" when dataDir is empty.
 func DeriveArchiveDir(dataDir string) string {
 	if dataDir == "" {
@@ -131,6 +140,30 @@ func DeriveArchiveDir(dataDir string) string {
 	normalized := filepath.FromSlash(strings.ReplaceAll(dataDir, `\`, "/"))
 	nexusDir := filepath.Dir(normalized)
 	return filepath.Join(nexusDir, "docs", "archive")
+}
+
+// ResolveArchiveDir picks the letter-archive root (L-0467):
+//  1. explicit archive_dir config when non-empty
+//  2. else DeriveArchiveDir(dataDir)
+//
+// When an explicit archive_dir is set but missing/not a directory, logs a
+// Warn (misconfiguration). Derived fallbacks stay quiet — BuildRehydrationDigest
+// already degrades to "" when INDEX.md is unreadable.
+func ResolveArchiveDir(explicit, dataDir string) string {
+	explicit = strings.TrimSpace(explicit)
+	dir := explicit
+	if dir == "" {
+		dir = DeriveArchiveDir(dataDir)
+	}
+	if dir == "" {
+		return ""
+	}
+	info, err := os.Stat(dir)
+	if explicit != "" && (err != nil || !info.IsDir()) {
+		slog.Warn("rehydration: explicit archive_dir missing or not a directory; digest will be empty",
+			"archive_dir", dir, "error", err)
+	}
+	return dir
 }
 
 // ── BuildRehydrationDigest ────────────────────────────────────────
@@ -151,10 +184,12 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 
 	var b strings.Builder
 	b.WriteString("## Rehydration Digest (spawn-time snapshot)\n\n")
-	b.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&b,
 		"_Budget: %d rough tokens; INDEX tail: %d lines; parent depth: %d; open/STUCK/BLOCKED rows: %d._\n\n",
-		cfg.MaxTokens, cfg.IndexTailLines, cfg.ParentChainDepth, cfg.OpenSummaryEntries))
-	b.WriteString("This digest is frozen at process spawn. Before writing a RESULT or acting on a latest/follow-up request, reread `F:\\nexus\\docs\\archive\\INDEX.md` tail to catch newer letters.\n\n")
+		cfg.MaxTokens, cfg.IndexTailLines, cfg.ParentChainDepth, cfg.OpenSummaryEntries)
+	fmt.Fprintf(&b,
+		"This digest is frozen at process spawn. Before writing a RESULT or acting on a latest/follow-up request, reread `%s` tail to catch newer letters.\n\n",
+		filepath.Join(cfg.ArchiveDir, "INDEX.md"))
 
 	// 1. INDEX tail — recent fleet activity.
 	indexTail := readTail(indexPath, cfg.IndexTailLines)
@@ -163,8 +198,7 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 			"path", indexPath)
 		return ""
 	}
-	b.WriteString("### 当前舰队状态（INDEX 尾部——最近 " +
-		fmt.Sprintf("%d 行）\n", cfg.IndexTailLines))
+	fmt.Fprintf(&b, "### 当前舰队状态（INDEX 尾部——最近 %d 行）\n", cfg.IndexTailLines)
 	b.WriteString("```\n")
 	b.WriteString(indexTail)
 	b.WriteString("\n```\n\n")
@@ -188,6 +222,9 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 		}
 	}
 
+	// 4. Memory Radar — short pointers only (L-0467 / L-0448 M1).
+	appendMemoryRadar(&b, cfg.ArchiveDir, cfg.MemoryRadarLines)
+
 	digest := strings.TrimSpace(b.String())
 	digest = trimDigestToBudget(digest, cfg.MaxTokens)
 	slog.Debug("rehydration: built digest",
@@ -196,6 +233,37 @@ func BuildRehydrationDigest(cfg RehydrationConfig) string {
 		"letter", cfg.ActiveLetterID,
 	)
 	return digest
+}
+
+// appendMemoryRadar writes pointer-only tails from the shared cognitive
+// memory plane. Full case/tool bodies are never injected (L-0410 / L-0466).
+func appendMemoryRadar(b *strings.Builder, archiveDir string, n int) {
+	if archiveDir == "" || n <= 0 || b == nil {
+		return
+	}
+	type memIdx struct {
+		label string
+		rel   string
+	}
+	indexes := []memIdx{
+		{label: "cases", rel: filepath.Join("agent", "cases", "INDEX.md")},
+		{label: "tools", rel: filepath.Join("agent", "tools", "INDEX.md")},
+	}
+	var sections []string
+	for _, idx := range indexes {
+		tail := strings.TrimSpace(readTail(filepath.Join(archiveDir, idx.rel), n))
+		if tail == "" {
+			continue
+		}
+		sections = append(sections, fmt.Sprintf("### agent/%s/INDEX.md (tail)\n```\n%s\n```", idx.label, tail))
+	}
+	if len(sections) == 0 {
+		return
+	}
+	b.WriteString("## Memory Radar (pointers only)\n\n")
+	b.WriteString("_Shared cognitive memory — read specific files under `agent/cases/` or `agent/tools/` by absolute path when needed. Do not paste full libraries into replies. Never mount these dirs as skill_dirs._\n\n")
+	b.WriteString(strings.Join(sections, "\n\n"))
+	b.WriteString("\n\n")
 }
 
 // ── Internal helpers ─────────────────────────────────────────────
