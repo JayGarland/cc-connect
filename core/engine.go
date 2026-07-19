@@ -478,6 +478,10 @@ type Engine struct {
 	// Data directory for socket path injection
 	dataDir string
 
+	// archiveDir is the explicit letter-archive root (config archive_dir).
+	// When empty, rehydration falls back to DeriveArchiveDir(dataDir) (L-0467).
+	archiveDir string
+
 	// configPath is the absolute path to the TOML config file used at startup.
 	// Injected into agent sessions as CC_CONNECT_CONFIG so agents (e.g. reasonix)
 	// can invoke `cc-connect relay send --config <path>` without hardcoding paths.
@@ -1532,6 +1536,12 @@ func (e *Engine) SetProjectStateStore(store *ProjectStateStore) {
 
 func (e *Engine) SetDataDir(dir string) {
 	e.dataDir = dir
+}
+
+// SetArchiveDir sets the explicit letter-archive root used by rehydration
+// (and related archive readers). Empty means "derive from dataDir".
+func (e *Engine) SetArchiveDir(dir string) {
+	e.archiveDir = strings.TrimSpace(dir)
 }
 
 func (e *Engine) SetDispatchConfig(cfg DispatchConfig) {
@@ -17731,10 +17741,10 @@ func (e *Engine) resolveActiveLetterID(ccSessionKey, workspaceDir, messageConten
 }
 
 func (e *Engine) appendRehydrationEnv(envVars []string, ccSessionKey, workspaceDir, messageContent string, personaClass PersonaClass) []string {
-	if e.dataDir == "" {
+	if e.dataDir == "" && e.archiveDir == "" {
 		return envVars
 	}
-	archiveDir := DeriveArchiveDir(e.dataDir)
+	archiveDir := ResolveArchiveDir(e.archiveDir, e.dataDir)
 	if archiveDir == "" {
 		return envVars
 	}

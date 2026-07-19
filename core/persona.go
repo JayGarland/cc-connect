@@ -20,7 +20,7 @@ const (
 // unreadable. Nexus is live production — a broken preamble file must not
 // stop a seat from starting, but the seat must never run without at least
 // this one-line truth (L-0216 P1, fail-loud-not-fail-stop per L-0215).
-const archiveFirstFallback = "你是无状态的壳。F:\\nexus\\docs\\archive\\ 是 Nexus 唯一的持久记忆与心脏。"
+const archiveFirstFallback = "你是无状态的壳。F:\\nexus-archive\\ 是 Nexus 唯一的持久记忆与心脏。"
 
 // ResolvePersonaClass determines which archive-first preamble variant a seat
 // gets. secretary-seat is the sole read-side seat with archive write

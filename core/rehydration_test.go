@@ -153,6 +153,32 @@ func TestDeriveArchiveDir_PosixPath(t *testing.T) {
 	}
 }
 
+func TestResolveArchiveDir_PreferExplicit(t *testing.T) {
+	explicit := t.TempDir()
+	got := ResolveArchiveDir(explicit, filepath.Join(t.TempDir(), "data"))
+	if got != explicit {
+		t.Fatalf("ResolveArchiveDir prefer explicit = %q, want %q", got, explicit)
+	}
+}
+
+func TestResolveArchiveDir_FallbackDerive(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	want := DeriveArchiveDir(dataDir)
+	got := ResolveArchiveDir("", dataDir)
+	if got != want {
+		t.Fatalf("ResolveArchiveDir fallback = %q, want %q", got, want)
+	}
+}
+
+func TestResolveArchiveDir_MissingPathStillReturns(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	got := ResolveArchiveDir(missing, "")
+	if got != missing {
+		t.Fatalf("ResolveArchiveDir missing = %q, want %q", got, missing)
+	}
+}
+
 // ── readTail ─────────────────────────────────────────────────────
 
 func TestReadTail_LessThanN(t *testing.T) {
@@ -378,6 +404,88 @@ func TestBuildRehydrationDigest_IndexTailLines(t *testing.T) {
 	// Should only contain a few entries.
 	entries := strings.Count(digest, "|")
 	t.Logf("digest with IndexTailLines=3: %d table entries", entries)
+}
+
+func TestBuildRehydrationDigest_UsesArchiveDirInRereadHint(t *testing.T) {
+	dir := t.TempDir()
+	seedArchive(t, dir)
+	archiveDir := filepath.Join(dir, "docs", "archive")
+
+	digest := BuildRehydrationDigest(RehydrationConfig{ArchiveDir: archiveDir})
+	if digest == "" {
+		t.Fatal("digest should not be empty")
+	}
+	wantHint := filepath.Join(archiveDir, "INDEX.md")
+	if !strings.Contains(digest, wantHint) {
+		t.Fatalf("digest reread hint missing archive INDEX path %q:\n%s", wantHint, digest)
+	}
+	if strings.Contains(digest, `F:\nexus\docs\archive`) {
+		t.Fatalf("digest still references stale docs/archive path:\n%s", digest)
+	}
+}
+
+func TestBuildRehydrationDigest_MemoryRadarPointers(t *testing.T) {
+	dir := t.TempDir()
+	seedArchive(t, dir)
+	archiveDir := filepath.Join(dir, "docs", "archive")
+
+	casesDir := filepath.Join(archiveDir, "agent", "cases")
+	toolsDir := filepath.Join(archiveDir, "agent", "tools")
+	if err := os.MkdirAll(casesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(toolsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	casesIdx := "| slug | domain | one-liner |\n|---|---|---|\n| wt-detach | infra | detached HEAD is expected |\n"
+	toolsIdx := "| slug | one-liner |\n|---|---|\n| archive-write | never hand-edit INDEX |\n"
+	if err := os.WriteFile(filepath.Join(casesDir, "INDEX.md"), []byte(casesIdx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, "INDEX.md"), []byte(toolsIdx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := BuildRehydrationDigest(RehydrationConfig{
+		ArchiveDir:       archiveDir,
+		MemoryRadarLines: 10,
+	})
+	if digest == "" {
+		t.Fatal("digest should not be empty")
+	}
+	if !strings.Contains(digest, "## Memory Radar (pointers only)") {
+		t.Fatalf("missing Memory Radar section:\n%s", digest)
+	}
+	if !strings.Contains(digest, "wt-detach") || !strings.Contains(digest, "archive-write") {
+		t.Fatalf("Memory Radar missing INDEX pointers:\n%s", digest)
+	}
+}
+
+func TestAppendRehydrationEnv_UsesExplicitArchiveDir(t *testing.T) {
+	root := t.TempDir()
+	seedArchive(t, root)
+	explicit := filepath.Join(root, "docs", "archive")
+
+	// dataDir derives to a missing docs/archive under a different root —
+	// without SetArchiveDir the digest would be empty.
+	badRoot := t.TempDir()
+	dataDir := filepath.Join(badRoot, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(dataDir)
+	e.SetArchiveDir(explicit)
+
+	env := e.appendRehydrationEnv(nil, "", "", "", PersonaClassWrite)
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "CC_REHYDRATION_DIGEST=") {
+		t.Fatalf("expected digest from explicit archive_dir:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Rehydration Digest") {
+		t.Fatalf("digest body missing:\n%s", joined)
+	}
 }
 
 // ── ResolveThreadFromIndex ───────────────────────────────────────
