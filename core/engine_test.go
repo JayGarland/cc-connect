@@ -1416,7 +1416,13 @@ func TestEngineReceiptCloseConfirmSuccessPushesAndDeletesCard(t *testing.T) {
 	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
 	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
 	e.SetAdminFrom("boss-id")
-	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+	// L-0475: the Extract Preferences button only renders when a session
+	// source path resolves, so this letter needs one on record.
+	sessionPath := filepath.Join(root, "session.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE", SourceSessionPath: sessionPath}); err != nil {
 		t.Fatal(err)
 	}
 	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
@@ -1445,6 +1451,43 @@ func TestEngineReceiptCloseConfirmSuccessPushesAndDeletesCard(t *testing.T) {
 	}
 	if !strings.Contains(p.buttonContent, "L-0449") {
 		t.Fatalf("close success content missing letter: %q", p.buttonContent)
+	}
+}
+
+// TestEngineReceiptCloseConfirmSuccessHidesExtractButtonWithoutSessionPath is
+// a regression test for L-0475: L-0467 shipped the Extract Preferences
+// button unconditionally, so a letter with no Source-Session-Path, no
+// dispatch provenance, and no declared path in its own RESULT would show a
+// button whose click always dead-ends into MsgReceiptExtractPrefsNoSession.
+// The button must simply not render in that case.
+func TestEngineReceiptCloseConfirmSuccessHidesExtractButtonWithoutSessionPath(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `Write-Output '{"status":"ready","ids":["L-0449"],"pushed":true,"push_error":""}'`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "ready", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0449"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if !p.deleted {
+		t.Fatal("successful close+push must delete the inbox card")
+	}
+	if len(p.buttonRows) != 0 {
+		t.Fatalf("no session path should mean no extractprefs button, got rows=%#v", p.buttonRows)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 {
+		t.Fatal("close success must still send a plain reply when no button is shown")
+	}
+	if !strings.Contains(sent[len(sent)-1], "L-0449") {
+		t.Fatalf("plain close success reply missing letter: %q", sent[len(sent)-1])
 	}
 }
 

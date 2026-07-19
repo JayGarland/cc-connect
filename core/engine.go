@@ -7821,10 +7821,17 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 }
 
 // sendCloseSuccessWithExtractOption posts the CLOSED success note with an
-// optional 🔍 Extract Preferences button (L-0467). Falls back to a plain
-// reply when the platform cannot send inline buttons.
+// optional 🔍 Extract Preferences button (L-0467). The button is only
+// attached when a valid session source path can be resolved for the letter
+// (L-0475) — otherwise clicking it always dead-ends into
+// MsgReceiptExtractPrefsNoSession, so it's simply omitted. Falls back to a
+// plain reply when the platform cannot send inline buttons.
 func (e *Engine) sendCloseSuccessWithExtractOption(p Platform, msg *Message, letter string) {
 	content := e.i18n.Tf(MsgReceiptCloseSuccess, letter)
+	if !e.hasPreferenceTranscript(letter) {
+		e.reply(p, msg.ReplyCtx, content)
+		return
+	}
 	buttons := [][]ButtonOption{{{
 		Text: e.i18n.T(MsgReceiptExtractPrefs),
 		Data: "cmd:/receipt extractprefs " + letter,
@@ -7836,6 +7843,21 @@ func (e *Engine) sendCloseSuccessWithExtractOption(p Platform, msg *Message, let
 		slog.Warn("receipt: close success with extract button failed; falling back to plain reply", "letter", letter)
 	}
 	e.reply(p, msg.ReplyCtx, content)
+}
+
+// hasPreferenceTranscript reports whether extractPreferencesFromClosedLetter
+// would actually find a session log for letter. Mirrors that function's own
+// resolution (Source-Session-Path / dispatch provenance / RESULT
+// declaration) so the button's visibility and its click behavior never
+// diverge.
+func (e *Engine) hasPreferenceTranscript(letter string) bool {
+	if e.notifyConfig.IndexPath == "" {
+		return false
+	}
+	archiveRoot := filepath.Dir(e.notifyConfig.IndexPath)
+	receipt, _ := e.notifyStore.receipt(letter)
+	_, provenancePath := e.ensureDispatchStore().resultProvenance(letter)
+	return resolvePreferenceTranscript(archiveRoot, letter, receipt, provenancePath) != ""
 }
 
 // extractPreferencesFromClosedLetter creates a reviewer QUERY with
