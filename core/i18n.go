@@ -524,6 +524,7 @@ const (
 	MsgInboxQueueHeader        MsgKey = "inbox_queue_header"
 	MsgReceiptInbox            MsgKey = "receipt_inbox"
 	MsgReceiptCardCompact      MsgKey = "receipt_card_compact"
+	MsgReceiptCardPageHeader   MsgKey = "receipt_card_page_header"
 	MsgReceiptCardPage         MsgKey = "receipt_card_page"
 	MsgReceiptViewOriginal     MsgKey = "receipt_view_original"
 	MsgReceiptCollapse         MsgKey = "receipt_collapse"
@@ -894,6 +895,19 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "原信（第 %d/%d 頁）\n%s",
 		LangJapanese:           "原文（%d/%d ページ）\n%s",
 		LangSpanish:            "Original (página %d/%d)\n%s",
+	},
+	// MsgReceiptCardPageHeader is the minimal header shown alongside a
+	// paginated original-letter page (see formatReceiptInboxCard, L-0460
+	// follow-up): the full compact header (summary/open points/result path)
+	// was already shown on the card being expanded, so repeating it here on
+	// every page risked pushing long RESULTs past Telegram's message length
+	// limit and failing the render outright with MESSAGE_TOO_LONG.
+	MsgReceiptCardPageHeader: {
+		LangEnglish:            "📬 %s · %s",
+		LangChinese:            "📬 %s · %s",
+		LangTraditionalChinese: "📬 %s · %s",
+		LangJapanese:           "📬 %s · %s",
+		LangSpanish:            "📬 %s · %s",
 	},
 	MsgReceiptViewOriginal: {
 		LangEnglish:            "View original",

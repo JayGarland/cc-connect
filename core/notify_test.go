@@ -731,13 +731,18 @@ func TestReceiptInboxCardLocalizesUpdateLabels(t *testing.T) {
 	}
 }
 
+// TestReceiptInboxCardPaginatesOriginalResultWithoutHash also guards the
+// L-0460 follow-up fix: a page must use the short "letter · thread" header,
+// not the full compact preamble (Summary/OpenPoints/Result path), since that
+// preamble is unbounded in length and, repeated on every page, could push a
+// long RESULT's rendered page past Telegram's message length limit.
 func TestReceiptInboxCardPaginatesOriginalResultWithoutHash(t *testing.T) {
 	record := receiptRecord{
 		Thread: "alpha", Status: "DONE", Summary: "ready", ArrivedAt: "2026-07-16T16:20:00Z",
 		ResultPath: "F:\\nexus\\docs\\archive\\threads\\alpha\\L-0431.result.md",
 	}
 	content, buttons := formatReceiptInboxCard(NewI18n(LangEnglish), "L-0431", record, "first page\nsecond page", 0, 2)
-	if !strings.Contains(content, "📬 L-0431") || !strings.Contains(content, "Thread: alpha") || !strings.Contains(content, "Result path: F:\\nexus\\docs\\archive\\threads\\alpha\\L-0431.result.md") || strings.Contains(content, "SHA-256") || !strings.Contains(content, "Page 1/2") {
+	if !strings.Contains(content, "📬 L-0431") || !strings.Contains(content, "alpha") || strings.Contains(content, "Result path:") || strings.Contains(content, "SHA-256") || !strings.Contains(content, "Page 1/2") {
 		t.Fatalf("inbox card content = %q", content)
 	}
 	if got := buttons[0][0].Text; got != "Next →" {
@@ -763,6 +768,32 @@ func TestReceiptInboxCardPaginatesOriginalResultWithoutHash(t *testing.T) {
 	_, buttons = formatReceiptInboxCard(NewI18n(LangEnglish), "L-0431", record, "", 0, 0)
 	if got := buttons[0][0].Text; got != "View original" {
 		t.Fatalf("view-original button = %q", got)
+	}
+}
+
+// TestReceiptInboxCardPageStaysUnderTelegramLimitWithLongSummary is a
+// regression test for L-0460's follow-up bug (reported live against L-0458):
+// a RESULT with a long Summary and several long OpenPoints, combined with a
+// near-full-size original page, used to push the rendered page past
+// Telegram's ~4096-character message limit, so UpdateMessageWithButtons
+// failed with MESSAGE_TOO_LONG and Boss saw "Receipt is unavailable"
+// instead of the original letter.
+func TestReceiptInboxCardPageStaysUnderTelegramLimitWithLongSummary(t *testing.T) {
+	longSummary := strings.Repeat("架构审查结论很长，包含多个子系统的详细描述。", 20) // ~460 runes
+	longOpenPoints := []string{
+		strings.Repeat("第一个未决问题的详细说明，包含背景和后续建议。", 10),
+		strings.Repeat("第二个未决问题的详细说明，包含背景和后续建议。", 10),
+		strings.Repeat("第三个未决问题的详细说明，包含背景和后续建议。", 10),
+	}
+	record := receiptRecord{
+		Thread: "resonova-architecture", Status: "DONE", Summary: longSummary, ArrivedAt: "2026-07-19T06:44:15Z",
+		ResultPath: "F:\\nexus-archive\\threads\\resonova-architecture\\L-0458.result.md",
+		OpenPoints: longOpenPoints,
+	}
+	page := strings.Repeat("x", 3000) // receiptOriginalPages' pageSize
+	content, _ := formatReceiptInboxCard(NewI18n(LangChinese), "L-0458", record, page, 0, 5)
+	if n := len([]rune(content)); n > 4096 {
+		t.Fatalf("paginated card content is %d runes, exceeds Telegram's message limit: a long Summary/OpenPoints must not leak into a page render", n)
 	}
 }
 
