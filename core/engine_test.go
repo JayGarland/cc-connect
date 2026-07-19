@@ -75,10 +75,10 @@ func TestLetterCommandMissingResultRepliesWithoutInjection(t *testing.T) {
 		t.Fatalf("invalid L-ID must reply without injection: handled=%v sent=%#v", handled, p.getSent())
 	}
 }
-func (s *stubAgentSession) Events() <-chan Event                                         { return make(chan Event) }
-func (s *stubAgentSession) CurrentSessionID() string                                     { return "stub-session" }
-func (s *stubAgentSession) Alive() bool                                                  { return true }
-func (s *stubAgentSession) Close() error                                                 { return nil }
+func (s *stubAgentSession) Events() <-chan Event     { return make(chan Event) }
+func (s *stubAgentSession) CurrentSessionID() string { return "stub-session" }
+func (s *stubAgentSession) Alive() bool              { return true }
+func (s *stubAgentSession) Close() error             { return nil }
 
 type recordingAgentSession struct {
 	stubAgentSession
@@ -1143,10 +1143,18 @@ func TestEngineReceiptUpdatePageRejectsStaleGeneration(t *testing.T) {
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.notifyStore = newNotifyStore(t.TempDir())
-	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0432", Generation: "current", Update: receiptUpdate{Sections: []receiptSection{{Heading: "Conclusion", Body: "new"}}}}); err != nil { t.Fatal(err) }
-	if handled := e.handleCommand(p, &Message{ReplyCtx: "inbox"}, "/receipt update L-0432 stale 0"); !handled { t.Fatal("stale update must be handled locally") }
-	if p.updatedContent != "" { t.Fatalf("stale update edited card: %q", p.updatedContent) }
-	if got := p.getSent(); len(got) != 1 || got[0] != "❌ Receipt is unavailable." { t.Fatalf("stale reply = %#v", got) }
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0432", Generation: "current", Update: receiptUpdate{Sections: []receiptSection{{Heading: "Conclusion", Body: "new"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if handled := e.handleCommand(p, &Message{ReplyCtx: "inbox"}, "/receipt update L-0432 stale 0"); !handled {
+		t.Fatal("stale update must be handled locally")
+	}
+	if p.updatedContent != "" {
+		t.Fatalf("stale update edited card: %q", p.updatedContent)
+	}
+	if got := p.getSent(); len(got) != 1 || got[0] != "❌ Receipt is unavailable." {
+		t.Fatalf("stale reply = %#v", got)
+	}
 }
 
 func TestEngineReceiptDeleteFailureKeepsCardAndDoesNotForward(t *testing.T) {
@@ -1291,6 +1299,44 @@ func TestEngineReceiptCloseSendsConfirmFallbackWhenInPlaceEditFails(t *testing.T
 	for _, sent := range p.getSent() {
 		if strings.Contains(sent, "unavailable") {
 			t.Fatalf("fallback must not reply unavailable: %#v", p.getSent())
+		}
+	}
+}
+
+func TestEngineReceiptCloseStaleGenerationRefreshesCurrentCard(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0471", "ID: L-0471\nStatus: DONE\n---\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	oldGeneration := "2026-07-19T16:39:18.0180878Z"
+	currentGeneration := "2026-07-19T16:51:49.5592535Z"
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: oldGeneration}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: currentGeneration}); err != nil {
+		t.Fatal(err)
+	}
+
+	if handled := e.handleCommand(p, &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}, "/receipt close L-0471 "+oldGeneration); !handled {
+		t.Fatal("stale close must not start an agent turn")
+	}
+	var closeData string
+	for _, row := range p.updatedButtons {
+		for _, button := range row {
+			if strings.Contains(button.Data, "receipt close L-0471") {
+				closeData = button.Data
+			}
+		}
+	}
+	if !strings.Contains(closeData, currentGeneration) {
+		t.Fatalf("refreshed close button = %q, want current generation %q", closeData, currentGeneration)
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "unavailable") {
+			t.Fatalf("stale close must refresh instead of replying unavailable: %#v", p.getSent())
 		}
 	}
 }

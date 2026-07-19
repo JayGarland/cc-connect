@@ -7675,7 +7675,22 @@ func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string
 	}
 	if len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0] {
 		slog.Warn("receipt: close unavailable", "letter", letter, "reason", "stale generation", "expected_generation", receipt.Generation, "callback_generation", generation[0])
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		updater, ok := p.(InlineMessageUpdater)
+		if !ok {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+			return true
+		}
+		var content string
+		var buttons [][]ButtonOption
+		if receipt.AcknowledgedAt != "" {
+			content, buttons = formatPendingCloseCard(e.i18n, letter, receipt)
+		} else {
+			content, buttons = formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+		}
+		if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+			slog.Warn("receipt: stale close card refresh failed", "letter", letter, "error", err)
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		}
 		return true
 	}
 	updater, ok := p.(InlineMessageUpdater)
