@@ -7678,6 +7678,14 @@ func (e *Engine) showReceiptCloseConfirm(p Platform, msg *Message, letter string
 		{Text: e.i18n.T(MsgReceiptCloseCancelBtn), Data: "cmd:/receipt closecancel " + letter + " " + receipt.Generation},
 	}}
 	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		slog.Warn("receipt: close confirmation edit failed", "letter", letter, "error", err)
+		if sender, ok := p.(InlineButtonSender); ok {
+			if sendErr := sender.SendWithButtons(e.ctx, msg.ReplyCtx, content, buttons); sendErr == nil {
+				return true
+			} else {
+				slog.Warn("receipt: close confirmation fallback send failed", "letter", letter, "error", sendErr)
+			}
+		}
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
 	}
 	return true

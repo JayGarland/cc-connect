@@ -1264,6 +1264,37 @@ func TestEngineReceiptCloseShowsConfirmThenCancelRestoresCard(t *testing.T) {
 	}
 }
 
+func TestEngineReceiptCloseSendsConfirmFallbackWhenInPlaceEditFails(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0471", "ID: L-0471\nStatus: DONE\n---\n")
+	p := &receiptActionPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "telegram"},
+		updateErr:          errors.New("telegram: message can't be edited"),
+	}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0471", Thread: "alpha", Path: resultPath, Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if handled := e.handleCommand(p, &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}, "/receipt close L-0471"); !handled {
+		t.Fatal("close confirm must not start an agent turn")
+	}
+	if len(p.buttonRows) != 1 || len(p.buttonRows[0]) != 2 {
+		t.Fatalf("fallback must send confirmation buttons, got %#v", p.buttonRows)
+	}
+	if !strings.Contains(p.buttonRows[0][0].Data, "closeconfirm L-0471") || !strings.Contains(p.buttonRows[0][1].Data, "closecancel L-0471") {
+		t.Fatalf("fallback confirmation buttons wired wrong: %#v", p.buttonRows)
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "unavailable") {
+			t.Fatalf("fallback must not reply unavailable: %#v", p.getSent())
+		}
+	}
+}
+
 // TestEngineReceiptCloseCancelSurvivesConcurrentGenerationBump is a
 // regression test for a real bug reported after L-0449 shipped: Boss opened
 // the close confirmation, a background notify poll picked up an unrelated
