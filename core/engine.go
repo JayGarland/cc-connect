@@ -7759,6 +7759,22 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 	return true
 }
 
+// sanitizeArchiveSummary makes a RESULT summary safe to embed as a single
+// row in INDEX.md's Markdown table. archive-write.ps1 rejects any Summary
+// containing '|' or a newline (`if($Summary -match "[\r\n|]"){throw ...}`)
+// because either would corrupt the table's column layout — but a letter's
+// own summary can legitimately contain a pipe (e.g. L-0451's "To|From") or a
+// wrapped line, which previously made the one-click close fail outright with
+// no way to recover short of hand-editing the RESULT file (L-0464).
+// Replacing rather than stripping keeps the text legible instead of jamming
+// words together.
+func sanitizeArchiveSummary(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "|", "/")
+}
+
 // runArchiveClose shells out to archive-daily.ps1 -Close -Push and reports
 // whether the remote sync succeeded. A nil error means the CLOSED row landed
 // in the local archive commit; pushed distinguishes "and synced to origin"
@@ -7767,7 +7783,7 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 func (e *Engine) runArchiveClose(letter string, receipt receiptRecord) (pushed bool, pushErr string, err error) {
 	archiveRoot := filepath.Dir(e.notifyConfig.IndexPath)
 	script := filepath.Join(archiveRoot, "scripts", "archive-daily.ps1")
-	summary := fmt.Sprintf("✅ 总裁验收（Telegram 一键封信）：%s", receipt.Summary)
+	summary := fmt.Sprintf("✅ 总裁验收（Telegram 一键封信）：%s", sanitizeArchiveSummary(receipt.Summary))
 	ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-File", script,

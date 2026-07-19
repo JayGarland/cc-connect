@@ -1357,6 +1357,62 @@ func TestEngineReceiptCloseConfirmSuccessPushesAndDeletesCard(t *testing.T) {
 	}
 }
 
+// TestSanitizeArchiveSummaryReplacesTableUnsafeCharacters is a unit test for
+// the pure sanitizer added for L-0464: archive-write.ps1 rejects any Summary
+// containing '|' or a newline since either would corrupt INDEX.md's Markdown
+// table layout, but a letter's own summary can legitimately contain a pipe
+// (e.g. L-0451's "To|From") or a wrapped line.
+func TestSanitizeArchiveSummaryReplacesTableUnsafeCharacters(t *testing.T) {
+	cases := map[string]string{
+		"To|From fields":       "To/From fields",
+		"line one\nline two":   "line one line two",
+		"line one\r\nline two": "line one line two",
+		"line one\rline two":   "line one line two",
+		"a|b\nc|d":             "a/b c/d",
+		"already safe":         "already safe",
+	}
+	for in, want := range cases {
+		if got := sanitizeArchiveSummary(in); got != want {
+			t.Fatalf("sanitizeArchiveSummary(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEngineReceiptCloseConfirmSanitizesSummaryPipesAndNewlines is a
+// regression test for L-0464: a RESULT summary containing '|' or a newline
+// (e.g. L-0451's "To|From") used to make archive-write.ps1's table-safety
+// guard throw "Summary must be one table-safe line", failing the one-click
+// close outright with no way to recover short of hand-editing the RESULT
+// file. The fake script here reproduces that real guard verbatim, so this
+// test fails against the old, unsanitized call and passes once
+// runArchiveClose sanitizes the summary before it reaches the script.
+func TestEngineReceiptCloseConfirmSanitizesSummaryPipesAndNewlines(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
+	writeFakeArchiveDailyScript(t, root, `param([string]$ArchiveRoot,[string]$LetterPath,[string]$Summary,[switch]$Close,[switch]$Push)
+if($Summary -match "[\r\n|]"){throw 'Summary must be one table-safe line'}
+Write-Output '{"status":"ready","ids":["L-0449"],"pushed":true,"push_error":""}'`)
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyConfig.IndexPath = filepath.Join(root, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0449", Thread: "alpha", Path: resultPath, Summary: "To|From fields need\nline wrap handling", Status: "DONE"}); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.handleCommand(p, msg, "/receipt closeconfirm L-0449"); !handled {
+		t.Fatal("close confirm execution must not start an agent turn")
+	}
+	if !p.deleted {
+		t.Fatalf("a pipe/newline-bearing summary must not block the close: updated=%q", p.updatedContent)
+	}
+	record, err := e.notifyStore.receipt("L-0449")
+	if err != nil || record.ClosedAt == "" {
+		t.Fatalf("successful close must mark the receipt closed: %+v, err=%v", record, err)
+	}
+}
+
 func TestEngineReceiptCloseConfirmPushFailureKeepsCardWithRetry(t *testing.T) {
 	root := t.TempDir()
 	resultPath := writeResultFile(t, root, "alpha", "L-0449", "ID: L-0449\nStatus: DONE\n---\n")
