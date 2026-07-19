@@ -51,7 +51,9 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 			return nil
 		}
 		letter := strings.TrimSuffix(d.Name(), ".query.md")
-		if !validLetterID(letter) || dispatched[letter] || !strings.Contains(registered, "| "+letter+" | QUERY |") {
+		registeredQuery := strings.Contains(registered, "| "+letter+" | QUERY |")
+		terminal := strings.Contains(registered, "| "+letter+" | RESULT |") || strings.Contains(registered, "| "+letter+" | CLOSED |")
+		if !validLetterID(letter) || dispatched[letter] || !registeredQuery || terminal {
 			return nil
 		}
 		body, err := os.ReadFile(path)

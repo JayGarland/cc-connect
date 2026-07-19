@@ -89,6 +89,31 @@ func TestScanOutboxQueriesRequiresRegisteredUndispatchedQuery(t *testing.T) {
 	}
 }
 
+func TestScanOutboxQueriesExcludesTerminalLetters(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	for _, letter := range []string{"L-0100", "L-0101", "L-0102"} {
+		writeQueryFile(t, threads, "alpha", letter, "---\nID: "+letter+"\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nShip it\n")
+	}
+	indexRows := "| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n" +
+		"| L-0100 | RESULT | alpha | ROOT | delivered | 2026-07-18 |\n" +
+		"| L-0101 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n" +
+		"| L-0101 | CLOSED | alpha | ROOT | accepted | 2026-07-18 |\n" +
+		"| L-0102 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"
+	if err := os.WriteFile(index, []byte(indexRows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := scanOutboxQueries(threads, index, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Letter != "L-0102" {
+		t.Fatalf("outbox = %#v; terminal letters must be excluded", got)
+	}
+}
+
 func TestFormatOutboxCardShowsMetadataAndReadOnlyButtons(t *testing.T) {
 	content, buttons := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "F:\\archive\\L-0100.query.md", Generation: "g1", Summary: "Ship it"}, "L-0100", "", 0, 0)
 	for _, want := range []string{"📤 L-0100", "To: dev-pro", "Route: heavy", "Ship it"} {
