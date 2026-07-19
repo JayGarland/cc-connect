@@ -46,6 +46,21 @@ func TestMarkOutboxDispatchedMarksCardWhenDeleteFails(t *testing.T) {
 	}
 }
 
+func TestHandleOutboxCommandExcludesDispatchedRecords(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.outboxRecords = map[string]outboxRecord{
+		"L-0100": {Dispatched: true, To: "dev-pro", Route: "heavy", Thread: "alpha"},
+		"L-0101": {To: "dev-pro", Route: "heavy", Thread: "alpha"},
+	}
+
+	e.handleOutboxCommand(p, &Message{ReplyCtx: "chat"}, nil)
+	got := strings.Join(p.getSent(), "\n")
+	if strings.Contains(got, "L-0100") || !strings.Contains(got, "L-0101") {
+		t.Fatalf("pending outbox = %q; dispatched records must be excluded", got)
+	}
+}
+
 func writeQueryFile(t *testing.T, threadsDir, thread, letter, body string) string {
 	t.Helper()
 	dir := filepath.Join(threadsDir, thread)

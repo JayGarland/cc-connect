@@ -264,6 +264,9 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 	if len(args) == 0 {
 		var lines []string
 		for letter, record := range e.outboxRecords {
+			if record.Dispatched {
+				continue
+			}
 			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", letter, record.To, record.Route, record.Thread))
 		}
 		if len(lines) == 0 {
