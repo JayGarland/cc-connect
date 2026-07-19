@@ -7374,6 +7374,9 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			}
 			return e.closeReceiptFromInbox(p, msg, args[1], generation)
 		}
+		if args[0] == "extractprefs" && len(args) == 2 {
+			return e.extractPreferencesFromClosedLetter(p, msg, args[1])
+		}
 		letter := args[0]
 		generation := ""
 		if args[0] == "receive" && (len(args) == 2 || len(args) == 3) {
@@ -7765,8 +7768,98 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 	if deleter, ok := p.(MessageDeleter); !ok || deleter.DeleteMessage(e.ctx, msg.ReplyCtx) != nil {
 		slog.Warn("receipt: close succeeded but card delete failed", "letter", letter)
 	}
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptCloseSuccess, letter))
+	e.sendCloseSuccessWithExtractOption(p, msg, letter)
 	return true
+}
+
+// sendCloseSuccessWithExtractOption posts the CLOSED success note with an
+// optional 🔍 Extract Preferences button (L-0467). Falls back to a plain
+// reply when the platform cannot send inline buttons.
+func (e *Engine) sendCloseSuccessWithExtractOption(p Platform, msg *Message, letter string) {
+	content := e.i18n.Tf(MsgReceiptCloseSuccess, letter)
+	buttons := [][]ButtonOption{{{
+		Text: e.i18n.T(MsgReceiptExtractPrefs),
+		Data: "cmd:/receipt extractprefs " + letter,
+	}}}
+	if bs, ok := p.(InlineButtonSender); ok {
+		if err := bs.SendWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err == nil {
+			return
+		}
+		slog.Warn("receipt: close success with extract button failed; falling back to plain reply", "letter", letter)
+	}
+	e.reply(p, msg.ReplyCtx, content)
+}
+
+// extractPreferencesFromClosedLetter creates a reviewer QUERY with
+// Source-Session-Path and dispatches it (L-0467 pursuit). Boss-triggered via
+// the close-success card button — reuses executeDispatch.
+func (e *Engine) extractPreferencesFromClosedLetter(p Platform, msg *Message, letter string) bool {
+	if !e.isAdmin(msg.UserID) {
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/receipt extractprefs"))
+		return true
+	}
+	letter = normalizeLetterID(letter)
+	if letter == "" || e.notifyConfig.IndexPath == "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	archiveRoot := filepath.Dir(e.notifyConfig.IndexPath)
+	receipt, _ := e.notifyStore.receipt(letter)
+	_, provenancePath := e.ensureDispatchStore().resultProvenance(letter)
+	transcript := resolvePreferenceTranscript(archiveRoot, letter, receipt, provenancePath)
+	if transcript == "" {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsNoSession, letter))
+		return true
+	}
+	if looksPersonalPreferencePath(transcript) {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsPersonal, letter))
+		return true
+	}
+
+	newID, err := allocateNextLetterID(archiveRoot)
+	if err != nil {
+		slog.Warn("receipt: allocate letter id for preference extract failed", "letter", letter, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsFailed, letter, err.Error()))
+		return true
+	}
+	queryPath, err := writePreferenceExtractQueryFile(archiveRoot, newID, letter, transcript)
+	if err != nil {
+		slog.Warn("receipt: write preference extract QUERY failed", "letter", letter, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsFailed, letter, err.Error()))
+		return true
+	}
+	summary := fmt.Sprintf("Extract Boss preferences from closed %s session log", letter)
+	if err := registerArchiveQuery(archiveRoot, queryPath, summary); err != nil {
+		slog.Warn("receipt: register preference extract QUERY failed", "letter", letter, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsFailed, letter, err.Error()))
+		return true
+	}
+
+	req := dispatchRequest{
+		To:     "reviewer",
+		Letter: newID,
+		Thread: preferenceExtractThread,
+		Path:   queryPath,
+	}
+	receiptText, err := e.executeDispatch(p, msg.SessionKey, req)
+	if err != nil {
+		slog.Warn("receipt: dispatch preference extract failed", "letter", letter, "new", newID, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsFailed, letter, err.Error()+" (QUERY registered as "+newID+")"))
+		return true
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsDispatched, letter, newID)+"\n"+receiptText)
+	return true
+}
+
+func looksPersonalPreferencePath(path string) bool {
+	p := strings.ToLower(path)
+	if strings.Contains(p, `\personal\`) || strings.Contains(p, `/personal/`) {
+		return true
+	}
+	if strings.Contains(p, `\threads\p-`) || strings.Contains(p, `/threads/p-`) {
+		return true
+	}
+	return false
 }
 
 // sanitizeArchiveSummary makes a RESULT summary safe to embed as a single
