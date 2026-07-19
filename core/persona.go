@@ -16,11 +16,19 @@ const (
 	PersonaClassSecretary PersonaClass = "secretary"
 )
 
-// archiveFirstFallback is injected when a seat's preamble file is missing or
-// unreadable. Nexus is live production — a broken preamble file must not
-// stop a seat from starting, but the seat must never run without at least
-// this one-line truth (L-0216 P1, fail-loud-not-fail-stop per L-0215).
-const archiveFirstFallback = "你是无状态的壳。F:\\nexus-archive\\ 是 Nexus 唯一的持久记忆与心脏。"
+// archiveFirstFallback builds the one-line truth injected when a seat's
+// preamble file is missing or unreadable. Nexus is live production — a
+// broken preamble file must not stop a seat from starting, but the seat
+// must never run without at least this line (L-0216 P1, fail-loud-not-
+// fail-stop per L-0215). archiveDir is caller-resolved (config `archive_dir`,
+// falling back to DeriveArchiveDir) so this never hardcodes a path that can
+// go stale under a future archive relocation (L-0469 pursuit).
+func archiveFirstFallback(archiveDir string) string {
+	if archiveDir == "" {
+		return "你是无状态的壳。Nexus 的持久记忆与心脏是配置的 archive_dir——当前未知，检查 config.toml 顶层 archive_dir 或 data_dir。"
+	}
+	return "你是无状态的壳。" + archiveDir + " 是 Nexus 唯一的持久记忆与心脏。"
+}
 
 // ResolvePersonaClass determines which archive-first preamble variant a seat
 // gets. secretary-seat is the sole read-side seat with archive write
@@ -38,10 +46,12 @@ func ResolvePersonaClass(projectName string, hasWorkspacePattern bool) PersonaCl
 }
 
 // ComposePersona prepends the archive-first preamble (selected by class) to
-// personaContent. Missing/unreadable preamble files fall back to a hardcoded
-// one-line truth plus a WARN log rather than failing the spawn.
-func ComposePersona(personasDir string, class PersonaClass, personaContent string) string {
-	preamble := archiveFirstFallback
+// personaContent. Missing/unreadable preamble files fall back to a one-line
+// truth (built from archiveDir, the caller-resolved archive root — config
+// `archive_dir` with a DeriveArchiveDir fallback, never guessed here) plus a
+// WARN log rather than failing the spawn.
+func ComposePersona(personasDir string, class PersonaClass, personaContent string, archiveDir string) string {
+	preamble := archiveFirstFallback(archiveDir)
 	if personasDir != "" {
 		path := filepath.Join(personasDir, "_preamble", "archive-first."+string(class)+".md")
 		if data, err := os.ReadFile(path); err == nil {
@@ -96,6 +106,7 @@ func EnvValue(extraEnv []string, key string) string {
 // Returns "" when neither a persona file nor a class is available.
 func LoadComposedPersonaFromEnv(extraEnv []string) string {
 	project, personasDir, personaClass := ParsePersonaEnv(extraEnv)
+	archiveDir := EnvValue(extraEnv, "CC_ARCHIVE_DIR")
 	var rawPersona string
 	if project != "" && personasDir != "" {
 		if data, err := os.ReadFile(filepath.Join(personasDir, project+".md")); err == nil {
@@ -103,7 +114,7 @@ func LoadComposedPersonaFromEnv(extraEnv []string) string {
 		}
 	}
 	if personaClass != "" {
-		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona)
+		return ComposePersona(personasDir, PersonaClass(personaClass), rawPersona, archiveDir)
 	}
 	return rawPersona
 }

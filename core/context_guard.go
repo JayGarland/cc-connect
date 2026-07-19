@@ -335,7 +335,7 @@ func (e *Engine) loadPersonaContent() string {
 		return ""
 	}
 	personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
-	return ComposePersona(ccPersonasDir, personaClass, rawPersona)
+	return ComposePersona(ccPersonasDir, personaClass, rawPersona, ResolveArchiveDir(e.archiveDir, e.dataDir))
 }
 
 func (e *Engine) applyContextGuardBeforeTurn(interactiveKey string, agent Agent, session *Session, sessions *SessionManager, incoming string) string {

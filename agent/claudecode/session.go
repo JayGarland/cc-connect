@@ -213,8 +213,8 @@ func buildAppendSystemPrompt(agentPrompt, platformPrompt, userAppend string) str
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ccDataDir string) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
-	// Extract project, ccPersonasDir, and personaClass from extraEnv
-	var project, ccPersonasDir, personaClass, rehydrationDigest string
+	// Extract project, ccPersonasDir, personaClass, and archiveDir from extraEnv
+	var project, ccPersonasDir, personaClass, rehydrationDigest, archiveDir string
 	for _, env := range extraEnv {
 		if idx := strings.Index(env, "="); idx >= 0 {
 			switch env[:idx] {
@@ -226,6 +226,8 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 				personaClass = env[idx+1:]
 			case "CC_REHYDRATION_DIGEST":
 				rehydrationDigest = env[idx+1:]
+			case "CC_ARCHIVE_DIR":
+				archiveDir = env[idx+1:]
 			}
 		}
 	}
@@ -247,7 +249,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 			}
 		}
 		if personaClass != "" {
-			personaContent = core.ComposePersona(ccPersonasDir, core.PersonaClass(personaClass), rawPersona)
+			personaContent = core.ComposePersona(ccPersonasDir, core.PersonaClass(personaClass), rawPersona, archiveDir)
 		} else {
 			personaContent = rawPersona
 		}

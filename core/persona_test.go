@@ -38,7 +38,7 @@ func TestComposePersona_UsesPreambleFile(t *testing.T) {
 		t.Fatalf("write preamble: %v", err)
 	}
 
-	got := ComposePersona(tmpDir, PersonaClassWrite, "PERSONA_BODY")
+	got := ComposePersona(tmpDir, PersonaClassWrite, "PERSONA_BODY", "F:\\test-archive")
 	if !strings.HasPrefix(got, "WRITE_PREAMBLE") {
 		t.Errorf("expected preamble at head, got:\n%s", got)
 	}
@@ -53,9 +53,10 @@ func TestComposePersona_UsesPreambleFile(t *testing.T) {
 func TestComposePersona_FallsBackWhenPreambleMissing(t *testing.T) {
 	tmpDir := t.TempDir() // no _preamble dir at all
 
-	got := ComposePersona(tmpDir, PersonaClassRead, "PERSONA_BODY")
-	if !strings.HasPrefix(got, archiveFirstFallback) {
-		t.Errorf("expected hardcoded fallback at head, got:\n%s", got)
+	got := ComposePersona(tmpDir, PersonaClassRead, "PERSONA_BODY", "F:\\test-archive")
+	want := archiveFirstFallback("F:\\test-archive")
+	if !strings.HasPrefix(got, want) {
+		t.Errorf("expected fallback at head, got:\n%s", got)
 	}
 	if !strings.Contains(got, "PERSONA_BODY") {
 		t.Errorf("expected persona body still present, got:\n%s", got)
@@ -63,9 +64,20 @@ func TestComposePersona_FallsBackWhenPreambleMissing(t *testing.T) {
 }
 
 func TestComposePersona_EmptyPersonaContentReturnsOnlyPreamble(t *testing.T) {
-	got := ComposePersona("", PersonaClassRead, "")
-	if got != archiveFirstFallback {
+	got := ComposePersona("", PersonaClassRead, "", "F:\\test-archive")
+	want := archiveFirstFallback("F:\\test-archive")
+	if got != want {
 		t.Errorf("expected bare fallback preamble, got:\n%s", got)
+	}
+}
+
+func TestArchiveFirstFallback_UnknownArchiveDirDoesNotGuessPath(t *testing.T) {
+	got := archiveFirstFallback("")
+	if strings.Contains(got, `F:\`) || strings.Contains(got, "docs/archive") || strings.Contains(got, "docs\\archive") {
+		t.Errorf("fallback with unknown archiveDir must not guess a path, got:\n%s", got)
+	}
+	if !strings.Contains(got, "archive_dir") {
+		t.Errorf("expected fallback to point at the archive_dir config key, got:\n%s", got)
 	}
 }
 
@@ -130,6 +142,7 @@ func TestLoadComposedPersonaFromEnv(t *testing.T) {
 		"CC_PROJECT=dev-pro",
 		"CC_PERSONAS_DIR=" + personasDir,
 		"CC_PERSONA_CLASS=write",
+		"CC_ARCHIVE_DIR=F:\\test-archive",
 	})
 	if !strings.Contains(got, "PREAMBLE") || !strings.Contains(got, "PERSONA") {
 		t.Fatalf("LoadComposedPersonaFromEnv = %q", got)

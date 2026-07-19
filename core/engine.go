@@ -4603,6 +4603,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
 			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
+			envVars = append(envVars, "CC_ARCHIVE_DIR="+ResolveArchiveDir(e.archiveDir, e.dataDir))
 			messageContent := ""
 			if hist := session.GetHistory(1); len(hist) > 0 {
 				messageContent = hist[0].Content
@@ -17131,6 +17132,7 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 			envVars = append(envVars, "CC_PERSONAS_DIR="+filepath.Join(e.dataDir, "personas"))
 			personaClass := ResolvePersonaClass(e.name, e.UsesWorkspacePattern())
 			envVars = append(envVars, "CC_PERSONA_CLASS="+string(personaClass))
+			envVars = append(envVars, "CC_ARCHIVE_DIR="+ResolveArchiveDir(e.archiveDir, e.dataDir))
 			envVars = e.appendRehydrationEnv(envVars, sourceSessionKey, "", message, personaClass)
 		}
 		if e.configPath != "" {
