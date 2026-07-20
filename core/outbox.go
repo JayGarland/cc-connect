@@ -414,12 +414,20 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 		}
 		content, buttons := formatOutboxCard(e.i18n, record, q.Letter, "", 0, 0)
 		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
+		// If the stored locator points at a different platform, treat it as missing so we can send a fresh card.
+		if record.Card != nil && record.Card.Platform != p.Name() {
+			record.Card = nil
+		}
 		if record.Card != nil {
 			cards, ok := p.(ReceiptCardManager)
 			if !ok {
 				record.RefreshPending = true
 				record.Attempts++
 				record.RetryAt = time.Now().Add(30 * time.Second)
+				// Keep prior generation so callback buttons on the existing card remain valid until refresh succeeds.
+				if hadPrior {
+					record.Generation = prior.Generation
+				}
 				slog.Warn("outbox: platform cannot refresh existing card; will retry without creating duplicate", "letter", q.Letter)
 			} else if err := cards.UpdateReceiptCard(ctx, *record.Card, content, buttons); err == nil {
 				record.RefreshPending = false
@@ -429,6 +437,10 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 				record.RefreshPending = true
 				record.Attempts++
 				record.RetryAt = time.Now().Add(30 * time.Second)
+				// Keep prior generation so callback buttons on the existing card remain valid until refresh succeeds.
+				if hadPrior {
+					record.Generation = prior.Generation
+				}
 				slog.Warn("outbox: failed to refresh card; will retry without creating duplicate", "letter", q.Letter, "attempts", record.Attempts, "retry_at", record.RetryAt, "error", err)
 			}
 		} else if cards, ok := p.(ReceiptCardManager); ok {
