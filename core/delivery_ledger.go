@@ -280,6 +280,8 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 			d.InboxNotified = notified
 			ledger.Records[id] = d
 		}
+	} else {
+		return err
 	}
 	if o, err := loadLegacyOutboxLedger(filepath.Join(dataDir, "outbox_ledger.json")); err == nil {
 		ledger.OutboxSeeded = o.Seeded
