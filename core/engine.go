@@ -507,6 +507,7 @@ type Engine struct {
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
+	deliveryStore        *deliveryStore
 	notifyWatcherStarted bool
 
 	outboxConfig         OutboxConfig
@@ -1542,6 +1543,7 @@ func (e *Engine) SetProjectStateStore(store *ProjectStateStore) {
 
 func (e *Engine) SetDataDir(dir string) {
 	e.dataDir = dir
+	e.deliveryStore = newDeliveryStore(dir)
 }
 
 // SetArchiveDir sets the explicit letter-archive root used by rehydration

@@ -192,6 +192,12 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 	}
 	e.outboxConfig = cfg
 	if cfg.Enabled && cfg.IndexPath != "" && !e.outboxWatcherStarted {
+		if e.deliveryStore == nil {
+			e.deliveryStore = newDeliveryStore(e.dataDir)
+		}
+		if err := e.deliveryStore.migrateLegacyOnce(e.dataDir); err != nil {
+			slog.Warn("delivery: legacy migration failed", "error", err)
+		}
 		e.outboxStore = newOutboxStore(e.dataDir)
 		ledger, err := e.outboxStore.load()
 		if err != nil {

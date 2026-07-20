@@ -1042,6 +1042,12 @@ func (e *Engine) configureNotify(cfg NotifyConfig) {
 	}
 	e.notifyConfig = cfg
 	if cfg.Enabled && strings.TrimSpace(cfg.IndexPath) != "" {
+		if e.deliveryStore == nil {
+			e.deliveryStore = newDeliveryStore(e.dataDir)
+		}
+		if err := e.deliveryStore.migrateLegacyOnce(e.dataDir); err != nil {
+			slog.Warn("delivery: legacy migration failed", "error", err)
+		}
 		if e.notifyStore == nil {
 			e.notifyStore = newNotifyStore(e.dataDir)
 		}
@@ -1173,7 +1179,7 @@ func (e *Engine) reconcilePendingInboxDeliveries(ledger notifyLedger) {
 			Letter: letter, Thread: record.Thread, Summary: record.Summary,
 			Path: record.ResultPath, To: record.To, From: record.From,
 			SourceAgentSessionID: record.SourceAgentSessionID,
-			SourceSessionPath: record.SourceSessionPath, Status: record.Status,
+			SourceSessionPath:    record.SourceSessionPath, Status: record.Status,
 			Generation: record.Generation, OpenPoints: record.OpenPoints,
 			Update: record.Update,
 		})
