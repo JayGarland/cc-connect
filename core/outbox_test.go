@@ -214,6 +214,18 @@ func TestContentDigestIgnoresMtimeAndChangesWithContent(t *testing.T) {
 	}
 }
 
+func TestOutboxCallbackDataFitsTelegramLimit(t *testing.T) {
+	record := outboxRecord{Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "L-0100.query.md", Generation: contentDigest([]byte("query"))}
+	_, buttons := formatOutboxCard(NewI18n(LangEnglish), record, "L-0100", "", 0, 0)
+	for _, row := range buttons {
+		for _, button := range row {
+			if len([]byte(button.Data)) > 64 {
+				t.Fatalf("callback payload exceeds Telegram 64-byte limit: %d %q", len([]byte(button.Data)), button.Data)
+			}
+		}
+	}
+}
+
 func TestScanOutboxQueriesCarriesContentDigest(t *testing.T) {
 	root := t.TempDir()
 	threads := filepath.Join(root, "threads")
