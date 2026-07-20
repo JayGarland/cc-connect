@@ -1083,6 +1083,14 @@ func (e *Engine) checkNewResults() {
 		slog.Warn("notify: failed to scan result files", "path", threadsDir, "error", err)
 		return
 	}
+	affectedResults := map[string]bool{}
+	if e.deliveryStore != nil {
+		if changed, err := e.deliveryStore.recordResultFingerprints(files); err != nil {
+			slog.Warn("delivery: failed to persist result fingerprints", "error", err)
+		} else {
+			affectedResults = changed
+		}
+	}
 	if err := e.notifyStore.pruneDiffBases(files); err != nil {
 		slog.Warn("notify: failed to prune stale diff bases", "error", err)
 	}
@@ -1117,6 +1125,15 @@ func (e *Engine) checkNewResults() {
 	}
 
 	fresh := scanNewResultFiles(files, &ledger)
+	if e.deliveryStore != nil {
+		filtered := fresh[:0]
+		for _, f := range fresh {
+			if affectedResults[f.Letter] {
+				filtered = append(filtered, f)
+			}
+		}
+		fresh = filtered
+	}
 	if len(fresh) == 0 {
 		return
 	}

@@ -11,8 +11,15 @@ import (
 const deliveryLedgerVersion = 1
 
 type deliveryLedger struct {
-	Version int                       `json:"version"`
-	Records map[string]deliveryRecord `json:"records"`
+	Version       int                       `json:"version"`
+	Records       map[string]deliveryRecord `json:"records"`
+	LastFullAudit time.Time                 `json:"last_full_audit,omitempty"`
+}
+
+const deliveryFullAuditInterval = 15 * time.Minute
+
+func (l deliveryLedger) fullAuditDue(now time.Time) bool {
+	return l.LastFullAudit.IsZero() || !now.Before(l.LastFullAudit.Add(deliveryFullAuditInterval))
 }
 
 // deliveryRecord is the per-letter durable delivery projection. Its fields
@@ -75,6 +82,59 @@ func changedDeliveryInputs(prior deliveryLedger, current map[string]deliveryScan
 		}
 	}
 	return changed
+}
+
+func (s *deliveryStore) recordResultFingerprints(files []resultFileInfo) (map[string]bool, error) {
+	ledger, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	current := map[string]deliveryScannerState{}
+	for _, f := range files {
+		r := ledger.Records[f.Letter]
+		r.Scanner.ResultFingerprint = f.ModTime.UTC().Format(time.RFC3339Nano)
+		current[f.Letter] = r.Scanner
+	}
+	changed := changedDeliveryInputs(ledger, current)
+	if ledger.fullAuditDue(time.Now().UTC()) {
+		for id := range current {
+			changed[id] = true
+		}
+		ledger.LastFullAudit = time.Now().UTC()
+	}
+	for _, f := range files {
+		r := ledger.Records[f.Letter]
+		r.Thread, r.ResultPath, r.Scanner = f.Thread, f.Path, current[f.Letter]
+		ledger.Records[f.Letter] = r
+	}
+	return changed, s.save(ledger)
+}
+
+func (s *deliveryStore) recordQueryAndIndexFingerprints(queries []queryFileInfo, indexFingerprint string) (map[string]bool, error) {
+	ledger, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	current := map[string]deliveryScannerState{}
+	for _, q := range queries {
+		r := ledger.Records[q.Letter]
+		r.Scanner.QueryFingerprint, r.Scanner.IndexFingerprint = q.Digest, indexFingerprint
+		current[q.Letter] = r.Scanner
+	}
+	changed := changedDeliveryInputs(ledger, current)
+	if ledger.fullAuditDue(time.Now().UTC()) {
+		for id := range current {
+			changed[id] = true
+		}
+		ledger.LastFullAudit = time.Now().UTC()
+	}
+	for _, q := range queries {
+		r := ledger.Records[q.Letter]
+		r.Thread, r.QueryPath, r.QueryDigest = q.Thread, q.Path, q.Digest
+		r.Scanner = current[q.Letter]
+		ledger.Records[q.Letter] = r
+	}
+	return changed, s.save(ledger)
 }
 
 // deliveryStore is the Phase 3 daemon-local projection. Archive material is

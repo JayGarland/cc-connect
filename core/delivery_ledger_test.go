@@ -68,6 +68,13 @@ func TestChangedDeliveryInputsReturnsOnlyAffectedLetterIDs(t *testing.T) {
 	}
 }
 
+func TestDeliveryLedgerFullAuditDueAfterInterval(t *testing.T) {
+	now := time.Now().UTC()
+	if !(deliveryLedger{}).fullAuditDue(now) || (deliveryLedger{LastFullAudit: now}).fullAuditDue(now) || !(deliveryLedger{LastFullAudit: now.Add(-deliveryFullAuditInterval)}).fullAuditDue(now) {
+		t.Fatal("full audit schedule is incorrect")
+	}
+}
+
 func TestDeliveryLedgerRoundTripsUnifiedRecord(t *testing.T) {
 	store := newDeliveryStore(t.TempDir())
 	want := deliveryLedger{Version: deliveryLedgerVersion, Records: map[string]deliveryRecord{

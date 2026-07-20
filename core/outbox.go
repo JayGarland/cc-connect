@@ -253,6 +253,18 @@ func (e *Engine) checkOutbox() {
 		e.outboxMu.Unlock()
 		return
 	}
+	affected := map[string]bool{}
+	if e.deliveryStore != nil {
+		indexBytes, readErr := os.ReadFile(e.outboxConfig.IndexPath)
+		if readErr == nil {
+			if changed, err := e.deliveryStore.recordQueryAndIndexFingerprints(queries, contentDigest(indexBytes)); err != nil {
+				slog.Warn("delivery: failed to persist query/index fingerprints", "error", err)
+			} else {
+				affected = changed
+				slog.Debug("delivery: affected query records", "count", len(changed))
+			}
+		}
+	}
 	// First scan establishes a quiet baseline. Existing archive history remains
 	// available through /outbox, but must never be emitted as a burst of cards.
 	if !e.outboxSeeded {
@@ -270,7 +282,9 @@ func (e *Engine) checkOutbox() {
 	toPublish := make([]queryFileInfo, 0, len(queries))
 	for _, q := range queries {
 		current[q.Letter] = true
-		toPublish = append(toPublish, q)
+		if e.deliveryStore == nil || affected[q.Letter] {
+			toPublish = append(toPublish, q)
+		}
 	}
 	for letter, record := range e.outboxRecords {
 		if record.Dispatched {
