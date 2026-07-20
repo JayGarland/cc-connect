@@ -306,6 +306,8 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 			d.OutboxRecord = &copied
 			ledger.Records[id] = d
 		}
+	} else {
+		return err
 	}
 	manual := map[string]bool{}
 	if data, err := os.ReadFile(filepath.Join(dataDir, "outbox_manual.json")); err == nil {
