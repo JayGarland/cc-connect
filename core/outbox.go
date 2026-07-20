@@ -35,6 +35,7 @@ type outboxRecord struct {
 	Thread, To, Route, QueryPath, Generation, Summary string
 	Card                                              *MessageLocator
 	Dispatched                                        bool
+	RefreshPending                                    bool      `json:"refresh_pending,omitempty"`
 	Attempts                                          int       `json:"attempts,omitempty"`
 	RetryAt                                           time.Time `json:"retry_at,omitempty"`
 }
@@ -282,7 +283,9 @@ func (e *Engine) checkOutbox() {
 	toPublish := make([]queryFileInfo, 0, len(queries))
 	for _, q := range queries {
 		current[q.Letter] = true
-		if e.deliveryStore == nil || affected[q.Letter] {
+		record, known := e.outboxRecords[q.Letter]
+		retryRefresh := known && record.RefreshPending && (record.RetryAt.IsZero() || !time.Now().Before(record.RetryAt))
+		if e.deliveryStore == nil || affected[q.Letter] || retryRefresh {
 			toPublish = append(toPublish, q)
 		}
 	}
@@ -386,14 +389,17 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 	generation := q.Digest
 	prior, hadPrior := e.outboxRecords[q.Letter]
 	if hadPrior && prior.Generation == generation {
-		if prior.Card != nil || prior.Dispatched || (!prior.RetryAt.IsZero() && time.Now().Before(prior.RetryAt)) {
+		if prior.Dispatched || (!prior.RetryAt.IsZero() && time.Now().Before(prior.RetryAt)) || (prior.Card != nil && !prior.RefreshPending) {
 			e.outboxMu.Unlock()
 			return
 		}
 	}
 	e.outboxMu.Unlock()
 	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: generation, Summary: q.Summary}
-	if hadPrior && prior.Generation == generation {
+	if hadPrior {
+		record.Card = prior.Card
+	}
+	if hadPrior && (prior.Generation == generation || prior.RefreshPending) {
 		record.Attempts = prior.Attempts
 	}
 	for _, p := range e.platforms {
@@ -408,10 +414,28 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 		}
 		content, buttons := formatOutboxCard(e.i18n, record, q.Letter, "", 0, 0)
 		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
-		if cards, ok := p.(ReceiptCardManager); ok {
+		if record.Card != nil {
+			cards, ok := p.(ReceiptCardManager)
+			if !ok {
+				record.RefreshPending = true
+				record.Attempts++
+				record.RetryAt = time.Now().Add(30 * time.Second)
+				slog.Warn("outbox: platform cannot refresh existing card; will retry without creating duplicate", "letter", q.Letter)
+			} else if err := cards.UpdateReceiptCard(ctx, *record.Card, content, buttons); err == nil {
+				record.RefreshPending = false
+				record.Attempts = 0
+				record.RetryAt = time.Time{}
+			} else {
+				record.RefreshPending = true
+				record.Attempts++
+				record.RetryAt = time.Now().Add(30 * time.Second)
+				slog.Warn("outbox: failed to refresh card; will retry without creating duplicate", "letter", q.Letter, "attempts", record.Attempts, "retry_at", record.RetryAt, "error", err)
+			}
+		} else if cards, ok := p.(ReceiptCardManager); ok {
 			card, err := cards.SendReceiptCard(ctx, replyCtx, content, buttons)
 			if err == nil {
 				record.Card = &card
+				record.RefreshPending = false
 				record.Attempts = 0
 				record.RetryAt = time.Time{}
 			} else {
@@ -430,7 +454,7 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 	e.outboxMu.Lock()
 	// A simultaneous dispatch or a newer QUERY generation wins over this
 	// completed network effect; do not resurrect a stale card.
-	if latest, ok := e.outboxRecords[q.Letter]; ok && latest.Generation != "" && latest.Generation != generation {
+	if latest, ok := e.outboxRecords[q.Letter]; ok && latest.Generation != "" && latest.Generation != generation && (!hadPrior || latest.Generation != prior.Generation) {
 		e.outboxMu.Unlock()
 		return
 	}

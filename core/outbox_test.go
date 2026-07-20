@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetryOutboxCleanupKeepsDispatchedCardUntilDeleteSucceeds(t *testing.T) {
@@ -206,6 +207,32 @@ func TestPublishOutboxRetriesSameGenerationWithoutCard(t *testing.T) {
 	}
 }
 
+func TestPublishOutboxRefreshesExistingCardForChangedQuery(t *testing.T) {
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.outboxConfig = OutboxConfig{Platform: "telegram", SessionKey: "telegram:123:123"}
+	locator := &MessageLocator{Platform: "telegram", ChatID: 1, ThreadID: 2, MessageID: 3}
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {
+		Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "L-0100.query.md", Summary: "before", Generation: "old", Card: locator,
+	}}
+
+	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "reviewer-seat", Route: "flash", Path: "L-0100.query.md", Summary: "after", Digest: "new"})
+
+	if p.receiptCardsSent != 0 || p.receiptCardsUpdated != 1 {
+		t.Fatalf("card lifecycle = sent %d updated %d, want 0/1", p.receiptCardsSent, p.receiptCardsUpdated)
+	}
+	if !strings.Contains(p.updatedContent, "To: reviewer-seat") || !strings.Contains(p.updatedContent, "Summary: after") {
+		t.Fatalf("updated card = %q", p.updatedContent)
+	}
+	record := e.outboxRecords["L-0100"]
+	if record.Card != locator || record.Generation != "new" || record.To != "reviewer-seat" {
+		t.Fatalf("refreshed record = %#v", record)
+	}
+	if got := p.updatedButtons[0][1].Data; got != "cmd:/outbox manual L-0100 new" {
+		t.Fatalf("manual button = %q", got)
+	}
+}
+
 func TestOutboxFailedSendPersistsRetryBackoff(t *testing.T) {
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, sendErr: errors.New("unavailable")}
 	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -237,6 +264,36 @@ func TestCheckOutboxPublishesAfterPlanningLockIsReleased(t *testing.T) {
 	e.checkOutbox()
 	if p.receiptCardsSent != 1 {
 		t.Fatalf("send count = %d, want 1", p.receiptCardsSent)
+	}
+}
+
+func TestCheckOutboxRetriesPendingCardRefreshWithoutArchiveChange(t *testing.T) {
+	root := t.TempDir()
+	threads, index := filepath.Join(root, "threads"), filepath.Join(root, "INDEX.md")
+	indexBody := []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n")
+	if err := os.WriteFile(index, indexBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeQueryFile(t, threads, "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: reviewer-seat\nRoute: flash\nDate: 2026-07-18\n---\n\n## Query\nupdated\n")
+	queries, err := scanOutboxQueries(threads, index, nil)
+	if err != nil || len(queries) != 1 {
+		t.Fatalf("queries = %#v, %v", queries, err)
+	}
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.dataDir = root
+	e.deliveryStore = newDeliveryStore(root)
+	if err := e.deliveryStore.save(deliveryLedger{LastFullAudit: time.Now().UTC(), Records: map[string]deliveryRecord{"L-0100": {Scanner: deliveryScannerState{QueryFingerprint: queries[0].Digest, IndexFingerprint: contentDigest(indexBody)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	e.outboxConfig = OutboxConfig{Enabled: true, IndexPath: index, Platform: "telegram", SessionKey: "telegram:123:123"}
+	e.outboxSeeded = true
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {Thread: "alpha", Generation: queries[0].Digest, Card: &MessageLocator{Platform: "telegram", MessageID: 3}, RefreshPending: true, RetryAt: time.Now().Add(-time.Second)}}
+
+	e.checkOutbox()
+
+	if p.receiptCardsSent != 0 || p.receiptCardsUpdated != 1 {
+		t.Fatalf("retry lifecycle = sent %d updated %d, want 0/1", p.receiptCardsSent, p.receiptCardsUpdated)
 	}
 }
 
