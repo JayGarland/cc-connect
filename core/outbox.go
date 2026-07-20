@@ -35,6 +35,8 @@ type outboxRecord struct {
 	Thread, To, Route, QueryPath, Generation, Summary string
 	Card                                              *MessageLocator
 	Dispatched                                        bool
+	Attempts                                          int       `json:"attempts,omitempty"`
+	RetryAt                                           time.Time `json:"retry_at,omitempty"`
 }
 
 // outboxLedger is the daemon-owned delivery projection. Archive files and
@@ -199,6 +201,17 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 		e.outboxRecords = ledger.Records
 		e.outboxSeeded = ledger.Seeded
 		e.outboxManual = e.loadOutboxManual()
+		// Preserve legacy manual decisions in the durable projection before
+		// future scans start relying solely on it. The old file remains a
+		// read-only fallback for compatibility until Phase 3/4 removes it.
+		for letter := range e.outboxManual {
+			if _, exists := e.outboxRecords[letter]; !exists {
+				e.outboxRecords[letter] = outboxRecord{Dispatched: true}
+			}
+		}
+		if err := e.outboxStore.save(outboxLedger{Seeded: e.outboxSeeded, Records: e.outboxRecords}); err != nil {
+			slog.Warn("outbox: failed to persist legacy manual migration", "error", err)
+		}
 		e.outboxWatcherStarted = true
 		go func() {
 			ticker := time.NewTicker(cfg.PollInterval)
@@ -328,8 +341,10 @@ func (e *Engine) markOutboxDispatched(p Platform, letter string, replyCtx any) {
 
 func (e *Engine) publishOutbox(q queryFileInfo) {
 	generation := q.Digest
-	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation && (prior.Card != nil || prior.Dispatched) {
-		return
+	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation {
+		if prior.Card != nil || prior.Dispatched || (!prior.RetryAt.IsZero() && time.Now().Before(prior.RetryAt)) {
+			return
+		}
 	}
 	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: generation, Summary: q.Summary}
 	for _, p := range e.platforms {
@@ -343,18 +358,24 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 			}
 		}
 		content, buttons := formatOutboxCard(e.i18n, record, q.Letter, "", 0, 0)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if cards, ok := p.(ReceiptCardManager); ok {
-			card, err := cards.SendReceiptCard(context.Background(), replyCtx, content, buttons)
+			card, err := cards.SendReceiptCard(ctx, replyCtx, content, buttons)
 			if err == nil {
 				record.Card = &card
+				record.Attempts = 0
+				record.RetryAt = time.Time{}
 			} else {
-				slog.Warn("outbox: failed to send card; will retry", "letter", q.Letter, "error", err)
+				record.Attempts++
+				record.RetryAt = time.Now().Add(30 * time.Second)
+				slog.Warn("outbox: failed to send card; will retry", "letter", q.Letter, "attempts", record.Attempts, "retry_at", record.RetryAt, "error", err)
 			}
 		} else if buttonsPlatform, ok := p.(InlineButtonSender); ok {
-			_ = buttonsPlatform.SendWithButtons(context.Background(), replyCtx, content, buttons)
+			_ = buttonsPlatform.SendWithButtons(ctx, replyCtx, content, buttons)
 		} else {
-			_ = p.Send(context.Background(), replyCtx, content)
+			_ = p.Send(ctx, replyCtx, content)
 		}
+		cancel()
 		break
 	}
 	e.outboxRecords[q.Letter] = record

@@ -926,6 +926,22 @@ func TestNotifyLetterArrivedUpdatesPendingCardForNewGeneration(t *testing.T) {
 	}
 }
 
+func TestNotifyReconcilesOpenReceiptWithoutCardAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123"}
+	ledger := notifyLedger{Seeded: true, Notified: map[string]string{}, Receipts: map[string]receiptRecord{
+		"L-0430": {Thread: "alpha", ResultPath: "L-0430.result.md", Status: "DONE", Generation: "g1"},
+	}}
+	if err := e.notifyStore.save(ledger); err != nil { t.Fatal(err) }
+	e.reconcilePendingInboxDeliveries(ledger)
+	if p.receiptCardsSent != 1 { t.Fatalf("recovery sends = %d, want 1", p.receiptCardsSent) }
+	got, err := e.notifyStore.load()
+	if err != nil || got.Receipts["L-0430"].Card == nil { t.Fatalf("recovered ledger = %#v, %v", got, err) }
+}
+
 // TestNotifyLetterArrivedReopensPendingCloseCardInPlace is a regression test
 // for L-0478: a letter acknowledged into pending-close, then hit by a new
 // arrival generation (real revision or mtime-only touch that slipped past

@@ -1085,6 +1085,11 @@ func (e *Engine) checkNewResults() {
 		slog.Warn("notify: failed to load ledger", "error", err)
 		return
 	}
+	// A crash may happen after recordArrivalTransition has durably observed a
+	// RESULT but before Telegram accepted and we stored its card locator.  The
+	// mtime scanner will deliberately not rediscover that file, so reconcile
+	// these incomplete effects from the durable ledger on every pass.
+	e.reconcilePendingInboxDeliveries(ledger)
 
 	// First run: seed every existing file without notifying, or the whole
 	// archive history would fire at once.
@@ -1148,6 +1153,29 @@ func (e *Engine) checkNewResults() {
 			Generation:           f.ModTime.UTC().Format(time.RFC3339Nano),
 			OpenPoints:           extractOpenPoints(string(body)),
 			Update:               update,
+		})
+	}
+}
+
+// reconcilePendingInboxDeliveries retries the only incomplete Inbox effect we
+// can safely infer from durable state: an open receipt with no Telegram card.
+// It intentionally reuses notifyLetterArrived so the normal card formatting,
+// timeout and locator persistence remain one path.
+func (e *Engine) reconcilePendingInboxDeliveries(ledger notifyLedger) {
+	if !e.notifyConfig.TelegramEnabled || strings.TrimSpace(e.notifyConfig.SessionKey) == "" {
+		return
+	}
+	for letter, record := range ledger.Receipts {
+		if record.Card != nil || record.ClosedAt != "" {
+			continue
+		}
+		e.notifyLetterArrived(indexResultRow{
+			Letter: letter, Thread: record.Thread, Summary: record.Summary,
+			Path: record.ResultPath, To: record.To, From: record.From,
+			SourceAgentSessionID: record.SourceAgentSessionID,
+			SourceSessionPath: record.SourceSessionPath, Status: record.Status,
+			Generation: record.Generation, OpenPoints: record.OpenPoints,
+			Update: record.Update,
 		})
 	}
 }

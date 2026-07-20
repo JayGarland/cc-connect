@@ -190,6 +190,18 @@ func TestPublishOutboxRetriesSameGenerationWithoutCard(t *testing.T) {
 	}
 }
 
+func TestOutboxFailedSendPersistsRetryBackoff(t *testing.T) {
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, sendErr: errors.New("unavailable")}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.outboxConfig = OutboxConfig{Platform: "telegram", SessionKey: "telegram:123:123"}
+	e.outboxRecords = map[string]outboxRecord{}
+	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "dev-pro", Route: "heavy", Path: "L-0100.query.md", Summary: "queued", Digest: "digest"})
+	record := e.outboxRecords["L-0100"]
+	if record.Attempts != 1 || record.RetryAt.IsZero() { t.Fatalf("retry state = %#v", record) }
+	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "dev-pro", Route: "heavy", Path: "L-0100.query.md", Summary: "queued", Digest: "digest"})
+	if p.receiptCardsSent != 1 { t.Fatalf("backoff sends = %d, want 1", p.receiptCardsSent) }
+}
+
 func TestMarkOutboxDispatchedPersistsCleanupRecord(t *testing.T) {
 	root := t.TempDir()
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, deleteErr: errors.New("telegram unavailable")}
