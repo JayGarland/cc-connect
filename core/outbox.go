@@ -29,7 +29,7 @@ func (c OutboxConfig) threadsDir() string { return filepath.Join(filepath.Dir(c.
 
 type queryFileInfo struct {
 	Letter, Thread, Path, To, Route, Summary, Digest string
-	ModTime                                  time.Time
+	ModTime                                          time.Time
 }
 type outboxRecord struct {
 	Thread, To, Route, QueryPath, Generation, Summary string
@@ -237,7 +237,6 @@ func (e *Engine) checkOutbox() {
 	if e.outboxStore == nil {
 		e.outboxStore = newOutboxStore(e.dataDir)
 	}
-	e.retryOutboxCleanup()
 	dispatched := e.ensureDispatchStore().letters()
 	for letter := range e.outboxManual {
 		dispatched[letter] = true
@@ -288,6 +287,7 @@ func (e *Engine) checkOutbox() {
 	}
 	e.persistOutboxLocked()
 	e.outboxMu.Unlock()
+	e.retryOutboxCleanup()
 	// Network I/O must not extend the critical section above. publishOutbox
 	// re-checks and commits its result under a short lock after sending.
 	for _, q := range toPublish {
@@ -298,22 +298,40 @@ func (e *Engine) checkOutbox() {
 // retryOutboxCleanup removes cards only after a confirmed successful delete.
 // Failed Telegram deletes retain their dispatched record for the next poll.
 func (e *Engine) retryOutboxCleanup() {
+	e.outboxMu.Lock()
+	type cleanup struct {
+		letter string
+		card   MessageLocator
+	}
+	var pending []cleanup
 	for letter, record := range e.outboxRecords {
 		if !record.Dispatched || record.Card == nil {
 			continue
 		}
+		pending = append(pending, cleanup{letter, *record.Card})
+	}
+	e.outboxMu.Unlock()
+	for _, item := range pending {
+		deleted := false
 		for _, p := range e.platforms {
-			if p.Name() != e.outboxConfig.Platform {
-				continue
+			if p.Name() == e.outboxConfig.Platform {
+				if d, ok := p.(MessageDeleter); ok {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					deleted = d.DeleteMessage(ctx, item.card) == nil
+					cancel()
+				}
+				break
 			}
-			deleter, ok := p.(MessageDeleter)
-			if ok && deleter.DeleteMessage(e.ctx, *record.Card) == nil {
-				delete(e.outboxRecords, letter)
+		}
+		if deleted {
+			e.outboxMu.Lock()
+			if r, ok := e.outboxRecords[item.letter]; ok && r.Dispatched && r.Card != nil && *r.Card == item.card {
+				delete(e.outboxRecords, item.letter)
+				e.persistOutboxLocked()
 			}
-			break
+			e.outboxMu.Unlock()
 		}
 	}
-	e.persistOutboxLocked()
 }
 
 // persistOutboxLocked snapshots the in-memory projection after every lifecycle
