@@ -114,6 +114,27 @@ func TestScanOutboxQueriesExcludesTerminalLetters(t *testing.T) {
 	}
 }
 
+func TestScanOutboxQueriesExcludesWrittenResultWithoutIndexResult(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	writeQueryFile(t, threads, "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nShip it\n")
+	if err := os.WriteFile(filepath.Join(threads, "alpha", "L-0100.result.md"), []byte("---\nID: L-0100\nType: RESULT\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := scanOutboxQueries(threads, index, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("outbox = %#v; written RESULT must be terminal even without INDEX RESULT", got)
+	}
+}
+
 func TestFormatOutboxCardShowsMetadataAndReadOnlyButtons(t *testing.T) {
 	content, buttons := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "F:\\archive\\L-0100.query.md", Generation: "g1", Summary: "Ship it"}, "L-0100", "", 0, 0)
 	for _, want := range []string{"📤 L-0100", "To: dev-pro", "Route: heavy", "Ship it"} {
@@ -141,6 +162,58 @@ func TestOutboxManualStatePersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestOutboxLedgerPersistsCardAndCleanupState(t *testing.T) {
+	root := t.TempDir()
+	store := newOutboxStore(root)
+	want := outboxRecord{Thread: "alpha", QueryPath: "query.md", Generation: "digest", Dispatched: true, Card: &MessageLocator{Platform: "telegram", ChatID: 1, ThreadID: 2, MessageID: 3}}
+	if err := store.save(outboxLedger{Records: map[string]outboxRecord{"L-0100": want}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := newOutboxStore(root).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := got.Records["L-0100"]
+	if record.Generation != want.Generation || !record.Dispatched || record.Card == nil || record.Card.MessageID != 3 {
+		t.Fatalf("reloaded record = %#v", record)
+	}
+}
+
+func TestMarkOutboxDispatchedPersistsCleanupRecord(t *testing.T) {
+	root := t.TempDir()
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, deleteErr: errors.New("telegram unavailable")}
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.dataDir = root
+	e.outboxStore = newOutboxStore(root)
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {Card: &MessageLocator{Platform: "telegram", ChatID: 1, ThreadID: 2, MessageID: 3}}}
+	e.markOutboxDispatched(p, "L-0100", "callback-card")
+	ledger, err := newOutboxStore(root).load()
+	if err != nil || !ledger.Records["L-0100"].Dispatched {
+		t.Fatalf("durable cleanup record = %#v, %v", ledger, err)
+	}
+}
+
+func TestContentDigestIgnoresMtimeAndChangesWithContent(t *testing.T) {
+	first := contentDigest([]byte("first"))
+	if first == "" || first != contentDigest([]byte("first")) {
+		t.Fatalf("digest must be stable: %q", first)
+	}
+	if first == contentDigest([]byte("second")) {
+		t.Fatal("different content must have a distinct digest")
+	}
+}
+
+func TestScanOutboxQueriesCarriesContentDigest(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	body := "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nShip it\n"
+	writeQueryFile(t, threads, "alpha", "L-0100", body)
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil { t.Fatal(err) }
+	got, err := scanOutboxQueries(threads, index, nil)
+	if err != nil || len(got) != 1 || got[0].Digest != contentDigest([]byte(body)) { t.Fatalf("query = %#v, %v", got, err) }
+}
+
 func TestOutboxFirstScanIsQuietBaseline(t *testing.T) {
 	root := t.TempDir()
 	threads := filepath.Join(root, "threads")
@@ -157,5 +230,9 @@ func TestOutboxFirstScanIsQuietBaseline(t *testing.T) {
 	e.checkOutbox()
 	if !e.outboxSeeded || len(e.outboxRecords) != 1 {
 		t.Fatalf("baseline = seeded:%v records:%#v", e.outboxSeeded, e.outboxRecords)
+	}
+	ledger, err := newOutboxStore(root).load()
+	if err != nil || !ledger.Seeded || len(ledger.Records) != 1 {
+		t.Fatalf("durable baseline = %#v, %v", ledger, err)
 	}
 }

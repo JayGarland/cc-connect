@@ -511,6 +511,7 @@ type Engine struct {
 
 	outboxConfig         OutboxConfig
 	outboxMu             sync.RWMutex
+	outboxStore          *outboxStore
 	outboxRecords        map[string]outboxRecord
 	outboxManual         map[string]bool
 	outboxSeeded         bool

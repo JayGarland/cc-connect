@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,13 +28,76 @@ type OutboxConfig struct {
 func (c OutboxConfig) threadsDir() string { return filepath.Join(filepath.Dir(c.IndexPath), "threads") }
 
 type queryFileInfo struct {
-	Letter, Thread, Path, To, Route, Summary string
+	Letter, Thread, Path, To, Route, Summary, Digest string
 	ModTime                                  time.Time
 }
 type outboxRecord struct {
 	Thread, To, Route, QueryPath, Generation, Summary string
 	Card                                              *MessageLocator
 	Dispatched                                        bool
+}
+
+// outboxLedger is the daemon-owned delivery projection. Archive files and
+// dispatch_ledger.json remain the sources of protocol and dispatch truth.
+type outboxLedger struct {
+	Seeded  bool                    `json:"seeded"`
+	Records map[string]outboxRecord `json:"records"`
+}
+
+type outboxStore struct {
+	mu   sync.Mutex
+	path string
+}
+
+func newOutboxStore(dataDir string) *outboxStore {
+	if strings.TrimSpace(dataDir) == "" {
+		return nil
+	}
+	return &outboxStore{path: filepath.Join(dataDir, "outbox_ledger.json")}
+}
+
+func (s *outboxStore) load() (outboxLedger, error) {
+	ledger := outboxLedger{Records: map[string]outboxRecord{}}
+	if s == nil {
+		return ledger, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.path)
+	if os.IsNotExist(err) {
+		return ledger, nil
+	}
+	if err != nil {
+		return ledger, err
+	}
+	if len(strings.TrimSpace(string(data))) != 0 {
+		if err := json.Unmarshal(data, &ledger); err != nil {
+			return ledger, err
+		}
+	}
+	if ledger.Records == nil {
+		ledger.Records = map[string]outboxRecord{}
+	}
+	return ledger, nil
+}
+
+func (s *outboxStore) save(ledger outboxLedger) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ledger.Records == nil {
+		ledger.Records = map[string]outboxRecord{}
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(ledger, "", "  ")
+	if err != nil {
+		return err
+	}
+	return AtomicWriteFile(s.path, append(data, '\n'), 0o644)
 }
 
 func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool) ([]queryFileInfo, error) {
@@ -53,6 +117,12 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 		letter := strings.TrimSuffix(d.Name(), ".query.md")
 		registeredQuery := strings.Contains(registered, "| "+letter+" | QUERY |")
 		terminal := strings.Contains(registered, "| "+letter+" | RESULT |") || strings.Contains(registered, "| "+letter+" | CLOSED |")
+		// RESULT delivery is file-driven by protocol: an INDEX RESULT row is an
+		// optional compatibility radar, so its absence must not leave a finished
+		// QUERY dispatchable in Outbox.
+		if _, resultErr := os.Stat(filepath.Join(filepath.Dir(path), letter+".result.md")); resultErr == nil {
+			terminal = true
+		}
 		if !validLetterID(letter) || dispatched[letter] || !registeredQuery || terminal {
 			return nil
 		}
@@ -68,7 +138,7 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 		if err != nil {
 			return err
 		}
-		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), ModTime: info.ModTime()})
+		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
 		return nil
 	})
 	// Historical archives may contain duplicate L-IDs. The Outbox lifecycle is
@@ -120,7 +190,14 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 	}
 	e.outboxConfig = cfg
 	if cfg.Enabled && cfg.IndexPath != "" && !e.outboxWatcherStarted {
-		e.outboxRecords = map[string]outboxRecord{}
+		e.outboxStore = newOutboxStore(e.dataDir)
+		ledger, err := e.outboxStore.load()
+		if err != nil {
+			slog.Warn("outbox: failed to load ledger", "error", err)
+			ledger = outboxLedger{Records: map[string]outboxRecord{}}
+		}
+		e.outboxRecords = ledger.Records
+		e.outboxSeeded = ledger.Seeded
 		e.outboxManual = e.loadOutboxManual()
 		e.outboxWatcherStarted = true
 		go func() {
@@ -144,6 +221,9 @@ func (e *Engine) checkOutbox() {
 	if !e.outboxConfig.Enabled {
 		return
 	}
+	if e.outboxStore == nil {
+		e.outboxStore = newOutboxStore(e.dataDir)
+	}
 	e.retryOutboxCleanup()
 	dispatched := e.ensureDispatchStore().letters()
 	for letter := range e.outboxManual {
@@ -158,9 +238,12 @@ func (e *Engine) checkOutbox() {
 	// available through /outbox, but must never be emitted as a burst of cards.
 	if !e.outboxSeeded {
 		for _, q := range queries {
-			e.outboxRecords[q.Letter] = outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: q.ModTime.UTC().Format(time.RFC3339Nano), Summary: q.Summary}
+			e.outboxRecords[q.Letter] = outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: q.Digest, Summary: q.Summary}
 		}
 		e.outboxSeeded = true
+		if err := e.outboxStore.save(outboxLedger{Seeded: true, Records: e.outboxRecords}); err != nil {
+			slog.Warn("outbox: failed to persist baseline", "error", err)
+		}
 		return
 	}
 	current := map[string]bool{}
@@ -187,6 +270,7 @@ func (e *Engine) checkOutbox() {
 		}
 		delete(e.outboxRecords, letter)
 	}
+	e.persistOutboxLocked()
 }
 
 // retryOutboxCleanup removes cards only after a confirmed successful delete.
@@ -207,6 +291,18 @@ func (e *Engine) retryOutboxCleanup() {
 			break
 		}
 	}
+	e.persistOutboxLocked()
+}
+
+// persistOutboxLocked snapshots the in-memory projection after every lifecycle
+// transition. Callers hold outboxMu when they are part of watcher/command flow.
+func (e *Engine) persistOutboxLocked() {
+	if e.outboxStore == nil {
+		return
+	}
+	if err := e.outboxStore.save(outboxLedger{Seeded: e.outboxSeeded, Records: e.outboxRecords}); err != nil {
+		slog.Warn("outbox: failed to persist ledger", "error", err)
+	}
 }
 
 // markOutboxDispatched removes the interactive card when possible. If the
@@ -219,17 +315,19 @@ func (e *Engine) markOutboxDispatched(p Platform, letter string, replyCtx any) {
 	}
 	if deleter, ok := p.(MessageDeleter); ok && deleter.DeleteMessage(e.ctx, replyCtx) == nil {
 		delete(e.outboxRecords, letter)
+		e.persistOutboxLocked()
 		return
 	}
 	record.Dispatched = true
 	e.outboxRecords[letter] = record
+	e.persistOutboxLocked()
 	if updater, ok := p.(InlineMessageUpdater); ok {
 		_ = updater.UpdateMessageWithButtons(e.ctx, replyCtx, "✅ 已分发，正在清理…", nil)
 	}
 }
 
 func (e *Engine) publishOutbox(q queryFileInfo) {
-	generation := q.ModTime.UTC().Format(time.RFC3339Nano)
+	generation := q.Digest
 	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation {
 		return
 	}
@@ -350,5 +448,8 @@ func (e *Engine) saveOutboxManual() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(e.outboxManualPath(), data, 0o644)
+	if err := os.MkdirAll(filepath.Dir(e.outboxManualPath()), 0o755); err != nil {
+		return err
+	}
+	return AtomicWriteFile(e.outboxManualPath(), data, 0o644)
 }
