@@ -786,12 +786,17 @@ func collectInboxEntries(ledger notifyLedger, include func(receiptRecord) bool) 
 }
 
 func formatInboxQueueLine(entry inboxQueueEntry) string {
+	// Under L-0489's real-world reply semantics, a RESULT's From: is the
+	// engineer who wrote it and To: is the reply recipient (secretary/boss) —
+	// From carries the useful "who" for a human scanning /inbox, so it takes
+	// display priority. To remains the fallback for records predating this
+	// change, where it still held the engineer name.
 	seat := ""
 	switch {
-	case entry.To != "":
-		seat = "To: " + entry.To
 	case entry.From != "":
 		seat = "From: " + entry.From
+	case entry.To != "":
+		seat = "To: " + entry.To
 	}
 	summary := strings.TrimSpace(entry.Summary)
 	thread := strings.TrimSpace(entry.Thread)
