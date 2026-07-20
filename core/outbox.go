@@ -597,6 +597,7 @@ func (e *Engine) loadOutboxManual() map[string]bool {
 	out := map[string]bool{}
 	if e.deliveryStore == nil && strings.TrimSpace(e.dataDir) != "" {
 		e.deliveryStore = newDeliveryStore(e.dataDir)
+		e.bindDeliveryStores()
 	}
 	if e.deliveryStore != nil {
 		if _, err := os.Stat(e.deliveryStore.path); err == nil {
