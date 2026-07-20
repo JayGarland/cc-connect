@@ -636,6 +636,22 @@ func TestFormatInboxBoardCompactQueue(t *testing.T) {
 	}
 }
 
+func TestFormatInboxQueueLinePrefersFromOverTo(t *testing.T) {
+	// L-0489: RESULT headers now use real-world reply semantics
+	// (From: <engineer>, To: secretary) — a RESULT arrival with both fields
+	// set must display the engineer via From, not the constant "secretary"
+	// recipient via To.
+	entries := []inboxQueueEntry{
+		{Letter: "L-0489", Thread: "bse-protocol-result-header", To: "secretary", From: "architect", Date: "2026-07-20", Summary: "protocol redesign"},
+	}
+	got := formatInboxBoard(NewI18n(LangChinese), entries, nil)
+	want := "📥 收件箱待处理队列 (1)\n" +
+		"• [L-0489] (bse-protocol-result-header) From: architect — protocol redesign (2026-07-20)"
+	if got != want {
+		t.Fatalf("board =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestFormatInboxBoardIncludesPendingCloseSection(t *testing.T) {
 	entries := []inboxQueueEntry{
 		{Letter: "L-0448", Thread: "agent-memory-evolution", To: "architect", Date: "2026-07-18", Summary: "评估单体 Agent 记忆沉淀与进化设计"},
