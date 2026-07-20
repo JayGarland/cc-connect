@@ -206,6 +206,8 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := os.Stat(s.path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {

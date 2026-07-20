@@ -333,7 +333,7 @@ func (e *Engine) retryOutboxCleanup() {
 		for _, p := range e.platforms {
 			if p.Name() == e.outboxConfig.Platform {
 				if d, ok := p.(ReceiptCardDeleter); ok {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
 					deleted = d.DeleteReceiptCard(ctx, item.card) == nil
 					cancel()
 				}
@@ -407,7 +407,7 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 			}
 		}
 		content, buttons := formatOutboxCard(e.i18n, record, q.Letter, "", 0, 0)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
 		if cards, ok := p.(ReceiptCardManager); ok {
 			card, err := cards.SendReceiptCard(ctx, replyCtx, content, buttons)
 			if err == nil {
