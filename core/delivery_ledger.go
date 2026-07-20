@@ -12,9 +12,12 @@ import (
 const deliveryLedgerVersion = 1
 
 type deliveryLedger struct {
-	Version       int                       `json:"version"`
-	Records       map[string]deliveryRecord `json:"records"`
-	LastFullAudit time.Time                 `json:"last_full_audit,omitempty"`
+	Version        int                       `json:"version"`
+	Records        map[string]deliveryRecord `json:"records"`
+	LastFullAudit  time.Time                 `json:"last_full_audit,omitempty"`
+	InboxSeeded    bool                      `json:"inbox_seeded,omitempty"`
+	OutboxSeeded   bool                      `json:"outbox_seeded,omitempty"`
+	LegacyImported bool                      `json:"legacy_imported,omitempty"`
 }
 
 const deliveryFullAuditInterval = 15 * time.Minute
@@ -31,6 +34,10 @@ type deliveryRecord struct {
 	Inbox                         deliveryInboxState   `json:"inbox"`
 	Outbox                        deliveryOutboxState  `json:"outbox"`
 	Scanner                       deliveryScannerState `json:"scanner"`
+	Receipt                       *receiptRecord       `json:"receipt,omitempty"`
+	OutboxRecord                  *outboxRecord        `json:"outbox_record,omitempty"`
+	InboxNotified                 string               `json:"inbox_notified,omitempty"`
+	OutboxManual                  bool                 `json:"outbox_manual,omitempty"`
 }
 
 type deliveryInboxState struct {
@@ -156,6 +163,21 @@ func newDeliveryStore(dataDir string) *deliveryStore {
 	return &deliveryStore{path: filepath.Join(dataDir, "delivery_ledger.json")}
 }
 
+// bindDeliveryStores gives both watcher facades one mutex and one atomic
+// read-modify-write path. They expose legacy-shaped ledgers to their callers,
+// but delivery_ledger.json is their sole runtime writer.
+func (e *Engine) bindDeliveryStores() {
+	if e.deliveryStore == nil {
+		e.deliveryStore = newDeliveryStore(e.dataDir)
+	}
+	if e.notifyStore != nil {
+		e.notifyStore.delivery = e.deliveryStore
+	}
+	if e.outboxStore != nil {
+		e.outboxStore.delivery = e.deliveryStore
+	}
+}
+
 func (s *deliveryStore) load() (deliveryLedger, error) {
 	ledger := deliveryLedger{Version: deliveryLedgerVersion, Records: map[string]deliveryRecord{}}
 	if s == nil {
@@ -200,6 +222,20 @@ func (s *deliveryStore) save(ledger deliveryLedger) error {
 	return AtomicWriteFile(s.path, append(data, '\n'), 0o644)
 }
 
+func (s *deliveryStore) update(fn func(*deliveryLedger)) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger, err := s.load()
+	if err != nil {
+		return err
+	}
+	fn(&ledger)
+	return s.save(ledger)
+}
+
 // migrateLegacyOnce imports daemon-local projections only when the unified
 // file is absent. Existing unified state always wins on later restarts.
 func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
@@ -208,30 +244,64 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ledger := deliveryLedger{Version: deliveryLedgerVersion, Records: map[string]deliveryRecord{}}
 	if _, err := os.Stat(s.path); err == nil {
-		return nil
+		var loadErr error
+		ledger, loadErr = s.load()
+		if loadErr != nil {
+			return loadErr
+		}
+		if ledger.LegacyImported {
+			return nil
+		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	ledger := deliveryLedger{Version: deliveryLedgerVersion, Records: map[string]deliveryRecord{}}
-	if n, err := newNotifyStore(dataDir).load(); err == nil {
+	if n, err := loadLegacyNotifyLedger(filepath.Join(dataDir, "notify_ledger.json")); err == nil {
+		ledger.InboxSeeded = n.Seeded
 		for id, r := range n.Receipts {
-			ledger.Records[id] = deliveryRecord{Thread: r.Thread, ResultPath: r.ResultPath, ResultDigest: r.Generation, Inbox: deliveryInboxState{Status: r.Status, Card: r.Card}}
+			d := ledger.Records[id]
+			if d.Thread == "" {
+				d.Thread = r.Thread
+			}
+			if d.ResultPath == "" {
+				d.ResultPath = r.ResultPath
+			}
+			if d.ResultDigest == "" {
+				d.ResultDigest = r.Generation
+			}
+			d.Inbox = deliveryInboxState{Status: r.Status, Card: r.Card}
+			d.Receipt = ptrReceipt(r)
+			d.InboxNotified = n.Notified[id]
+			ledger.Records[id] = d
+		}
+		for id, notified := range n.Notified {
+			d := ledger.Records[id]
+			d.InboxNotified = notified
+			ledger.Records[id] = d
 		}
 	}
-	if o, err := newOutboxStore(dataDir).load(); err == nil {
+	if o, err := loadLegacyOutboxLedger(filepath.Join(dataDir, "outbox_ledger.json")); err == nil {
+		ledger.OutboxSeeded = o.Seeded
 		for id, r := range o.Records {
 			d := ledger.Records[id]
 			if d.Thread == "" {
 				d.Thread = r.Thread
 			}
-			d.QueryPath, d.QueryDigest = r.QueryPath, r.Generation
+			if d.QueryPath == "" {
+				d.QueryPath = r.QueryPath
+			}
+			if d.QueryDigest == "" {
+				d.QueryDigest = r.Generation
+			}
 			d.Outbox = deliveryOutboxState{Card: r.Card, Attempts: r.Attempts, RetryAt: r.RetryAt}
 			if r.Dispatched {
 				d.Outbox.Status = "dispatched"
 			} else {
 				d.Outbox.Status = "pending"
 			}
+			copied := r
+			d.OutboxRecord = &copied
 			ledger.Records[id] = d
 		}
 	}
@@ -242,7 +312,11 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 	for id := range manual {
 		d := ledger.Records[id]
 		d.Outbox.Status = "manual"
+		d.OutboxManual = true
 		ledger.Records[id] = d
 	}
+	ledger.LegacyImported = true
 	return s.save(ledger)
 }
+
+func ptrReceipt(r receiptRecord) *receiptRecord { return &r }

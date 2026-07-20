@@ -47,21 +47,37 @@ type outboxLedger struct {
 }
 
 type outboxStore struct {
-	mu   sync.Mutex
-	path string
+	mu       sync.Mutex
+	path     string // legacy read-only fallback
+	delivery *deliveryStore
 }
 
 func newOutboxStore(dataDir string) *outboxStore {
 	if strings.TrimSpace(dataDir) == "" {
 		return nil
 	}
-	return &outboxStore{path: filepath.Join(dataDir, "outbox_ledger.json")}
+	return &outboxStore{path: filepath.Join(dataDir, "outbox_ledger.json"), delivery: newDeliveryStore(dataDir)}
 }
 
 func (s *outboxStore) load() (outboxLedger, error) {
 	ledger := outboxLedger{Records: map[string]outboxRecord{}}
 	if s == nil {
 		return ledger, nil
+	}
+	if s.delivery != nil {
+		if _, err := os.Stat(s.delivery.path); err == nil {
+			delivery, err := s.delivery.load()
+			if err != nil {
+				return ledger, err
+			}
+			for id, record := range delivery.Records {
+				if record.OutboxRecord != nil {
+					ledger.Records[id] = *record.OutboxRecord
+				}
+			}
+			ledger.Seeded = delivery.OutboxSeeded
+			return ledger, nil
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,6 +103,25 @@ func (s *outboxStore) save(ledger outboxLedger) error {
 	if s == nil {
 		return nil
 	}
+	if s.delivery != nil {
+		return s.delivery.update(func(delivery *deliveryLedger) {
+			delivery.OutboxSeeded = ledger.Seeded
+			for id, record := range ledger.Records {
+				entry := delivery.Records[id]
+				copied := record
+				entry.OutboxRecord = &copied
+				delivery.Records[id] = entry
+			}
+			for id, entry := range delivery.Records {
+				if entry.OutboxRecord != nil {
+					if _, exists := ledger.Records[id]; !exists {
+						entry.OutboxRecord = nil
+						delivery.Records[id] = entry
+					}
+				}
+			}
+		})
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ledger.Records == nil {
@@ -100,6 +135,26 @@ func (s *outboxStore) save(ledger outboxLedger) error {
 		return err
 	}
 	return AtomicWriteFile(s.path, append(data, '\n'), 0o644)
+}
+
+func loadLegacyOutboxLedger(path string) (outboxLedger, error) {
+	ledger := outboxLedger{Records: map[string]outboxRecord{}}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return ledger, nil
+	}
+	if err != nil {
+		return ledger, err
+	}
+	if len(strings.TrimSpace(string(data))) != 0 {
+		if err := json.Unmarshal(data, &ledger); err != nil {
+			return ledger, err
+		}
+	}
+	if ledger.Records == nil {
+		ledger.Records = map[string]outboxRecord{}
+	}
+	return ledger, nil
 }
 
 func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool) ([]queryFileInfo, error) {
@@ -199,6 +254,7 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 			slog.Warn("delivery: legacy migration failed", "error", err)
 		}
 		e.outboxStore = newOutboxStore(e.dataDir)
+		e.bindDeliveryStores()
 		ledger, err := e.outboxStore.load()
 		if err != nil {
 			slog.Warn("outbox: failed to load ledger", "error", err)
@@ -539,6 +595,21 @@ func mustScanResultFiles(threadsDir string) []resultFileInfo {
 func (e *Engine) outboxManualPath() string { return filepath.Join(e.dataDir, "outbox_manual.json") }
 func (e *Engine) loadOutboxManual() map[string]bool {
 	out := map[string]bool{}
+	if e.deliveryStore == nil && strings.TrimSpace(e.dataDir) != "" {
+		e.deliveryStore = newDeliveryStore(e.dataDir)
+	}
+	if e.deliveryStore != nil {
+		if _, err := os.Stat(e.deliveryStore.path); err == nil {
+			if delivery, err := e.deliveryStore.load(); err == nil {
+				for letter, record := range delivery.Records {
+					if record.OutboxManual {
+						out[letter] = true
+					}
+				}
+				return out
+			}
+		}
+	}
 	data, err := os.ReadFile(e.outboxManualPath())
 	if err == nil {
 		_ = json.Unmarshal(data, &out)
@@ -546,12 +617,23 @@ func (e *Engine) loadOutboxManual() map[string]bool {
 	return out
 }
 func (e *Engine) saveOutboxManual() error {
-	data, err := json.Marshal(e.outboxManual)
-	if err != nil {
-		return err
+	if e.deliveryStore == nil && strings.TrimSpace(e.dataDir) != "" {
+		e.deliveryStore = newDeliveryStore(e.dataDir)
 	}
-	if err := os.MkdirAll(filepath.Dir(e.outboxManualPath()), 0o755); err != nil {
-		return err
+	if e.deliveryStore != nil {
+		return e.deliveryStore.update(func(delivery *deliveryLedger) {
+			for letter, manual := range e.outboxManual {
+				record := delivery.Records[letter]
+				record.OutboxManual = manual
+				delivery.Records[letter] = record
+			}
+			for letter, record := range delivery.Records {
+				if record.OutboxManual && !e.outboxManual[letter] {
+					record.OutboxManual = false
+					delivery.Records[letter] = record
+				}
+			}
+		})
 	}
-	return AtomicWriteFile(e.outboxManualPath(), data, 0o644)
+	return nil
 }
