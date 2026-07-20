@@ -179,6 +179,17 @@ func TestOutboxLedgerPersistsCardAndCleanupState(t *testing.T) {
 	}
 }
 
+func TestPublishOutboxRetriesSameGenerationWithoutCard(t *testing.T) {
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.outboxConfig = OutboxConfig{Platform: "telegram", SessionKey: "telegram:123:123"}
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {Generation: "digest"}}
+	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "dev-pro", Route: "heavy", Path: "L-0100.query.md", Summary: "queued", Digest: "digest"})
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("card sends = %d, want retry for a record without a card", p.receiptCardsSent)
+	}
+}
+
 func TestMarkOutboxDispatchedPersistsCleanupRecord(t *testing.T) {
 	root := t.TempDir()
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, deleteErr: errors.New("telegram unavailable")}

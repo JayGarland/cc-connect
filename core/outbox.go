@@ -328,7 +328,7 @@ func (e *Engine) markOutboxDispatched(p Platform, letter string, replyCtx any) {
 
 func (e *Engine) publishOutbox(q queryFileInfo) {
 	generation := q.Digest
-	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation {
+	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation && (prior.Card != nil || prior.Dispatched) {
 		return
 	}
 	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: generation, Summary: q.Summary}
@@ -347,6 +347,8 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 			card, err := cards.SendReceiptCard(context.Background(), replyCtx, content, buttons)
 			if err == nil {
 				record.Card = &card
+			} else {
+				slog.Warn("outbox: failed to send card; will retry", "letter", q.Letter, "error", err)
 			}
 		} else if buttonsPlatform, ok := p.(InlineButtonSender); ok {
 			_ = buttonsPlatform.SendWithButtons(context.Background(), replyCtx, content, buttons)
