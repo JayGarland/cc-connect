@@ -230,8 +230,8 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 
 func (e *Engine) checkOutbox() {
 	e.outboxMu.Lock()
-	defer e.outboxMu.Unlock()
 	if !e.outboxConfig.Enabled {
+		e.outboxMu.Unlock()
 		return
 	}
 	if e.outboxStore == nil {
@@ -245,6 +245,7 @@ func (e *Engine) checkOutbox() {
 	queries, err := scanOutboxQueries(e.outboxConfig.threadsDir(), e.outboxConfig.IndexPath, dispatched)
 	if err != nil {
 		slog.Warn("outbox: scan failed", "error", err)
+		e.outboxMu.Unlock()
 		return
 	}
 	// First scan establishes a quiet baseline. Existing archive history remains
@@ -257,12 +258,14 @@ func (e *Engine) checkOutbox() {
 		if err := e.outboxStore.save(outboxLedger{Seeded: true, Records: e.outboxRecords}); err != nil {
 			slog.Warn("outbox: failed to persist baseline", "error", err)
 		}
+		e.outboxMu.Unlock()
 		return
 	}
 	current := map[string]bool{}
+	toPublish := make([]queryFileInfo, 0, len(queries))
 	for _, q := range queries {
 		current[q.Letter] = true
-		e.publishOutbox(q)
+		toPublish = append(toPublish, q)
 	}
 	for letter, record := range e.outboxRecords {
 		if record.Dispatched {
@@ -284,6 +287,12 @@ func (e *Engine) checkOutbox() {
 		delete(e.outboxRecords, letter)
 	}
 	e.persistOutboxLocked()
+	e.outboxMu.Unlock()
+	// Network I/O must not extend the critical section above. publishOutbox
+	// re-checks and commits its result under a short lock after sending.
+	for _, q := range toPublish {
+		e.publishOutbox(q)
+	}
 }
 
 // retryOutboxCleanup removes cards only after a confirmed successful delete.
@@ -340,13 +349,20 @@ func (e *Engine) markOutboxDispatched(p Platform, letter string, replyCtx any) {
 }
 
 func (e *Engine) publishOutbox(q queryFileInfo) {
+	e.outboxMu.Lock()
 	generation := q.Digest
-	if prior, ok := e.outboxRecords[q.Letter]; ok && prior.Generation == generation {
+	prior, hadPrior := e.outboxRecords[q.Letter]
+	if hadPrior && prior.Generation == generation {
 		if prior.Card != nil || prior.Dispatched || (!prior.RetryAt.IsZero() && time.Now().Before(prior.RetryAt)) {
+			e.outboxMu.Unlock()
 			return
 		}
 	}
+	e.outboxMu.Unlock()
 	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: generation, Summary: q.Summary}
+	if hadPrior && prior.Generation == generation {
+		record.Attempts = prior.Attempts
+	}
 	for _, p := range e.platforms {
 		if p.Name() != e.outboxConfig.Platform {
 			continue
@@ -378,7 +394,16 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 		cancel()
 		break
 	}
+	e.outboxMu.Lock()
+	// A simultaneous dispatch or a newer QUERY generation wins over this
+	// completed network effect; do not resurrect a stale card.
+	if latest, ok := e.outboxRecords[q.Letter]; ok && latest.Generation != "" && latest.Generation != generation {
+		e.outboxMu.Unlock()
+		return
+	}
 	e.outboxRecords[q.Letter] = record
+	e.persistOutboxLocked()
+	e.outboxMu.Unlock()
 }
 
 func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bool {

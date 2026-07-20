@@ -202,6 +202,20 @@ func TestOutboxFailedSendPersistsRetryBackoff(t *testing.T) {
 	if p.receiptCardsSent != 1 { t.Fatalf("backoff sends = %d, want 1", p.receiptCardsSent) }
 }
 
+func TestCheckOutboxPublishesAfterPlanningLockIsReleased(t *testing.T) {
+	// publishOutbox owns its own brief state locks. This regression calls the
+	// watcher path, which used to hold outboxMu across SendReceiptCard.
+	root := t.TempDir()
+	threads, index := filepath.Join(root, "threads"), filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil { t.Fatal(err) }
+	writeQueryFile(t, threads, "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nqueued\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.dataDir, e.outboxConfig, e.outboxRecords, e.outboxManual, e.outboxSeeded = root, OutboxConfig{Enabled: true, IndexPath: index, Platform: "telegram", SessionKey: "telegram:123:123"}, map[string]outboxRecord{}, map[string]bool{}, true
+	e.checkOutbox()
+	if p.receiptCardsSent != 1 { t.Fatalf("send count = %d, want 1", p.receiptCardsSent) }
+}
+
 func TestMarkOutboxDispatchedPersistsCleanupRecord(t *testing.T) {
 	root := t.TempDir()
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, deleteErr: errors.New("telegram unavailable")}
