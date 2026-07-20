@@ -120,6 +120,24 @@ func TestDeliveryMigrationEnrichesExistingFoundationOnce(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyOnce_MalformedOutboxManualReturnsError(t *testing.T) {
+	root := t.TempDir()
+	if err := AtomicWriteFile(filepath.Join(root, "outbox_manual.json"), []byte(`not-valid-json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newDeliveryStore(root)
+	if err := store.migrateLegacyOnce(root); err == nil {
+		t.Fatal("expected error for malformed outbox_manual.json, got nil")
+	}
+	got, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LegacyImported {
+		t.Fatal("LegacyImported must not be set when manual JSON is malformed")
+	}
+}
+
 func TestDesiredDeliveryStateTreatsResultOrDispatchAsOutboxTerminal(t *testing.T) {
 	query := queryFileInfo{Letter: "L-0100", Thread: "alpha", Path: "q.md", Digest: "q"}
 	got := desiredDeliveryState(query, resultFileInfo{Letter: "L-0100", Path: "r.md"}, true)
