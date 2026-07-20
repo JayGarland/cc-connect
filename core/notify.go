@@ -231,15 +231,16 @@ type inboxQueueEntry struct {
 }
 
 type notifyStore struct {
-	mu   sync.Mutex
-	path string
+	mu       sync.Mutex
+	path     string // legacy read-only fallback
+	delivery *deliveryStore
 }
 
 func newNotifyStore(dataDir string) *notifyStore {
 	if strings.TrimSpace(dataDir) == "" {
 		return nil
 	}
-	return &notifyStore{path: filepath.Join(dataDir, "notify_ledger.json")}
+	return &notifyStore{path: filepath.Join(dataDir, "notify_ledger.json"), delivery: newDeliveryStore(dataDir)}
 }
 
 func (s *notifyStore) diffBasePath(letter string) string {
@@ -323,6 +324,24 @@ func (s *notifyStore) load() (notifyLedger, error) {
 	if s == nil {
 		return ledger, nil
 	}
+	if s.delivery != nil {
+		if _, err := os.Stat(s.delivery.path); err == nil {
+			delivery, err := s.delivery.load()
+			if err != nil {
+				return ledger, err
+			}
+			ledger.Seeded = delivery.InboxSeeded
+			for id, record := range delivery.Records {
+				if record.Receipt != nil {
+					ledger.Receipts[id] = *record.Receipt
+				}
+				if record.InboxNotified != "" {
+					ledger.Notified[id] = record.InboxNotified
+				}
+			}
+			return ledger, nil
+		}
+	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -349,6 +368,32 @@ func (s *notifyStore) save(ledger notifyLedger) error {
 	if s == nil {
 		return nil
 	}
+	if s.delivery != nil {
+		return s.delivery.update(func(delivery *deliveryLedger) {
+			delivery.InboxSeeded = ledger.Seeded
+			for id, notified := range ledger.Notified {
+				entry := delivery.Records[id]
+				entry.InboxNotified = notified
+				delivery.Records[id] = entry
+			}
+			for id, record := range ledger.Receipts {
+				entry := delivery.Records[id]
+				copied := record
+				entry.Receipt = &copied
+				entry.InboxNotified = ledger.Notified[id]
+				delivery.Records[id] = entry
+			}
+			for id, entry := range delivery.Records {
+				if entry.Receipt != nil {
+					if _, exists := ledger.Receipts[id]; !exists {
+						entry.Receipt = nil
+						entry.InboxNotified = ""
+						delivery.Records[id] = entry
+					}
+				}
+			}
+		})
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
@@ -358,6 +403,29 @@ func (s *notifyStore) save(ledger notifyLedger) error {
 	}
 	data = append(data, '\n')
 	return AtomicWriteFile(s.path, data, 0o644)
+}
+
+func loadLegacyNotifyLedger(path string) (notifyLedger, error) {
+	ledger := notifyLedger{Notified: map[string]string{}, Receipts: map[string]receiptRecord{}}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return ledger, nil
+	}
+	if err != nil {
+		return ledger, err
+	}
+	if len(strings.TrimSpace(string(data))) != 0 {
+		if err := json.Unmarshal(data, &ledger); err != nil {
+			return ledger, err
+		}
+	}
+	if ledger.Notified == nil {
+		ledger.Notified = map[string]string{}
+	}
+	if ledger.Receipts == nil {
+		ledger.Receipts = map[string]receiptRecord{}
+	}
+	return ledger, nil
 }
 
 type receiptArrival struct {
@@ -1056,6 +1124,7 @@ func (e *Engine) configureNotify(cfg NotifyConfig) {
 		if e.notifyStore == nil {
 			e.notifyStore = newNotifyStore(e.dataDir)
 		}
+		e.bindDeliveryStores()
 		e.startNotifyWatcher()
 	}
 }

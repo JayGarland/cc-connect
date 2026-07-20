@@ -171,6 +171,9 @@ func TestOutboxManualStatePersistsAcrossRestart(t *testing.T) {
 	if err := e.saveOutboxManual(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "outbox_manual.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy manual ledger was written: %v", err)
+	}
 	restarted := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
 	restarted.dataDir = root
 	if !restarted.loadOutboxManual()["L-0100"] {
@@ -192,6 +195,24 @@ func TestOutboxLedgerPersistsCardAndCleanupState(t *testing.T) {
 	record := got.Records["L-0100"]
 	if record.Generation != want.Generation || !record.Dispatched || record.Card == nil || record.Card.MessageID != 3 {
 		t.Fatalf("reloaded record = %#v", record)
+	}
+}
+
+func TestOutboxStoreWritesUnifiedLedgerNotLegacyFile(t *testing.T) {
+	root := t.TempDir()
+	store := newOutboxStore(root)
+	if err := store.save(outboxLedger{Records: map[string]outboxRecord{"L-0100": {Thread: "alpha", Generation: "g"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "outbox_ledger.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy outbox ledger was written: %v", err)
+	}
+	delivery, err := newDeliveryStore(root).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.Records["L-0100"].OutboxRecord == nil || delivery.Records["L-0100"].OutboxRecord.Generation != "g" {
+		t.Fatalf("unified outbox = %#v", delivery)
 	}
 }
 

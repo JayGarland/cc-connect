@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,14 +38,31 @@ func TestDeliveryStoreConcurrentFingerprintUpdatesPreserveBothInputs(t *testing.
 	}
 }
 
+func TestEngineBindsInboxAndOutboxStoresToOneDeliveryStore(t *testing.T) {
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.SetDataDir(t.TempDir())
+	e.notifyStore = newNotifyStore(e.dataDir)
+	e.outboxStore = newOutboxStore(e.dataDir)
+	e.bindDeliveryStores()
+	if e.notifyStore.delivery != e.deliveryStore || e.outboxStore.delivery != e.deliveryStore {
+		t.Fatalf("stores must share the engine delivery store: notify=%p outbox=%p engine=%p", e.notifyStore.delivery, e.outboxStore.delivery, e.deliveryStore)
+	}
+}
+
 func TestDeliveryMigrationMergesLegacyLedgersOnce(t *testing.T) {
 	root := t.TempDir()
-	notify := newNotifyStore(root)
-	if err := notify.save(notifyLedger{Receipts: map[string]receiptRecord{"L-0100": {Thread: "alpha", ResultPath: "result.md", Generation: "rd", Card: &MessageLocator{MessageID: 1}}}}); err != nil {
+	notifyData, err := json.Marshal(notifyLedger{Seeded: true, Notified: map[string]string{"L-0100": "seen"}, Receipts: map[string]receiptRecord{"L-0100": {Thread: "alpha", ResultPath: "result.md", Generation: "rd", Card: &MessageLocator{MessageID: 1}}}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	outbox := newOutboxStore(root)
-	if err := outbox.save(outboxLedger{Records: map[string]outboxRecord{"L-0100": {QueryPath: "query.md", Generation: "qd", Card: &MessageLocator{MessageID: 2}, Attempts: 2}}}); err != nil {
+	if err := AtomicWriteFile(filepath.Join(root, "notify_ledger.json"), notifyData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outboxData, err := json.Marshal(outboxLedger{Seeded: true, Records: map[string]outboxRecord{"L-0100": {QueryPath: "query.md", Generation: "qd", Card: &MessageLocator{MessageID: 2}, Attempts: 2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFile(filepath.Join(root, "outbox_ledger.json"), outboxData, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := AtomicWriteFile(filepath.Join(root, "outbox_manual.json"), []byte(`{"L-0101":true}`), 0o644); err != nil {
@@ -58,8 +76,11 @@ func TestDeliveryMigrationMergesLegacyLedgersOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := got.Records["L-0100"]; r.Inbox.Card == nil || r.Outbox.Card == nil || r.Outbox.Attempts != 2 {
+	if r := got.Records["L-0100"]; r.Receipt == nil || r.OutboxRecord == nil || r.Receipt.Card == nil || r.OutboxRecord.Card == nil || r.OutboxRecord.Attempts != 2 || r.InboxNotified != "seen" {
 		t.Fatalf("merged record = %#v", r)
+	}
+	if !got.InboxSeeded || !got.OutboxSeeded {
+		t.Fatalf("seed state = %#v", got)
 	}
 	if got.Records["L-0101"].Outbox.Status != "manual" {
 		t.Fatalf("manual state = %#v", got.Records["L-0101"])
@@ -70,6 +91,50 @@ func TestDeliveryMigrationMergesLegacyLedgersOnce(t *testing.T) {
 	again, _ := store.load()
 	if len(again.Records) != 2 {
 		t.Fatalf("migration duplicated records: %#v", again)
+	}
+}
+
+func TestDeliveryMigrationEnrichesExistingFoundationOnce(t *testing.T) {
+	root := t.TempDir()
+	store := newDeliveryStore(root)
+	if err := store.save(deliveryLedger{Records: map[string]deliveryRecord{"L-0100": {Thread: "alpha", Scanner: deliveryScannerState{QueryFingerprint: "query"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(outboxLedger{Records: map[string]outboxRecord{"L-0100": {Generation: "legacy", Card: &MessageLocator{MessageID: 9}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFile(filepath.Join(root, "outbox_ledger.json"), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrateLegacyOnce(root); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := got.Records["L-0100"]
+	if record.Scanner.QueryFingerprint != "query" || record.OutboxRecord == nil || record.OutboxRecord.Card == nil || record.OutboxRecord.Card.MessageID != 9 {
+		t.Fatalf("existing foundation was not enriched: %#v", record)
+	}
+}
+
+func TestMigrateLegacyOnce_MalformedOutboxManualReturnsError(t *testing.T) {
+	root := t.TempDir()
+	if err := AtomicWriteFile(filepath.Join(root, "outbox_manual.json"), []byte(`not-valid-json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newDeliveryStore(root)
+	if err := store.migrateLegacyOnce(root); err == nil {
+		t.Fatal("expected error for malformed outbox_manual.json, got nil")
+	}
+	got, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LegacyImported {
+		t.Fatal("LegacyImported must not be set when manual JSON is malformed")
 	}
 }
 
@@ -151,5 +216,24 @@ func TestDeliveryLedgerRoundTripsUnifiedRecord(t *testing.T) {
 	r := got.Records["L-0482"]
 	if got.Version != deliveryLedgerVersion || r.Inbox.Card == nil || r.Outbox.Card == nil || r.Outbox.Attempts != 3 || r.Scanner.ResultFingerprint != "r" {
 		t.Fatalf("round trip = %#v", got)
+	}
+}
+
+func TestDeliveryLedgerRoundTripsFullRuntimeRecords(t *testing.T) {
+	store := newDeliveryStore(t.TempDir())
+	want := deliveryLedger{Records: map[string]deliveryRecord{"L-0100": {
+		Receipt:      &receiptRecord{Thread: "alpha", Status: "DONE", AcknowledgedAt: "now", Card: &MessageLocator{MessageID: 1}},
+		OutboxRecord: &outboxRecord{Thread: "alpha", Generation: "digest", Dispatched: true, Attempts: 2, Card: &MessageLocator{MessageID: 2}},
+	}}}
+	if err := store.save(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Records["L-0100"]
+	if r.Receipt == nil || r.Receipt.AcknowledgedAt != "now" || r.OutboxRecord == nil || !r.OutboxRecord.Dispatched || r.OutboxRecord.Attempts != 2 {
+		t.Fatalf("runtime state = %#v", r)
 	}
 }

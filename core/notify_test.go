@@ -588,6 +588,24 @@ func TestNotifyStoreNewGenerationDoesNotReopenClosedReceipt(t *testing.T) {
 	}
 }
 
+func TestNotifyStoreWritesUnifiedLedgerNotLegacyFile(t *testing.T) {
+	root := t.TempDir()
+	store := newNotifyStore(root)
+	if err := store.save(notifyLedger{Seeded: true, Notified: map[string]string{"L-0100": "seen"}, Receipts: map[string]receiptRecord{"L-0100": {Thread: "alpha", Status: "DONE"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notify_ledger.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy notify ledger was written: %v", err)
+	}
+	delivery, err := newDeliveryStore(root).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !delivery.InboxSeeded || delivery.Records["L-0100"].Receipt == nil || delivery.Records["L-0100"].InboxNotified != "seen" {
+		t.Fatalf("unified inbox = %#v", delivery)
+	}
+}
+
 func TestNotifyStorePreservesFullReceiptSummaryWithoutCreatingSnapshot(t *testing.T) {
 	root := t.TempDir()
 	body := "ID: L-0430\nStatus: DONE\n---\n\nimmutable body\n"
@@ -951,11 +969,17 @@ func TestNotifyReconcilesOpenReceiptWithoutCardAfterRestart(t *testing.T) {
 	ledger := notifyLedger{Seeded: true, Notified: map[string]string{}, Receipts: map[string]receiptRecord{
 		"L-0430": {Thread: "alpha", ResultPath: "L-0430.result.md", Status: "DONE", Generation: "g1"},
 	}}
-	if err := e.notifyStore.save(ledger); err != nil { t.Fatal(err) }
+	if err := e.notifyStore.save(ledger); err != nil {
+		t.Fatal(err)
+	}
 	e.reconcilePendingInboxDeliveries(ledger)
-	if p.receiptCardsSent != 1 { t.Fatalf("recovery sends = %d, want 1", p.receiptCardsSent) }
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("recovery sends = %d, want 1", p.receiptCardsSent)
+	}
 	got, err := e.notifyStore.load()
-	if err != nil || got.Receipts["L-0430"].Card == nil { t.Fatalf("recovered ledger = %#v, %v", got, err) }
+	if err != nil || got.Receipts["L-0430"].Card == nil {
+		t.Fatalf("recovered ledger = %#v, %v", got, err)
+	}
 }
 
 // TestNotifyLetterArrivedReopensPendingCloseCardInPlace is a regression test
