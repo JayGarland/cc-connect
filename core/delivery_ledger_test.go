@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,25 @@ func TestDeliveryStoreUsesLocalDataDirectory(t *testing.T) {
 	}
 	if got := store.path; len(got) < len("delivery_ledger.json") || got[len(got)-len("delivery_ledger.json"):] != "delivery_ledger.json" {
 		t.Fatalf("path = %q, want local delivery_ledger.json", got)
+	}
+}
+
+func TestDeliveryStoreConcurrentFingerprintUpdatesPreserveBothInputs(t *testing.T) {
+	store := newDeliveryStore(t.TempDir())
+	query := []queryFileInfo{{Letter: "L-0100", Thread: "alpha", Path: "q.md", Digest: "q"}}
+	result := []resultFileInfo{{Letter: "L-0100", Thread: "alpha", Path: "r.md", ModTime: time.Now()}}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = store.recordQueryAndIndexFingerprints(query, "index") }()
+	go func() { defer wg.Done(); _, _ = store.recordResultFingerprints(result) }()
+	wg.Wait()
+	got, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Records["L-0100"]
+	if r.QueryPath != "q.md" || r.ResultPath != "r.md" || r.Scanner.QueryFingerprint != "q" || r.Scanner.ResultFingerprint == "" {
+		t.Fatalf("lost concurrent update: %#v", r)
 	}
 }
 

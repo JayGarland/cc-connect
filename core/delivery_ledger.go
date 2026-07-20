@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -85,6 +86,8 @@ func changedDeliveryInputs(prior deliveryLedger, current map[string]deliveryScan
 }
 
 func (s *deliveryStore) recordResultFingerprints(files []resultFileInfo) (map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ledger, err := s.load()
 	if err != nil {
 		return nil, err
@@ -111,6 +114,8 @@ func (s *deliveryStore) recordResultFingerprints(files []resultFileInfo) (map[st
 }
 
 func (s *deliveryStore) recordQueryAndIndexFingerprints(queries []queryFileInfo, indexFingerprint string) (map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ledger, err := s.load()
 	if err != nil {
 		return nil, err
@@ -141,6 +146,7 @@ func (s *deliveryStore) recordQueryAndIndexFingerprints(queries []queryFileInfo,
 // deliberately excluded: this file only belongs under Engine.dataDir.
 type deliveryStore struct {
 	path string
+	mu   sync.Mutex
 }
 
 func newDeliveryStore(dataDir string) *deliveryStore {
