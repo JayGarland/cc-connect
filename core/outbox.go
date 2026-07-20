@@ -332,9 +332,9 @@ func (e *Engine) retryOutboxCleanup() {
 		deleted := false
 		for _, p := range e.platforms {
 			if p.Name() == e.outboxConfig.Platform {
-				if d, ok := p.(MessageDeleter); ok {
+				if d, ok := p.(ReceiptCardDeleter); ok {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					deleted = d.DeleteMessage(ctx, item.card) == nil
+					deleted = d.DeleteReceiptCard(ctx, item.card) == nil
 					cancel()
 				}
 				break

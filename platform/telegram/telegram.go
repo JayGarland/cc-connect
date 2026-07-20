@@ -1752,6 +1752,13 @@ func (p *Platform) UpdateReceiptCard(ctx context.Context, card core.MessageLocat
 	return p.UpdateMessageWithButtons(ctx, replyContext{chatID: card.ChatID, threadID: card.ThreadID, messageID: card.MessageID}, content, buttons)
 }
 
+func (p *Platform) DeleteReceiptCard(ctx context.Context, card core.MessageLocator) error {
+	if card.Platform != p.Name() || card.ChatID == 0 || card.MessageID == 0 {
+		return fmt.Errorf("telegram: invalid receipt card locator")
+	}
+	return p.DeleteMessage(ctx, replyContext{chatID: card.ChatID, threadID: card.ThreadID, messageID: card.MessageID})
+}
+
 // DeletePreviewMessage deletes a stale preview message so the caller can send a fresh one.
 func (p *Platform) DeletePreviewMessage(ctx context.Context, previewHandle any) error {
 	h, ok := previewHandle.(*telegramPreviewHandle)

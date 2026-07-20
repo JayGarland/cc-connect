@@ -328,6 +328,13 @@ type ReceiptCardManager interface {
 	UpdateReceiptCard(ctx context.Context, locator MessageLocator, content string, buttons [][]ButtonOption) error
 }
 
+// ReceiptCardDeleter removes a proactively-sent card by its durable locator.
+// It differs from MessageDeleter, whose argument is a transient callback
+// reply context.
+type ReceiptCardDeleter interface {
+	DeleteReceiptCard(ctx context.Context, locator MessageLocator) error
+}
+
 // StatusFooterSender is an optional Platform extension for sending a reply
 // with a structured per-turn status footer rendered using platform-specific
 // dim/small styling (e.g. Lark `text_size: "notation"`). Platforms that do

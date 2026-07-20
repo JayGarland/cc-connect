@@ -386,6 +386,10 @@ func (p *receiptActionPlatform) DeleteMessage(_ context.Context, _ any) error {
 	return nil
 }
 
+func (p *receiptActionPlatform) DeleteReceiptCard(ctx context.Context, _ MessageLocator) error {
+	return p.DeleteMessage(ctx, nil)
+}
+
 func (p *receiptActionPlatform) ReconstructReplyCtx(sessionKey string) (any, error) {
 	p.reconstructed = sessionKey
 	return "ctx:" + sessionKey, nil
