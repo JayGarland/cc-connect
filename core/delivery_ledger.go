@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -312,7 +313,7 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 	manual := map[string]bool{}
 	if data, err := os.ReadFile(filepath.Join(dataDir, "outbox_manual.json")); err == nil {
 		if err := json.Unmarshal(data, &manual); err != nil {
-			return err
+			return fmt.Errorf("delivery: failed to unmarshal outbox_manual.json: %w", err)
 		}
 	}
 	for id := range manual {
