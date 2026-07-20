@@ -311,7 +311,9 @@ func (s *deliveryStore) migrateLegacyOnce(dataDir string) error {
 	}
 	manual := map[string]bool{}
 	if data, err := os.ReadFile(filepath.Join(dataDir, "outbox_manual.json")); err == nil {
-		_ = json.Unmarshal(data, &manual)
+		if err := json.Unmarshal(data, &manual); err != nil {
+			return err
+		}
 	}
 	for id := range manual {
 		d := ledger.Records[id]
