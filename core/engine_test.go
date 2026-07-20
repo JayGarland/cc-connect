@@ -335,6 +335,7 @@ type stubInlineButtonPlatform struct {
 
 type receiptActionPlatform struct {
 	stubPlatformEngine
+	sendErr             error
 	updatedContent      string
 	updatedButtons      [][]ButtonOption
 	buttonContent       string
@@ -350,6 +351,9 @@ type receiptActionPlatform struct {
 func (p *receiptActionPlatform) SendReceiptCard(_ context.Context, _ any, content string, buttons [][]ButtonOption) (MessageLocator, error) {
 	p.receiptCardsSent++
 	p.buttonContent, p.buttonRows = content, buttons
+	if p.sendErr != nil {
+		return MessageLocator{}, p.sendErr
+	}
 	return MessageLocator{Platform: p.n, ChatID: 1, ThreadID: 2, MessageID: p.receiptCardsSent}, nil
 }
 
@@ -380,6 +384,10 @@ func (p *receiptActionPlatform) DeleteMessage(_ context.Context, _ any) error {
 	}
 	p.deleted = true
 	return nil
+}
+
+func (p *receiptActionPlatform) DeleteReceiptCard(ctx context.Context, _ MessageLocator) error {
+	return p.DeleteMessage(ctx, nil)
 }
 
 func (p *receiptActionPlatform) ReconstructReplyCtx(sessionKey string) (any, error) {

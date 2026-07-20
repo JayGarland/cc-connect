@@ -569,12 +569,7 @@ func TestNotifyStoreReceiptGenerationReplacesPendingAndReopensAcknowledged(t *te
 	}
 }
 
-// TestNotifyStoreNewGenerationResetsClosedAt mirrors the existing
-// AcknowledgedAt-reset-on-new-generation behavior for ClosedAt (L-0455): a
-// freshly-arrived RESULT update supersedes a prior close the same way it
-// already supersedes a prior acknowledgment, since the archived CLOSED row
-// belongs to the old content, not the new one.
-func TestNotifyStoreNewGenerationResetsClosedAt(t *testing.T) {
+func TestNotifyStoreNewGenerationDoesNotReopenClosedReceipt(t *testing.T) {
 	root := t.TempDir()
 	resultPath := writeResultFile(t, root, "alpha", "L-0430", "body")
 	store := newNotifyStore(filepath.Join(root, "data"))
@@ -588,8 +583,8 @@ func TestNotifyStoreNewGenerationResetsClosedAt(t *testing.T) {
 	second := first
 	second.Summary, second.Generation = "second", "2026-07-16T20:01:00Z"
 	arrival, err := store.recordArrivalTransition(second)
-	if err != nil || !arrival.Replaced || arrival.Receipt.ClosedAt != "" {
-		t.Fatalf("new generation must reset ClosedAt = %+v, %v", arrival, err)
+	if err != nil || arrival.Replaced || arrival.Receipt.ClosedAt == "" {
+		t.Fatalf("closed receipt must remain immutable = %+v, %v", arrival, err)
 	}
 }
 
@@ -929,6 +924,22 @@ func TestNotifyLetterArrivedUpdatesPendingCardForNewGeneration(t *testing.T) {
 	if !strings.Contains(p.updatedContent, "second") {
 		t.Fatalf("updated card = %q", p.updatedContent)
 	}
+}
+
+func TestNotifyReconcilesOpenReceiptWithoutCardAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123"}
+	ledger := notifyLedger{Seeded: true, Notified: map[string]string{}, Receipts: map[string]receiptRecord{
+		"L-0430": {Thread: "alpha", ResultPath: "L-0430.result.md", Status: "DONE", Generation: "g1"},
+	}}
+	if err := e.notifyStore.save(ledger); err != nil { t.Fatal(err) }
+	e.reconcilePendingInboxDeliveries(ledger)
+	if p.receiptCardsSent != 1 { t.Fatalf("recovery sends = %d, want 1", p.receiptCardsSent) }
+	got, err := e.notifyStore.load()
+	if err != nil || got.Receipts["L-0430"].Card == nil { t.Fatalf("recovered ledger = %#v, %v", got, err) }
 }
 
 // TestNotifyLetterArrivedReopensPendingCloseCardInPlace is a regression test
