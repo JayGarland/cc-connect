@@ -378,6 +378,13 @@ func (s *notifyStore) recordArrivalTransition(row indexResultRow) (receiptArriva
 	}
 	record, exists := ledger.Receipts[row.Letter]
 	previous := record
+	// Archive closure is terminal for this L-ID. A later file write is a
+	// protocol violation to surface operationally, not a new delivery that may
+	// silently re-open Boss's accepted receipt.
+	if exists && record.ClosedAt != "" {
+		slog.Warn("notify: ignoring RESULT update after close", "letter", row.Letter)
+		return receiptArrival{Receipt: record, Previous: previous}, nil
+	}
 	generation := row.Generation
 	if generation == "" {
 		generation = time.Now().UTC().Format(time.RFC3339Nano)

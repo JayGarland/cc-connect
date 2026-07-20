@@ -569,12 +569,7 @@ func TestNotifyStoreReceiptGenerationReplacesPendingAndReopensAcknowledged(t *te
 	}
 }
 
-// TestNotifyStoreNewGenerationResetsClosedAt mirrors the existing
-// AcknowledgedAt-reset-on-new-generation behavior for ClosedAt (L-0455): a
-// freshly-arrived RESULT update supersedes a prior close the same way it
-// already supersedes a prior acknowledgment, since the archived CLOSED row
-// belongs to the old content, not the new one.
-func TestNotifyStoreNewGenerationResetsClosedAt(t *testing.T) {
+func TestNotifyStoreNewGenerationDoesNotReopenClosedReceipt(t *testing.T) {
 	root := t.TempDir()
 	resultPath := writeResultFile(t, root, "alpha", "L-0430", "body")
 	store := newNotifyStore(filepath.Join(root, "data"))
@@ -588,8 +583,8 @@ func TestNotifyStoreNewGenerationResetsClosedAt(t *testing.T) {
 	second := first
 	second.Summary, second.Generation = "second", "2026-07-16T20:01:00Z"
 	arrival, err := store.recordArrivalTransition(second)
-	if err != nil || !arrival.Replaced || arrival.Receipt.ClosedAt != "" {
-		t.Fatalf("new generation must reset ClosedAt = %+v, %v", arrival, err)
+	if err != nil || arrival.Replaced || arrival.Receipt.ClosedAt == "" {
+		t.Fatalf("closed receipt must remain immutable = %+v, %v", arrival, err)
 	}
 }
 
