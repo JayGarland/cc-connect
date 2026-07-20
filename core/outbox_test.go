@@ -114,6 +114,22 @@ func TestScanOutboxQueriesExcludesTerminalLetters(t *testing.T) {
 	}
 }
 
+func TestHandleOutboxManualStaleCardExplainsResultAlreadyArrived(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	writeResultFile(t, threads, "alpha", "L-0100", "---\nStatus: DONE\n---\n")
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.outboxConfig = OutboxConfig{Enabled: true, IndexPath: filepath.Join(root, "INDEX.md")}
+	e.outboxRecords = map[string]outboxRecord{}
+	if !e.handleOutboxCommand(p, &Message{ReplyCtx: "reply"}, []string{"manual", "L-0100", "old"}) {
+		t.Fatal("command not handled")
+	}
+	if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "already completed") {
+		t.Fatalf("reply = %q", got)
+	}
+}
+
 func TestScanOutboxQueriesExcludesWrittenResultWithoutIndexResult(t *testing.T) {
 	root := t.TempDir()
 	threads := filepath.Join(root, "threads")
@@ -197,9 +213,13 @@ func TestOutboxFailedSendPersistsRetryBackoff(t *testing.T) {
 	e.outboxRecords = map[string]outboxRecord{}
 	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "dev-pro", Route: "heavy", Path: "L-0100.query.md", Summary: "queued", Digest: "digest"})
 	record := e.outboxRecords["L-0100"]
-	if record.Attempts != 1 || record.RetryAt.IsZero() { t.Fatalf("retry state = %#v", record) }
+	if record.Attempts != 1 || record.RetryAt.IsZero() {
+		t.Fatalf("retry state = %#v", record)
+	}
 	e.publishOutbox(queryFileInfo{Letter: "L-0100", Thread: "alpha", To: "dev-pro", Route: "heavy", Path: "L-0100.query.md", Summary: "queued", Digest: "digest"})
-	if p.receiptCardsSent != 1 { t.Fatalf("backoff sends = %d, want 1", p.receiptCardsSent) }
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("backoff sends = %d, want 1", p.receiptCardsSent)
+	}
 }
 
 func TestCheckOutboxPublishesAfterPlanningLockIsReleased(t *testing.T) {
@@ -207,13 +227,17 @@ func TestCheckOutboxPublishesAfterPlanningLockIsReleased(t *testing.T) {
 	// watcher path, which used to hold outboxMu across SendReceiptCard.
 	root := t.TempDir()
 	threads, index := filepath.Join(root, "threads"), filepath.Join(root, "INDEX.md")
-	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writeQueryFile(t, threads, "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nqueued\n")
 	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
 	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	e.dataDir, e.outboxConfig, e.outboxRecords, e.outboxManual, e.outboxSeeded = root, OutboxConfig{Enabled: true, IndexPath: index, Platform: "telegram", SessionKey: "telegram:123:123"}, map[string]outboxRecord{}, map[string]bool{}, true
 	e.checkOutbox()
-	if p.receiptCardsSent != 1 { t.Fatalf("send count = %d, want 1", p.receiptCardsSent) }
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("send count = %d, want 1", p.receiptCardsSent)
+	}
 }
 
 func TestMarkOutboxDispatchedPersistsCleanupRecord(t *testing.T) {
@@ -258,9 +282,13 @@ func TestScanOutboxQueriesCarriesContentDigest(t *testing.T) {
 	index := filepath.Join(root, "INDEX.md")
 	body := "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-18\n---\n\n## Query\nShip it\n"
 	writeQueryFile(t, threads, "alpha", "L-0100", body)
-	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	got, err := scanOutboxQueries(threads, index, nil)
-	if err != nil || len(got) != 1 || got[0].Digest != contentDigest([]byte(body)) { t.Fatalf("query = %#v, %v", got, err) }
+	if err != nil || len(got) != 1 || got[0].Digest != contentDigest([]byte(body)) {
+		t.Fatalf("query = %#v, %v", got, err)
+	}
 }
 
 func TestOutboxFirstScanIsQuietBaseline(t *testing.T) {

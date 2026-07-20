@@ -463,6 +463,10 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 	}
 	record, ok := e.outboxRecords[args[1]]
 	if !ok || record.Generation != args[2] {
+		if (args[0] == "manual" || args[0] == "secretary") && e.outboxResultExists(args[1]) {
+			e.reply(p, msg.ReplyCtx, "✅ This letter is already completed; its RESULT has arrived in Inbox.")
+			return true
+		}
 		e.reply(p, msg.ReplyCtx, "❌ Outbox item is unavailable.")
 		return true
 	}
@@ -513,6 +517,23 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 	content, buttons := formatOutboxCard(e.i18n, record, args[1], pages[page], page, len(pages))
 	_ = updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons)
 	return true
+}
+
+func (e *Engine) outboxResultExists(letter string) bool {
+	for _, f := range mustScanResultFiles(e.outboxConfig.threadsDir()) {
+		if f.Letter == letter {
+			return true
+		}
+	}
+	return false
+}
+
+func mustScanResultFiles(threadsDir string) []resultFileInfo {
+	files, err := scanResultFiles(threadsDir)
+	if err != nil {
+		return nil
+	}
+	return files
 }
 
 func (e *Engine) outboxManualPath() string { return filepath.Join(e.dataDir, "outbox_manual.json") }
