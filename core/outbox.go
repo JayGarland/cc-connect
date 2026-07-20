@@ -619,6 +619,7 @@ func (e *Engine) loadOutboxManual() map[string]bool {
 func (e *Engine) saveOutboxManual() error {
 	if e.deliveryStore == nil && strings.TrimSpace(e.dataDir) != "" {
 		e.deliveryStore = newDeliveryStore(e.dataDir)
+		e.bindDeliveryStores()
 	}
 	if e.deliveryStore != nil {
 		return e.deliveryStore.update(func(delivery *deliveryLedger) {
