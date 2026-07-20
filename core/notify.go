@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -262,6 +263,25 @@ func (s *notifyStore) updateDiffBase(letter string, current []byte) (receiptUpda
 		return receiptUpdate{}, err
 	}
 	return update, nil
+}
+
+// contentUnchanged reports whether current is byte-identical to the
+// previously cached diff base for letter. A prior base that doesn't exist
+// yet (first-ever arrival) always reports false — "unchanged" must never be
+// true before there is anything to compare against. Callers use this to
+// keep scanNewResultFiles' mtime-based freshness check (cheap, no content
+// read) from mistaking a non-substantive filesystem touch — git checkout,
+// an archive script rewrite, an editor autosave — for a real RESULT
+// revision that should reopen an acknowledged/pending-close receipt (L-0478).
+func (s *notifyStore) contentUnchanged(letter string, current []byte) bool {
+	if s == nil {
+		return false
+	}
+	previous, err := os.ReadFile(s.diffBasePath(letter))
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(previous, current)
 }
 
 // pruneDiffBases removes rolling diff bases whose RESULT file no longer exists.
@@ -1092,10 +1112,17 @@ func (e *Engine) checkNewResults() {
 			slog.Warn("notify: failed to read result", "letter", f.Letter, "error", err)
 			continue
 		}
+		unchanged := e.notifyStore.contentUnchanged(f.Letter, body)
 		update, err := e.notifyStore.updateDiffBase(f.Letter, body)
 		if err != nil {
 			slog.Warn("notify: diff base unavailable", "letter", f.Letter, "error", err)
 			update = receiptUpdate{}
+		}
+		if unchanged {
+			// mtime advanced but content didn't: not a real RESULT revision,
+			// so it must not reopen an acknowledged/pending-close receipt (L-0478).
+			slog.Info("notify: skipping mtime-only touch with unchanged content", "letter", f.Letter)
+			continue
 		}
 		sourceAgentSessionID, sourceSessionPath := e.ensureDispatchStore().resultProvenance(f.Letter)
 		if sourceSessionPath == "" {
@@ -1141,7 +1168,19 @@ func (e *Engine) notifyLetterArrived(row indexResultRow) {
 			}
 			if cards, ok := p.(ReceiptCardManager); ok && e.notifyStore != nil {
 				content, cardButtons := formatReceiptInboxCard(e.i18n, row.Letter, arrival.Receipt, "", 0, 0)
-				if arrival.Replaced && arrival.Previous.AcknowledgedAt == "" && arrival.Previous.Card != nil {
+				// Previously required Previous.AcknowledgedAt == "" here, which left
+				// this branch unreachable for a letter reopened out of pending-close:
+				// recordArrivalTransition nulls arrival.Receipt.Card on that reset, so
+				// the "already has a card" skip below couldn't fire either, and both
+				// paths fell through to minting a brand-new card while the old
+				// pending-close card sat orphaned in the chat (L-0478). Editing
+				// Previous.Card in place — whatever card it was — covers both cases:
+				// UpdateReceiptCard can rewrite a pending-close card's text/buttons
+				// into the fresh full inbox card just as it rewrites an un-acked one.
+				// If that card was already deleted (e.g. the letter was closed before
+				// this new generation arrived), the edit fails and the existing
+				// fallback below sends a fresh replacement card instead.
+				if arrival.Replaced && arrival.Previous.Card != nil {
 					if err := cards.UpdateReceiptCard(ctx, *arrival.Previous.Card, content, cardButtons); err != nil {
 						slog.Warn("notify: failed to replace receipt card", "letter", row.Letter, "error", err)
 						if card, sendErr := cards.SendReceiptCard(ctx, replyCtx, content, cardButtons); sendErr != nil {

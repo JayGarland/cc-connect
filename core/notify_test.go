@@ -329,6 +329,72 @@ func TestCheckNewResultsStoresParsedOpenPointsAndGenerationUpdate(t *testing.T) 
 	}
 }
 
+// TestCheckNewResultsSkipsMtimeOnlyTouchWithUnchangedContent is a regression
+// test for L-0478: scanNewResultFiles' freshness check is mtime-only, so a
+// non-substantive filesystem touch (git checkout, an archive script
+// rewrite, an editor autosave) that leaves file content byte-identical used
+// to be treated exactly like a real RESULT revision — including reopening
+// an already-acknowledged/pending-close receipt. checkNewResults must skip
+// notifying when the touched file's content matches its cached diff base,
+// while still notifying on a genuine content change.
+func TestCheckNewResultsSkipsMtimeOnlyTouchWithUnchangedContent(t *testing.T) {
+	root := t.TempDir()
+	threadsDir := filepath.Join(root, "threads")
+	indexPath := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(indexPath, []byte("# Archive INDEX\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.dataDir = root
+	e.configureNotify(NotifyConfig{Enabled: true, TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123", IndexPath: indexPath})
+
+	// Seed with an empty threads dir so the letter written next is a genuine
+	// first arrival, not swallowed by the seed-without-notify path.
+	e.checkNewResults()
+
+	body := "## Conclusion\nfirst\n"
+	path := writeResultFile(t, threadsDir, "alpha", "L-0500", body)
+	e.checkNewResults()
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("first arrival sent = %d, want 1", p.receiptCardsSent)
+	}
+	before, err := e.notifyStore.receipt("L-0500")
+	if err != nil {
+		t.Fatalf("receipt: %v", err)
+	}
+
+	// Touch mtime forward without changing a single byte of content.
+	touched := time.Now().Add(1 * time.Hour)
+	if err := os.Chtimes(path, touched, touched); err != nil {
+		t.Fatal(err)
+	}
+	e.checkNewResults()
+	if p.receiptCardsSent != 1 || p.receiptCardsUpdated != 0 {
+		t.Fatalf("mtime-only touch must not notify: sent=%d updated=%d, want 1/0", p.receiptCardsSent, p.receiptCardsUpdated)
+	}
+	after, err := e.notifyStore.receipt("L-0500")
+	if err != nil {
+		t.Fatalf("receipt: %v", err)
+	}
+	if after.Generation != before.Generation {
+		t.Fatalf("mtime-only touch must not advance the receipt generation: before=%q after=%q", before.Generation, after.Generation)
+	}
+
+	// A genuine content change must still notify.
+	changed := time.Now().Add(2 * time.Hour)
+	if err := os.WriteFile(path, []byte("## Conclusion\nsecond\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	e.checkNewResults()
+	if p.receiptCardsSent != 1 || p.receiptCardsUpdated != 1 {
+		t.Fatalf("genuine content change must notify: sent=%d updated=%d, want 1/1", p.receiptCardsSent, p.receiptCardsUpdated)
+	}
+}
+
 func TestNotifyStoreRoundTrip(t *testing.T) {
 	store := newNotifyStore(t.TempDir())
 	ledger, err := store.load()
@@ -862,5 +928,55 @@ func TestNotifyLetterArrivedUpdatesPendingCardForNewGeneration(t *testing.T) {
 	}
 	if !strings.Contains(p.updatedContent, "second") {
 		t.Fatalf("updated card = %q", p.updatedContent)
+	}
+}
+
+// TestNotifyLetterArrivedReopensPendingCloseCardInPlace is a regression test
+// for L-0478: a letter acknowledged into pending-close, then hit by a new
+// arrival generation (real revision or mtime-only touch that slipped past
+// the L-0478 content-unchanged guard), used to orphan the pending-close card
+// forever and mint a brand-new full inbox card next to it — the AcknowledgedAt
+// == "" condition this branch used to require made it unreachable once a
+// letter had been acknowledged, since recordArrivalTransition also nulls
+// arrival.Receipt.Card on that same reset. Reopening must instead edit the
+// existing pending-close card in place into the fresh full inbox card.
+func TestNotifyLetterArrivedReopensPendingCloseCardInPlace(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0430", "body")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123"}
+
+	first := indexResultRow{Letter: "L-0430", Thread: "alpha", Path: resultPath, Status: "DONE", Summary: "first", Generation: "2026-07-16T20:00:00Z"}
+	e.notifyLetterArrived(first)
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("initial arrival sent = %d, want 1", p.receiptCardsSent)
+	}
+
+	receipt, _, err := e.notifyStore.acknowledge("L-0430", "boss")
+	if err != nil {
+		t.Fatalf("acknowledge: %v", err)
+	}
+	e.sendPendingCloseCard("L-0430", receipt)
+	if p.receiptCardsSent != 2 {
+		t.Fatalf("pending-close card sent = %d, want 2 (a new message, distinct from the original inbox card)", p.receiptCardsSent)
+	}
+
+	second := first
+	second.Summary, second.Generation = "second", "2026-07-16T20:01:00Z"
+	e.notifyLetterArrived(second)
+
+	if p.receiptCardsSent != 2 {
+		t.Fatalf("reopen must not mint a third card, sent = %d, want 2", p.receiptCardsSent)
+	}
+	if p.receiptCardsUpdated != 1 {
+		t.Fatalf("reopen must edit the pending-close card in place, updated = %d, want 1", p.receiptCardsUpdated)
+	}
+	if !strings.Contains(p.updatedContent, "second") {
+		t.Fatalf("reopened card content = %q, want it to carry the new generation's summary", p.updatedContent)
+	}
+	if strings.Contains(p.updatedContent, "pending close") {
+		t.Fatalf("reopened card must become the full inbox card, not stay a pending-close card: %q", p.updatedContent)
 	}
 }
