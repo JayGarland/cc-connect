@@ -274,14 +274,11 @@ func (e *Engine) checkOutbox() {
 			continue
 		}
 		if record.Card != nil {
-			for _, p := range e.platforms {
-				if p.Name() == e.outboxConfig.Platform {
-					if deleter, ok := p.(MessageDeleter); ok {
-						_ = deleter.DeleteMessage(e.ctx, *record.Card)
-					}
-					break
-				}
-			}
+			// Keep a durable cleanup record; retryOutboxCleanup performs the
+			// Telegram deletion after this lock is released.
+			record.Dispatched = true
+			e.outboxRecords[letter] = record
+			continue
 		}
 		delete(e.outboxRecords, letter)
 	}
@@ -353,14 +350,12 @@ func (e *Engine) markOutboxDispatched(p Platform, letter string, replyCtx any) {
 	if !ok {
 		return
 	}
-	if deleter, ok := p.(MessageDeleter); ok && deleter.DeleteMessage(e.ctx, replyCtx) == nil {
-		delete(e.outboxRecords, letter)
-		e.persistOutboxLocked()
-		return
-	}
 	record.Dispatched = true
 	e.outboxRecords[letter] = record
 	e.persistOutboxLocked()
+	// This function is called while handleOutboxCommand owns outboxMu. Queue
+	// cleanup so DeleteMessage runs only after that callback releases the lock.
+	go e.retryOutboxCleanup()
 	if updater, ok := p.(InlineMessageUpdater); ok {
 		_ = updater.UpdateMessageWithButtons(e.ctx, replyCtx, "✅ 已分发，正在清理…", nil)
 	}
