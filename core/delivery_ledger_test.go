@@ -1,6 +1,7 @@
 package core
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -72,6 +73,41 @@ func TestDeliveryLedgerFullAuditDueAfterInterval(t *testing.T) {
 	now := time.Now().UTC()
 	if !(deliveryLedger{}).fullAuditDue(now) || (deliveryLedger{LastFullAudit: now}).fullAuditDue(now) || !(deliveryLedger{LastFullAudit: now.Add(-deliveryFullAuditInterval)}).fullAuditDue(now) {
 		t.Fatal("full audit schedule is incorrect")
+	}
+}
+
+func TestDeliveryE2EQueryResultLifecycleAndAudit(t *testing.T) {
+	root := t.TempDir()
+	threads, index := filepath.Join(root, "threads"), filepath.Join(root, "INDEX.md")
+	body := "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nRoute: heavy\nDate: 2026-07-20\n---\n\n## Query\nwork\n"
+	writeQueryFile(t, threads, "alpha", "L-0100", body)
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-20 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	queries, err := scanOutboxQueries(threads, index, map[string]bool{})
+	if err != nil || len(queries) != 1 {
+		t.Fatalf("queries = %#v, %v", queries, err)
+	}
+	store := newDeliveryStore(filepath.Join(root, "data"))
+	changed, err := store.recordQueryAndIndexFingerprints(queries, contentDigest([]byte("index")))
+	if err != nil || !changed["L-0100"] {
+		t.Fatalf("query effect set = %#v, %v", changed, err)
+	}
+	result := writeResultFile(t, threads, "alpha", "L-0100", "---\nStatus: DONE\n---\n\n## Conclusion\ndone\n")
+	files, err := scanResultFiles(threads)
+	if err != nil || len(files) != 1 || files[0].Path != result {
+		t.Fatalf("results = %#v, %v", files, err)
+	}
+	changed, err = store.recordResultFingerprints(files)
+	if err != nil || !changed["L-0100"] {
+		t.Fatalf("result effect set = %#v, %v", changed, err)
+	}
+	ledger, err := store.load()
+	if err != nil || ledger.Records["L-0100"].Scanner.ResultFingerprint == "" || ledger.LastFullAudit.IsZero() {
+		t.Fatalf("ledger = %#v, %v", ledger, err)
+	}
+	if desired := desiredDeliveryState(queries[0], files[0], false); desired.Outbox.Status != "terminal" || desired.Inbox.Status != "pending" {
+		t.Fatalf("desired = %#v", desired)
 	}
 }
 
