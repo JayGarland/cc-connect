@@ -140,12 +140,13 @@ func (s *opencodeSession) Send(prompt string, images []core.ImageAttachment, fil
 		// prefixed with the archive-first preamble selected by personaClass (L-0216).
 		// Falls back to {workDir}/{project}.md for backwards compatibility.
 		// File is optional — silently skipped if absent.
-		if project != "" {
+		personaName := core.PersonaNameFromEnv(s.sessionEnv)
+		if personaName != "" {
 			personaFile := ""
 			if ccPersonasDir != "" {
-				personaFile = filepath.Join(ccPersonasDir, project+".md")
+				personaFile = filepath.Join(ccPersonasDir, personaName+".md")
 			} else if s.workDir != "" {
-				personaFile = filepath.Join(s.workDir, project+".md")
+				personaFile = filepath.Join(s.workDir, personaName+".md")
 			}
 			var rawPersona string
 			if personaFile != "" {

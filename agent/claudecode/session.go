@@ -213,13 +213,12 @@ func buildAppendSystemPrompt(agentPrompt, platformPrompt, userAppend string) str
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ccDataDir string) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
-	// Extract project, ccPersonasDir, personaClass, archiveDir, and fallbackTemplate from extraEnv
-	var project, ccPersonasDir, personaClass, rehydrationDigest, archiveDir, fallbackTemplate string
+	// Extract project, ccPersonasDir, personaClass, archiveDir, and fallbackTemplate from extraEnv.
+	// CC_PROJECT remains the concrete endpoint identity; CC_PERSONA may select a shared Persona.
+	var ccPersonasDir, personaClass, rehydrationDigest, archiveDir, fallbackTemplate string
 	for _, env := range extraEnv {
 		if idx := strings.Index(env, "="); idx >= 0 {
 			switch env[:idx] {
-			case "CC_PROJECT":
-				project = env[idx+1:]
 			case "CC_PERSONAS_DIR":
 				ccPersonasDir = env[idx+1:]
 			case "CC_PERSONA_CLASS":
@@ -233,16 +232,17 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 			}
 		}
 	}
+	personaName := core.PersonaNameFromEnv(extraEnv)
 
 	// Load seat-specific persona if present, prefixed with the archive-first
 	// preamble selected by personaClass (L-0216).
 	var personaContent string
-	if project != "" {
+	if personaName != "" {
 		personaFile := ""
 		if ccPersonasDir != "" {
-			personaFile = filepath.Join(ccPersonasDir, project+".md")
+			personaFile = filepath.Join(ccPersonasDir, personaName+".md")
 		} else if workDir != "" {
-			personaFile = filepath.Join(workDir, project+".md")
+			personaFile = filepath.Join(workDir, personaName+".md")
 		}
 		var rawPersona string
 		if personaFile != "" {

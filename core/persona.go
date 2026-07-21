@@ -116,16 +116,28 @@ func EnvValue(extraEnv []string, key string) string {
 	return value
 }
 
+// PersonaNameFromEnv returns the Persona filename stem for a session. An
+// explicit CC_PERSONA decouples a shared Persona from the concrete project
+// endpoint; existing projects continue to use CC_PROJECT unchanged.
+func PersonaNameFromEnv(extraEnv []string) string {
+	if persona := EnvValue(extraEnv, "CC_PERSONA"); persona != "" {
+		return persona
+	}
+	project, _, _ := ParsePersonaEnv(extraEnv)
+	return project
+}
+
 // LoadComposedPersonaFromEnv loads the seat persona file named by CC_PROJECT
 // and composes it with the archive-first preamble selected by CC_PERSONA_CLASS.
 // Returns "" when neither a persona file nor a class is available.
 func LoadComposedPersonaFromEnv(extraEnv []string) string {
-	project, personasDir, personaClass := ParsePersonaEnv(extraEnv)
+	_, personasDir, personaClass := ParsePersonaEnv(extraEnv)
+	personaName := PersonaNameFromEnv(extraEnv)
 	archiveDir := EnvValue(extraEnv, "CC_ARCHIVE_DIR")
 	fallbackTemplate := EnvValue(extraEnv, "CC_ARCHIVE_FIRST_FALLBACK")
 	var rawPersona string
-	if project != "" && personasDir != "" {
-		if data, err := os.ReadFile(filepath.Join(personasDir, project+".md")); err == nil {
+	if personaName != "" && personasDir != "" {
+		if data, err := os.ReadFile(filepath.Join(personasDir, personaName+".md")); err == nil {
 			rawPersona = strings.TrimSpace(string(data))
 		}
 	}

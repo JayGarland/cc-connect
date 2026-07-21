@@ -174,6 +174,39 @@ func TestLoadComposedPersonaFromEnv(t *testing.T) {
 	}
 }
 
+func TestPersonaNameFromEnv_PrefersExplicitPersona(t *testing.T) {
+	got := PersonaNameFromEnv([]string{
+		"CC_PROJECT=dev-pro",
+		"CC_PERSONA=dev",
+	})
+	if got != "dev" {
+		t.Fatalf("PersonaNameFromEnv = %q, want dev", got)
+	}
+}
+
+func TestPersonaNameFromEnv_FallsBackToProject(t *testing.T) {
+	got := PersonaNameFromEnv([]string{"CC_PROJECT=dev-pro"})
+	if got != "dev-pro" {
+		t.Fatalf("PersonaNameFromEnv = %q, want dev-pro", got)
+	}
+}
+
+func TestLoadComposedPersonaFromEnv_UsesExplicitPersona(t *testing.T) {
+	personasDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(personasDir, "dev.md"), []byte("CANONICAL DEV PERSONA"), 0o644); err != nil {
+		t.Fatalf("write persona: %v", err)
+	}
+
+	got := LoadComposedPersonaFromEnv([]string{
+		"CC_PROJECT=dev-pro",
+		"CC_PERSONA=dev",
+		"CC_PERSONAS_DIR=" + personasDir,
+	})
+	if !strings.Contains(got, "CANONICAL DEV PERSONA") {
+		t.Fatalf("LoadComposedPersonaFromEnv = %q, want canonical Persona", got)
+	}
+}
+
 func TestLoadComposedPersonaFromEnv_PropagatesArchiveFirstFallbackTemplate(t *testing.T) {
 	personasDir := t.TempDir() // no _preamble dir at all, so fallback fires
 

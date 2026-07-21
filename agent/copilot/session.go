@@ -815,12 +815,13 @@ func (cs *copilotSession) Send(prompt string, images []core.ImageAttachment, fil
 		// prefixed with the archive-first preamble selected by personaClass (L-0216).
 		// Falls back to {workDir}/{project}.md for backwards compatibility.
 		// File is optional — silently skipped if absent.
-		if project != "" && !cs.hasAgentArg {
+		personaName := core.PersonaNameFromEnv(cs.sessionEnv)
+		if personaName != "" && !cs.hasAgentArg {
 			personaFile := ""
 			if ccPersonasDir != "" {
-				personaFile = filepath.Join(ccPersonasDir, project+".md")
+				personaFile = filepath.Join(ccPersonasDir, personaName+".md")
 			} else if cs.workDir != "" {
-				personaFile = filepath.Join(cs.workDir, project+".md")
+				personaFile = filepath.Join(cs.workDir, personaName+".md")
 			}
 			var rawPersona string
 			if personaFile != "" {
