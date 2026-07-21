@@ -87,13 +87,14 @@ func MarkdownToSimpleHTML(md string) string {
 			rows = append(rows, row{cells: cells})
 		}
 
-		// Compute max width per column using the visual rune length of each
-		// cell (markdown markers stripped). This keeps ASCII columns aligned
-		// even after `**x**` expands to `<b>x</b>` in the rendered output.
+		// Use the header width as the table shape. AI-generated Markdown often
+		// has a malformed delimiter or data row; extra cells are ignored and
+		// missing cells are padded so the fallback remains readable.
 		numCols := 0
 		for _, r := range rows {
-			if !r.isSep && len(r.cells) > numCols {
+			if !r.isSep {
 				numCols = len(r.cells)
+				break
 			}
 		}
 		colWidths := make([]int, numCols)
@@ -191,7 +192,7 @@ func MarkdownToSimpleHTML(md string) string {
 
 		// Determine line type for blockquote/table buffering
 		isQuote := strings.HasPrefix(trimmed, "> ") || trimmed == ">"
-		isTableHeader := i+1 < len(lines) && reTableSepLoose.MatchString(strings.TrimSpace(lines[i+1])) && tableColumnCount(trimmed) == tableColumnCount(strings.TrimSpace(lines[i+1]))
+		isTableHeader := i+1 < len(lines) && reTableSepLoose.MatchString(strings.TrimSpace(lines[i+1]))
 		isTable := strings.Contains(trimmed, "|") && (inTable || isTableHeader)
 
 		// Flush blockquote when leaving
@@ -408,8 +409,9 @@ func convertInlineHTML(s string) string {
 }
 
 // NeedsRichMessage reports whether md contains Markdown structure that benefits
-// from Telegram's native RichMessage rendering: a GFM table or a consecutive
-// run of three or more list items. Headings and short lists render cleanly with
+// from Telegram's native RichMessage rendering: a table header followed by a
+// delimiter row or a consecutive run of two or more list items. Headings and
+// single-item lists render cleanly with
 // the lower-latency HTML path. Fenced code blocks are skipped so that comments
 // or bullets inside a code sample don't trigger a false positive.
 func NeedsRichMessage(md string) bool {
@@ -432,7 +434,7 @@ func NeedsRichMessage(md string) bool {
 			continue
 		}
 		if reTableSepLoose.MatchString(trimmed) {
-			if tableColumnCount(previousLine) == tableColumnCount(trimmed) {
+			if tableColumnCount(previousLine) > 1 {
 				return true
 			}
 			listRun = 0
@@ -441,7 +443,7 @@ func NeedsRichMessage(md string) bool {
 		}
 		if reUnorderedList.MatchString(line) || reOrderedList.MatchString(line) {
 			listRun++
-			if listRun >= 3 {
+			if listRun >= 2 {
 				return true
 			}
 			previousLine = trimmed

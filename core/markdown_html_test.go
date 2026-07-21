@@ -17,17 +17,18 @@ func TestNeedsRichMessage(t *testing.T) {
 		{"table", "| A | B |\n| --- | --- |\n| 1 | 2 |", true},
 		{"table without outer pipes", "A | B\n--- | ---\n1 | 2", true},
 		{"separator row without header is not a table", "note\n--- | ---\ntext", false},
-		{"mismatched table columns are not a table", "A | B | C\n--- | ---\n1 | 2", false},
+		{"mismatched table columns still use rich rendering", "A | B | C\n--- | ---\n1 | 2", true},
 		{"escaped pipes stay in their table cell", "A \\| B | C\n--- | ---\n1 | 2", true},
 		{"outer pipe after escaped slash closes the table", "| A | B \\\\|\n| --- | --- |\n| 1 | 2 |", true},
 		{"heading uses HTML", "# Title\n\nbody", false},
-		{"short unordered list uses HTML", "- one\n- two", false},
-		{"short ordered list uses HTML", "1. one\n2. two", false},
+		{"single list item uses HTML", "- one", false},
+		{"two unordered list items", "- one\n- two", true},
+		{"two ordered list items", "1. one\n2. two", true},
 		{"three unordered list items", "- one\n- two\n- three", true},
 		{"three ordered list items", "1. one\n2. two\n3. three", true},
 		{"mixed list items are consecutive", "- one\n2. two\n- three", true},
 		{"blank line preserves loose list run", "- one\n- two\n\n- three", true},
-		{"non-list text resets list run", "- one\n- two\nparagraph\n- three", false},
+		{"non-list text resets list run", "- one\nparagraph\n- two", false},
 		{"stray pipe is not a table", "a | b without a separator row", false},
 		{"horizontal rule is not a one-column table", "above\n\n---\n\nbelow", false},
 		{"heading-like text inside a code block is ignored", "```\n# not a heading\n- not a list\n```\nplain after", false},
@@ -417,6 +418,17 @@ func TestMarkdownToSimpleHTML_TableWithoutOuterPipes(t *testing.T) {
 	}
 	if !strings.Contains(out, "-----+---") {
 		t.Errorf("expected aligned separator row, got %q", out)
+	}
+}
+
+func TestMarkdownToSimpleHTML_MismatchedTableUsesHeaderColumns(t *testing.T) {
+	md := "| A | B |\n| --- | --- | --- |\n| 1 | 2 | 3 |"
+	out := MarkdownToSimpleHTML(md)
+	if !strings.Contains(out, "<pre>") {
+		t.Errorf("expected table wrapped in <pre>, got %q", out)
+	}
+	if strings.Contains(out, "3") {
+		t.Errorf("expected cells beyond the header width to be ignored, got %q", out)
 	}
 }
 

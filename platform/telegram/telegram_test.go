@@ -602,7 +602,7 @@ func TestSendUsesRichMessageForList(t *testing.T) {
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
 
-	content := "- item one\n- item two\n- item three"
+	content := "- item one\n- item two"
 	if err := p.Send(ctx, rctx, content); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -660,7 +660,7 @@ func TestSendFallsBackToHTMLWhenRichMessageFails(t *testing.T) {
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
 
-	content := "- item one\n- item two\n- item three"
+	content := "- item one\n- item two"
 	if err := p.Send(ctx, rctx, content); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

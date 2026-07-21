@@ -96,7 +96,7 @@ token = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz-123456"
 # proxy_username = ""
 # proxy_password = ""
 
-# Enable native RichMessage for Markdown tables and lists with three or more
+# Enable native RichMessage for Markdown tables and lists with two or more
 # consecutive items (default). Set false to always send HTML and avoid a
 # RichMessage fallback round trip for this bot.
 # rich_message_enabled = true
