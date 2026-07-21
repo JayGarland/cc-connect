@@ -90,6 +90,21 @@ func TestScanOutboxQueriesRequiresRegisteredUndispatchedQuery(t *testing.T) {
 	}
 }
 
+func TestScanOutboxQueriesAllowsRegisteredQueryWithoutRoute(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	writeQueryFile(t, threads, "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nDate: 2026-07-18\n---\n\n## Query\nShip it\n")
+	if err := os.WriteFile(index, []byte("| L-0100 | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := scanOutboxQueries(threads, index, nil)
+	if err != nil || len(got) != 1 || got[0].Route != "" {
+		t.Fatalf("outbox = %#v, %v", got, err)
+	}
+}
+
 func TestScanOutboxQueriesExcludesTerminalLetters(t *testing.T) {
 	root := t.TempDir()
 	threads := filepath.Join(root, "threads")
@@ -161,6 +176,13 @@ func TestFormatOutboxCardShowsMetadataAndReadOnlyButtons(t *testing.T) {
 	}
 	if len(buttons) != 1 || len(buttons[0]) != 3 || buttons[0][0].Data != "cmd:/outbox page L-0100 g1 0" || buttons[0][1].Data != "cmd:/outbox manual L-0100 g1" || buttons[0][2].Data != "cmd:/outbox secretary L-0100 g1" {
 		t.Fatalf("buttons = %#v", buttons)
+	}
+}
+
+func TestFormatOutboxCardShowsDefaultForEmptyRoute(t *testing.T) {
+	content, _ := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", QueryPath: "F:\\archive\\L-0100.query.md", Generation: "g1", Summary: "Ship it"}, "L-0100", "", 0, 0)
+	if !strings.Contains(content, "Route: default") {
+		t.Fatalf("missing default route in %q", content)
 	}
 }
 
