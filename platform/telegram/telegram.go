@@ -149,6 +149,7 @@ type Platform struct {
 	enableReactions       bool
 	generalTopicIntake    bool
 	chatHistorySync       bool   // tee non-directed Topic messages to chat_history.md (L-0423)
+	richMessageDisabled   bool   // bypass SendRichMessage and send HTML directly
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 
@@ -206,6 +207,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	enableReactions, _ := opts["enable_reactions"].(bool)
 	generalTopicIntake, _ := opts["general_topic_intake"].(bool)
 	chatHistorySync, _ := opts["chat_history_sync"].(bool)
+	richMessageEnabled := true
+	if v, ok := opts["rich_message_enabled"].(bool); ok {
+		richMessageEnabled = v
+	}
 
 	// Default to "compact" so streaming edits work out of the box. Telegram has
 	// no rich card UI, so "card" is normalized to "compact". Users can opt out
@@ -235,6 +240,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		enableReactions:       enableReactions,
 		generalTopicIntake:    generalTopicIntake,
 		chatHistorySync:       chatHistorySync,
+		richMessageDisabled:   !richMessageEnabled,
 		progressStyle:         progressStyle,
 		httpClient:            httpClient,
 		topicIntakeSeen:       make(map[string]struct{}),
@@ -267,6 +273,10 @@ func (p *Platform) StreamPreviewIntervalMs() int {
 		return 500
 	}
 	return 0
+}
+
+func (p *Platform) shouldUseRichMessage(content string) bool {
+	return !p.richMessageDisabled && core.NeedsRichMessage(content)
 }
 
 // KeepPreviewOnFinish tells the engine to keep the preview message and
@@ -1409,7 +1419,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 		return err
 	}
 
-	if core.NeedsRichMessage(content) {
+	if p.shouldUseRichMessage(content) {
 		if _, err := bot.SendRichMessage(ctx, &tgbot.SendRichMessageParams{
 			ChatID:          rc.chatID,
 			MessageThreadID: rc.threadID,
@@ -1470,7 +1480,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		return err
 	}
 
-	if core.NeedsRichMessage(content) {
+	if p.shouldUseRichMessage(content) {
 		if _, err := bot.SendRichMessage(ctx, &tgbot.SendRichMessageParams{
 			ChatID:          rc.chatID,
 			MessageThreadID: rc.threadID,

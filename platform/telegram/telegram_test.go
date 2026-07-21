@@ -545,13 +545,64 @@ func TestReplyUsesRichMessageForTable(t *testing.T) {
 	}
 }
 
+func TestRichMessageEnabledByDefault(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	platform, err := New(map[string]any{"token": "token"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.bot = stubBot
+
+	if err := p.Send(context.Background(), replyContext{chatID: 1}, "| A | B |\n| --- | --- |\n| 1 | 2 |"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if stubBot.sendRichMessageCalls != 1 {
+		t.Fatalf("sendRichMessageCalls = %d, want 1 by default", stubBot.sendRichMessageCalls)
+	}
+}
+
+func TestRichMessageDisabledUsesHTMLForSendAndReply(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	platform, err := New(map[string]any{
+		"token":                "token",
+		"rich_message_enabled": false,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.bot = stubBot
+	ctx := context.Background()
+	content := "| A | B |\n| --- | --- |\n| 1 | 2 |"
+
+	if err := p.Send(ctx, replyContext{chatID: 1}, content); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := p.Reply(ctx, replyContext{chatID: 1, messageID: 2}, content); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+
+	if stubBot.sendRichMessageCalls != 0 {
+		t.Fatalf("sendRichMessageCalls = %d, want 0 when disabled", stubBot.sendRichMessageCalls)
+	}
+	if stubBot.sendMessageCalls != 2 {
+		t.Fatalf("sendMessageCalls = %d, want 2 HTML sends", stubBot.sendMessageCalls)
+	}
+	for _, params := range stubBot.sendMessageParams {
+		if params.ParseMode != models.ParseModeHTML {
+			t.Fatalf("ParseMode = %q, want HTML", params.ParseMode)
+		}
+	}
+}
+
 func TestSendUsesRichMessageForList(t *testing.T) {
 	stubBot := newStubTelegramBot()
 	p := &Platform{bot: stubBot}
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
 
-	content := "- item one\n- item two"
+	content := "- item one\n- item two\n- item three"
 	if err := p.Send(ctx, rctx, content); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -589,7 +640,7 @@ func TestReplyFallsBackToHTMLWhenRichMessageFails(t *testing.T) {
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 2}
 
-	content := "# Heading\n\nbody text"
+	content := "| A | B |\n| --- | --- |\n| 1 | 2 |"
 	if err := p.Reply(ctx, rctx, content); err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -609,7 +660,7 @@ func TestSendFallsBackToHTMLWhenRichMessageFails(t *testing.T) {
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
 
-	content := "- item one\n- item two"
+	content := "- item one\n- item two\n- item three"
 	if err := p.Send(ctx, rctx, content); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

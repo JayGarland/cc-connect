@@ -79,18 +79,11 @@ func MarkdownToSimpleHTML(md string) string {
 		var rows []row
 		for _, tl := range tblLines {
 			tl = strings.TrimSpace(tl)
-			if reTableSep.MatchString(tl) {
+			if reTableSepLoose.MatchString(tl) {
 				rows = append(rows, row{isSep: true})
 				continue
 			}
-			inner := tl
-			if strings.HasPrefix(tl, "|") && strings.HasSuffix(tl, "|") && len(tl) >= 2 {
-				inner = strings.TrimSpace(tl[1 : len(tl)-1])
-			}
-			cells := strings.Split(inner, "|")
-			for k := range cells {
-				cells[k] = strings.TrimSpace(cells[k])
-			}
+			cells := splitTableCells(tl)
 			rows = append(rows, row{cells: cells})
 		}
 
@@ -198,7 +191,8 @@ func MarkdownToSimpleHTML(md string) string {
 
 		// Determine line type for blockquote/table buffering
 		isQuote := strings.HasPrefix(trimmed, "> ") || trimmed == ">"
-		isTable := len(trimmed) > 2 && trimmed[0] == '|' && trimmed[len(trimmed)-1] == '|'
+		isTableHeader := i+1 < len(lines) && reTableSepLoose.MatchString(strings.TrimSpace(lines[i+1])) && tableColumnCount(trimmed) == tableColumnCount(strings.TrimSpace(lines[i+1]))
+		isTable := strings.Contains(trimmed, "|") && (inTable || isTableHeader)
 
 		// Flush blockquote when leaving
 		if !isQuote && inBlockquote {
@@ -413,36 +407,98 @@ func convertInlineHTML(s string) string {
 	return s
 }
 
-// NeedsRichMessage reports whether md contains GFM structure (a table,
-// heading, or list) that MarkdownToSimpleHTML would otherwise flatten into
-// plain/<pre> text. Callers use this to decide between sendRichMessage
-// (Telegram Bot API 10.1, which renders these natively) and the legacy
-// sendMessage HTML path. Fenced code blocks are skipped so that "#" comments
-// or "- " bullets inside a code sample don't trigger a false positive.
+// NeedsRichMessage reports whether md contains Markdown structure that benefits
+// from Telegram's native RichMessage rendering: a GFM table or a consecutive
+// run of three or more list items. Headings and short lists render cleanly with
+// the lower-latency HTML path. Fenced code blocks are skipped so that comments
+// or bullets inside a code sample don't trigger a false positive.
 func NeedsRichMessage(md string) bool {
 	inCodeBlock := false
-	hasTableSep := false
+	listRun := 0
+	previousLine := ""
 	for _, line := range strings.Split(md, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			inCodeBlock = !inCodeBlock
+			listRun = 0
+			previousLine = ""
 			continue
 		}
 		if inCodeBlock {
 			continue
 		}
 		if reTableSepLoose.MatchString(trimmed) {
-			hasTableSep = true
+			if tableColumnCount(previousLine) == tableColumnCount(trimmed) {
+				return true
+			}
+			listRun = 0
+			previousLine = trimmed
 			continue
 		}
-		if reHeading.MatchString(line) {
-			return true
-		}
 		if reUnorderedList.MatchString(line) || reOrderedList.MatchString(line) {
-			return true
+			listRun++
+			if listRun >= 3 {
+				return true
+			}
+			previousLine = trimmed
+			continue
+		}
+		listRun = 0
+		previousLine = trimmed
+	}
+	return false
+}
+
+func tableColumnCount(line string) int {
+	return len(splitTableCells(line))
+}
+
+func splitTableCells(line string) []string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "|")
+	trailingPipeEscaped := false
+	for i := len(line) - 2; i >= 0 && line[i] == '\\'; i-- {
+		trailingPipeEscaped = !trailingPipeEscaped
+	}
+	if strings.HasSuffix(line, "|") && !trailingPipeEscaped {
+		line = strings.TrimSuffix(line, "|")
+	}
+	if line == "" {
+		return nil
+	}
+
+	var cells []string
+	var cell strings.Builder
+	escaped := false
+	for _, r := range line {
+		switch r {
+		case '|':
+			if escaped {
+				cell.WriteRune(r)
+				escaped = false
+				continue
+			}
+			cells = append(cells, strings.TrimSpace(cell.String()))
+			cell.Reset()
+		case '\\':
+			if escaped {
+				cell.WriteRune(r)
+				escaped = false
+			} else {
+				escaped = true
+			}
+		default:
+			if escaped {
+				cell.WriteByte('\\')
+				escaped = false
+			}
+			cell.WriteRune(r)
 		}
 	}
-	return hasTableSep
+	if escaped {
+		cell.WriteByte('\\')
+	}
+	return append(cells, strings.TrimSpace(cell.String()))
 }
 
 func escapeHTML(s string) string {
