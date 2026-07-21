@@ -427,6 +427,10 @@ func NeedsRichMessage(md string) bool {
 		if inCodeBlock {
 			continue
 		}
+		if trimmed == "" {
+			previousLine = ""
+			continue
+		}
 		if reTableSepLoose.MatchString(trimmed) {
 			if tableColumnCount(previousLine) == tableColumnCount(trimmed) {
 				return true
