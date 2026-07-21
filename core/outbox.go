@@ -216,11 +216,15 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 	return unique, err
 }
 
-func formatOutboxCard(i18n *I18n, record outboxRecord, letter, body string, page, pageCount int) (string, [][]ButtonOption) {
-	route := record.Route
+func displayOutboxRoute(route string) string {
 	if route == "" {
-		route = "default"
+		return "default"
 	}
+	return route
+}
+
+func formatOutboxCard(i18n *I18n, record outboxRecord, letter, body string, page, pageCount int) (string, [][]ButtonOption) {
+	route := displayOutboxRoute(record.Route)
 	content := fmt.Sprintf("📤 %s\nThread: %s\nTo: %s\nRoute: %s\nSummary: %s\nQuery: %s", letter, record.Thread, record.To, route, record.Summary, filepath.Base(record.QueryPath))
 	if pageCount <= 0 {
 		return content, [][]ButtonOption{{
@@ -544,7 +548,7 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 			if record.Dispatched {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", letter, record.To, record.Route, record.Thread))
+			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", letter, record.To, displayOutboxRoute(record.Route), record.Thread))
 		}
 		if len(lines) == 0 {
 			e.reply(p, msg.ReplyCtx, "Outbox is empty.")

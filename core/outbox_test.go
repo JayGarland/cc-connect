@@ -90,6 +90,19 @@ func TestScanOutboxQueriesRequiresRegisteredUndispatchedQuery(t *testing.T) {
 	}
 }
 
+func TestHandleOutboxCommandShowsDefaultForRouteLessRecord(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.outboxRecords = map[string]outboxRecord{
+		"L-0101": {To: "dev-pro", Thread: "alpha"},
+	}
+
+	e.handleOutboxCommand(p, &Message{ReplyCtx: "chat"}, nil)
+	if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "L-0101 · dev-pro · default · alpha") {
+		t.Fatalf("route-less list entry = %q", got)
+	}
+}
+
 func TestScanOutboxQueriesAllowsRegisteredQueryWithoutRoute(t *testing.T) {
 	root := t.TempDir()
 	threads := filepath.Join(root, "threads")
@@ -102,6 +115,41 @@ func TestScanOutboxQueriesAllowsRegisteredQueryWithoutRoute(t *testing.T) {
 	got, err := scanOutboxQueries(threads, index, nil)
 	if err != nil || len(got) != 1 || got[0].Route != "" {
 		t.Fatalf("outbox = %#v, %v", got, err)
+	}
+}
+
+func TestScanOutboxQueriesRejectsIncompleteIdentityFrontMatter(t *testing.T) {
+	tests := []struct {
+		name   string
+		letter string
+		body   string
+	}{
+		{name: "wrong ID", letter: "L-0100", body: "---\nID: L-9999\nThread: alpha\nType: QUERY\nTo: dev-pro\nDate: 2026-07-18\n---\n"},
+		{name: "missing ID", letter: "L-0101", body: "---\nThread: alpha\nType: QUERY\nTo: dev-pro\nDate: 2026-07-18\n---\n"},
+		{name: "non-query type", letter: "L-0102", body: "---\nID: L-0102\nThread: alpha\nType: RESULT\nTo: dev-pro\nDate: 2026-07-18\n---\n"},
+		{name: "missing thread", letter: "L-0103", body: "---\nID: L-0103\nType: QUERY\nTo: dev-pro\nDate: 2026-07-18\n---\n"},
+		{name: "missing recipient", letter: "L-0104", body: "---\nID: L-0104\nThread: alpha\nType: QUERY\nDate: 2026-07-18\n---\n"},
+		{name: "missing date", letter: "L-0105", body: "---\nID: L-0105\nThread: alpha\nType: QUERY\nTo: dev-pro\n---\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			threads := filepath.Join(root, "threads")
+			index := filepath.Join(root, "INDEX.md")
+			writeQueryFile(t, threads, "alpha", tt.letter, tt.body)
+			if err := os.WriteFile(index, []byte("| "+tt.letter+" | QUERY | alpha | ROOT | queued | 2026-07-18 |\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := scanOutboxQueries(threads, index, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("outbox = %#v; incomplete identity must be rejected", got)
+			}
+		})
 	}
 }
 
