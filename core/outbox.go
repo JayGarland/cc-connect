@@ -189,7 +189,7 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 			return err
 		}
 		h := parseArchiveFrontMatter(string(body))
-		if h["ID"] != letter || h["Type"] != "QUERY" || h["Thread"] == "" || h["To"] == "" || h["Route"] == "" || h["Date"] == "" {
+		if h["ID"] != letter || h["Type"] != "QUERY" || h["Thread"] == "" || h["To"] == "" || h["Date"] == "" {
 			return nil
 		}
 		info, err := d.Info()
@@ -216,8 +216,16 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 	return unique, err
 }
 
+func displayOutboxRoute(route string) string {
+	if route == "" {
+		return "default"
+	}
+	return route
+}
+
 func formatOutboxCard(i18n *I18n, record outboxRecord, letter, body string, page, pageCount int) (string, [][]ButtonOption) {
-	content := fmt.Sprintf("📤 %s\nThread: %s\nTo: %s\nRoute: %s\nSummary: %s\nQuery: %s", letter, record.Thread, record.To, record.Route, record.Summary, filepath.Base(record.QueryPath))
+	route := displayOutboxRoute(record.Route)
+	content := fmt.Sprintf("📤 %s\nThread: %s\nTo: %s\nRoute: %s\nSummary: %s\nQuery: %s", letter, record.Thread, record.To, route, record.Summary, filepath.Base(record.QueryPath))
 	if pageCount <= 0 {
 		return content, [][]ButtonOption{{
 			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/outbox page " + letter + " " + record.Generation + " 0"},
@@ -540,7 +548,7 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 			if record.Dispatched {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", letter, record.To, record.Route, record.Thread))
+			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", letter, record.To, displayOutboxRoute(record.Route), record.Thread))
 		}
 		if len(lines) == 0 {
 			e.reply(p, msg.ReplyCtx, "Outbox is empty.")
