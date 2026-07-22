@@ -7470,7 +7470,14 @@ func (e *Engine) markReceipt(letter, user string) (receiptRecord, bool, error) {
 // no longer matches the live receipt. An empty callback generation (typed
 // command, legacy button) is never stale.
 func staleReceiptGeneration(receipt receiptRecord, generation []string) bool {
-	return len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]
+	if len(generation) == 0 || generation[0] == "" {
+		return false
+	}
+	live := receipt.Generation
+	if live == "" {
+		live = receipt.ArrivedAt
+	}
+	return live != generation[0]
 }
 
 // refreshStaleReceiptCard redraws a clicked card whose embedded generation no
