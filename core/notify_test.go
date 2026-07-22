@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1029,5 +1030,38 @@ func TestNotifyLetterArrivedReopensPendingCloseCardInPlace(t *testing.T) {
 	}
 	if strings.Contains(p.updatedContent, "pending close") {
 		t.Fatalf("reopened card must become the full inbox card, not stay a pending-close card: %q", p.updatedContent)
+	}
+}
+
+// TestNotifyLetterArrivedDeletesStrandedCardAfterFallbackSend covers the
+// L-0575 orphan source: when the in-place edit of the previous card fails and
+// a replacement card is sent instead, the old card used to stay in the chat
+// with stale-generation buttons forever. The replacement path must best-effort
+// delete the stranded card.
+func TestNotifyLetterArrivedDeletesStrandedCardAfterFallbackSend(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0430", "body")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123"}
+	first := indexResultRow{Letter: "L-0430", Thread: "alpha", Path: resultPath, Status: "DONE", Summary: "first", Generation: "2026-07-16T20:00:00Z"}
+	e.notifyLetterArrived(first)
+	if p.receiptCardsSent != 1 {
+		t.Fatalf("initial arrival sent = %d, want 1", p.receiptCardsSent)
+	}
+	p.receiptCardUpdateErr = errors.New("message to edit not found")
+	second := first
+	second.Summary, second.Generation = "second", "2026-07-16T20:01:00Z"
+	e.notifyLetterArrived(second)
+	if p.receiptCardsSent != 2 {
+		t.Fatalf("failed edit must fall back to a replacement send, sent = %d, want 2", p.receiptCardsSent)
+	}
+	if !p.deleted {
+		t.Fatal("replacement send must best-effort delete the stranded previous card")
+	}
+	got, err := e.notifyStore.load()
+	if err != nil || got.Receipts["L-0430"].Card == nil || got.Receipts["L-0430"].Card.MessageID != 2 {
+		t.Fatalf("ledger must track the replacement card: %#v, %v", got.Receipts["L-0430"].Card, err)
 	}
 }

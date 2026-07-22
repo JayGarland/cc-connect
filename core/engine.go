@@ -7466,10 +7466,52 @@ func (e *Engine) markReceipt(letter, user string) (receiptRecord, bool, error) {
 	return receipt, changed, err
 }
 
+// staleReceiptGeneration reports whether a callback carries a generation that
+// no longer matches the live receipt. An empty callback generation (typed
+// command, legacy button) is never stale.
+func staleReceiptGeneration(receipt receiptRecord, generation []string) bool {
+	return len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]
+}
+
+// refreshStaleReceiptCard redraws a clicked card whose embedded generation no
+// longer matches the live receipt (L-0575). The stale-generation guard itself
+// stays — an old button must never act on content Boss hasn't seen — but a
+// bare "unavailable" reply dead-ends the card permanently: its buttons keep
+// the orphaned generation forever. Redrawing the clicked card with the current
+// receipt re-stamps every button, so the very next click acts on what the
+// card now shows. Card selection mirrors cancelReceiptClose: an acknowledged
+// receipt gets the minimal pending-close card (收件/交主秘书 are already gated
+// off), an open one gets the compact inbox card. Only called for receipts that
+// are still live — err/acknowledged/closed keep the terminal unavailable reply
+// at each call site.
+func (e *Engine) refreshStaleReceiptCard(p Platform, msg *Message, letter string, receipt receiptRecord) {
+	slog.Warn("receipt: stale generation callback, refreshing card", "letter", letter, "current_generation", receipt.Generation)
+	updater, ok := p.(InlineMessageUpdater)
+	if !ok {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	var content string
+	var buttons [][]ButtonOption
+	if receipt.AcknowledgedAt != "" {
+		content, buttons = formatPendingCloseCard(e.i18n, letter, receipt)
+	} else {
+		content, buttons = formatReceiptInboxCard(e.i18n, letter, receipt, "", 0, 0)
+	}
+	if err := updater.UpdateMessageWithButtons(e.ctx, msg.ReplyCtx, content, buttons); err != nil {
+		slog.Warn("receipt: stale card refresh failed", "letter", letter, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+	}
+}
+
 func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page int, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return
 	}
 	pages, err := receiptOriginalPages(receipt, e.i18n.T(MsgReceiptEmptyOriginal))
@@ -7491,8 +7533,12 @@ func (e *Engine) showReceiptPage(p Platform, msg *Message, letter string, page i
 
 func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, page int, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return
 	}
 	pages := receiptUpdatePages(receipt.Update)
@@ -7526,8 +7572,14 @@ func (e *Engine) showReceiptUpdatePage(p Platform, msg *Message, letter string, 
 
 func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string, generation ...string) {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return
+	}
+	// Collapse with a stale generation still redraws the compact card — same
+	// render, but built here from the live receipt so the buttons are fresh.
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return
 	}
 	updater, ok := p.(InlineMessageUpdater)
@@ -7543,8 +7595,12 @@ func (e *Engine) showReceiptCompact(p Platform, msg *Message, letter string, gen
 
 func (e *Engine) receiveReceipt(p Platform, msg *Message, letter string, generation ...string) bool {
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return true
 	}
 	if _, changed, err := e.markReceipt(letter, msg.UserName); err != nil || !changed {
@@ -7579,8 +7635,12 @@ func (e *Engine) handoffReceiptToPrimary(p Platform, msg *Message, letter string
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.AcknowledgedAt != "" || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return true
 	}
 	original, err := os.ReadFile(receipt.ResultPath)
@@ -7776,8 +7836,15 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 		return true
 	}
 	receipt, err := e.notifyStore.receipt(letter)
-	if err != nil || receipt.ClosedAt != "" || (len(generation) > 0 && generation[0] != "" && receipt.Generation != generation[0]) {
+	if err != nil || receipt.ClosedAt != "" {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReceiptUnavailable))
+		return true
+	}
+	// The confirm button was stamped at confirm time; a background generation
+	// bump between confirm and this click means Boss confirmed content that has
+	// since changed. Refresh instead of dead-ending (L-0575).
+	if staleReceiptGeneration(receipt, generation) {
+		e.refreshStaleReceiptCard(p, msg, letter, receipt)
 		return true
 	}
 	updater, hasUpdater := p.(InlineMessageUpdater)
