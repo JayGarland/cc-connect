@@ -1317,8 +1317,19 @@ func (e *Engine) notifyLetterArrived(row indexResultRow) {
 						slog.Warn("notify: failed to replace receipt card", "letter", row.Letter, "error", err)
 						if card, sendErr := cards.SendReceiptCard(ctx, replyCtx, content, cardButtons); sendErr != nil {
 							slog.Warn("notify: failed to send replacement receipt card", "letter", row.Letter, "error", sendErr)
-						} else if storeErr := e.notifyStore.storeReceiptCard(row.Letter, card); storeErr != nil {
-							slog.Warn("notify: failed to persist replacement receipt card", "letter", row.Letter, "error", storeErr)
+						} else {
+							if storeErr := e.notifyStore.storeReceiptCard(row.Letter, card); storeErr != nil {
+								slog.Warn("notify: failed to persist replacement receipt card", "letter", row.Letter, "error", storeErr)
+							}
+							// Best-effort: remove the old card the failed edit left
+							// behind, so its stale-generation buttons can't be clicked
+							// after the replacement exists (L-0575). Failure is fine —
+							// the stale handlers now refresh instead of dead-ending.
+							if deleter, ok := p.(ReceiptCardDeleter); ok {
+								if delErr := deleter.DeleteReceiptCard(ctx, *arrival.Previous.Card); delErr != nil {
+									slog.Warn("notify: failed to delete stranded receipt card", "letter", row.Letter, "error", delErr)
+								}
+							}
 						}
 					}
 					break

@@ -336,6 +336,7 @@ type stubInlineButtonPlatform struct {
 type receiptActionPlatform struct {
 	stubPlatformEngine
 	sendErr             error
+	receiptCardUpdateErr error
 	updatedContent      string
 	updatedButtons      [][]ButtonOption
 	buttonContent       string
@@ -359,6 +360,9 @@ func (p *receiptActionPlatform) SendReceiptCard(_ context.Context, _ any, conten
 
 func (p *receiptActionPlatform) UpdateReceiptCard(_ context.Context, _ MessageLocator, content string, buttons [][]ButtonOption) error {
 	p.receiptCardsUpdated++
+	if p.receiptCardUpdateErr != nil {
+		return p.receiptCardUpdateErr
+	}
 	p.updatedContent, p.updatedButtons = content, buttons
 	return nil
 }
@@ -916,6 +920,129 @@ func TestEngineReceiptRejectsStaleGeneration(t *testing.T) {
 	}
 }
 
+// TestEngineStaleReceiveRefreshesCurrentCard covers L-0575: a stale-generation
+// 收件 click must still refuse to acknowledge (the guard above), but instead of
+// dead-ending with a bare unavailable reply — leaving the clicked card's
+// buttons orphaned forever — it redraws the clicked card with the live
+// receipt, re-stamping every button with the current generation.
+func TestEngineStaleReceiveRefreshesCurrentCard(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0572", "body")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	first := indexResultRow{Letter: "L-0572", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: "2026-07-22T20:00:00Z"}
+	if err := e.notifyStore.recordArrival(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Generation = "2026-07-23T09:00:00Z"
+	if err := e.notifyStore.recordArrival(second); err != nil {
+		t.Fatal(err)
+	}
+	if handled := e.receiveReceipt(p, &Message{UserName: "boss", ReplyCtx: "ctx"}, "L-0572", first.Generation); !handled {
+		t.Fatal("stale receive must remain local")
+	}
+	if record, err := e.notifyStore.receipt("L-0572"); err != nil || record.AcknowledgedAt != "" {
+		t.Fatalf("stale receive must not acknowledge: %+v, err=%v", record, err)
+	}
+	found := false
+	for _, row := range p.updatedButtons {
+		for _, btn := range row {
+			if strings.Contains(btn.Data, "receipt receive L-0572 "+second.Generation) {
+				found = true
+			}
+			if strings.Contains(btn.Data, first.Generation) {
+				t.Fatalf("refreshed card still carries the stale generation: %#v", p.updatedButtons)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stale receive must redraw the inbox card with the current generation, got %#v", p.updatedButtons)
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "unavailable") {
+			t.Fatalf("stale receive must refresh instead of replying unavailable: %#v", p.getSent())
+		}
+	}
+}
+
+// TestEngineStalePageViewRefreshesCurrentCard: the 查看原文 button with a stale
+// generation must refresh the card rather than reply unavailable (L-0575).
+func TestEngineStalePageViewRefreshesCurrentCard(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0572", "body")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	first := indexResultRow{Letter: "L-0572", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: "2026-07-22T20:00:00Z"}
+	if err := e.notifyStore.recordArrival(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Generation = "2026-07-23T09:00:00Z"
+	if err := e.notifyStore.recordArrival(second); err != nil {
+		t.Fatal(err)
+	}
+	e.showReceiptPage(p, &Message{UserName: "boss", ReplyCtx: "ctx"}, "L-0572", 0, first.Generation)
+	found := false
+	for _, row := range p.updatedButtons {
+		for _, btn := range row {
+			if strings.Contains(btn.Data, second.Generation) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stale page view must redraw the card with the current generation, got %#v", p.updatedButtons)
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "unavailable") {
+			t.Fatalf("stale page view must refresh instead of replying unavailable: %#v", p.getSent())
+		}
+	}
+}
+
+// TestEngineStaleCloseConfirmOnAcknowledgedReceiptRefreshesPendingClose: a
+// stale closeconfirm click on an already-acknowledged receipt must refresh to
+// the minimal pending-close card (收件/交主秘书 are gated off post-ack) with the
+// live generation, not dead-end (L-0575).
+func TestEngineStaleCloseConfirmOnAcknowledgedReceiptRefreshesPendingClose(t *testing.T) {
+	root := t.TempDir()
+	resultPath := writeResultFile(t, root, "alpha", "L-0572", "ID: L-0572\nStatus: DONE\n---\n")
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.SetAdminFrom("boss-id")
+	first := indexResultRow{Letter: "L-0572", Thread: "alpha", Path: resultPath, Status: "DONE", Generation: "2026-07-22T20:00:00Z"}
+	if err := e.notifyStore.recordArrival(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Generation = "2026-07-23T09:00:00Z"
+	if err := e.notifyStore.recordArrival(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.notifyStore.acknowledge("L-0572", "boss"); err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{UserID: "boss-id", UserName: "boss", ReplyCtx: "inbox"}
+	if handled := e.closeReceiptFromInbox(p, msg, "L-0572", first.Generation); !handled {
+		t.Fatal("stale closeconfirm must not start an agent turn")
+	}
+	if record, err := e.notifyStore.receipt("L-0572"); err != nil || record.ClosedAt != "" {
+		t.Fatalf("stale closeconfirm must not close: %+v, err=%v", record, err)
+	}
+	if len(p.updatedButtons) != 1 || len(p.updatedButtons[0]) != 1 || !strings.Contains(p.updatedButtons[0][0].Data, "receipt close L-0572 "+second.Generation) {
+		t.Fatalf("stale closeconfirm on acked receipt must refresh to a pending-close card with the live generation, got %#v", p.updatedButtons)
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "unavailable") {
+			t.Fatalf("stale closeconfirm must refresh instead of replying unavailable: %#v", p.getSent())
+		}
+	}
+}
+
 func TestEngineReceiptPrimaryHandsCurrentOriginalToConfiguredSession(t *testing.T) {
 	root := t.TempDir()
 	originalBody := "ID: L-0430\nStatus: DONE\n---\n\n## Conclusion\noriginal body\n"
@@ -1157,11 +1284,25 @@ func TestEngineReceiptUpdatePageRejectsStaleGeneration(t *testing.T) {
 	if handled := e.handleCommand(p, &Message{ReplyCtx: "inbox"}, "/receipt update L-0432 stale 0"); !handled {
 		t.Fatal("stale update must be handled locally")
 	}
-	if p.updatedContent != "" {
-		t.Fatalf("stale update edited card: %q", p.updatedContent)
+	// The guard still refuses to render the requested stale page; since L-0575
+	// it refreshes the clicked card from the live receipt instead of
+	// dead-ending with a bare unavailable reply.
+	found := false
+	for _, row := range p.updatedButtons {
+		for _, btn := range row {
+			if strings.Contains(btn.Data, "stale") {
+				t.Fatalf("refreshed card still carries the stale generation: %#v", p.updatedButtons)
+			}
+			if strings.Contains(btn.Data, "L-0432 current") {
+				found = true
+			}
+		}
 	}
-	if got := p.getSent(); len(got) != 1 || got[0] != "❌ Receipt is unavailable." {
-		t.Fatalf("stale reply = %#v", got)
+	if !found {
+		t.Fatalf("stale update must refresh the card with the current generation, got %#v", p.updatedButtons)
+	}
+	if len(p.getSent()) != 0 {
+		t.Fatalf("stale update must refresh the card, not reply: %#v", p.getSent())
 	}
 }
 
