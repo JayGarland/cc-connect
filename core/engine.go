@@ -18070,19 +18070,24 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			}
 		}
 		if e.dispatchTopicIsolation {
-			if letterID := ExtractLetterIDFromText(messageHint); letterID != "" {
-				return letterID
-			}
+			// Do NOT derive the session shard from an L-XXXX mentioned in the
+			// message body: an ad-hoc DM that merely references a letter must stay
+			// on the stable chat session, not hop into that letter's (often empty)
+			// shard and cold-start. Formal letter dispatch always arrives on a
+			// Telegram topic and is resolved from the dispatch ledger below, never
+			// from free text. (L-0587 follow-up to the reuse-race fix.)
 			return defaultDispatchWorkspaceKey
 		}
 		return ""
 	}
 	if e.workspacePattern == "" {
 		if e.dispatchTopicIsolation {
+			// Dispatched letters are resolved from the ledger (findLetterIDByTopic);
+			// a topic that is not a dispatch target stays on a stable per-topic
+			// shard (L-<threadID>). We deliberately do NOT fall back to an L-XXXX
+			// scraped from the message body — that let ad-hoc chat mentioning a
+			// letter hop shards and cold-start (L-0587).
 			letterID := e.findLetterIDByTopic(threadID)
-			if letterID == "" && messageHint != "" {
-				letterID = ExtractLetterIDFromText(messageHint)
-			}
 			if letterID == "" {
 				letterID = "L-" + threadID
 			}
@@ -18092,6 +18097,11 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 	}
 	workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
 	if strings.Contains(workspace, "{{LETTER_ID}}") {
+		// Pattern seats (workspace_pattern with {{LETTER_ID}}) are letter-dispatch
+		// workers: a letter mentioned in the message is a manual dispatch and DOES
+		// route into that letter's worktree (L-0320). This differs from the
+		// empty-pattern cooperative chat seats above, where a letter mention is
+		// just conversation and must not switch shards (L-0587).
 		letterID := e.findLetterIDByTopic(threadID)
 		if letterID == "" && messageHint != "" {
 			letterID = ExtractLetterIDFromText(messageHint)
