@@ -9315,14 +9315,33 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 			e.cmdCron(platform, msg, []string{subcommand, job.ID})
 
 			deadline := time.Now().Add(2 * time.Second)
+			gotOutput := false
 			for time.Now().Before(deadline) {
 				sent := platform.getSent()
 				if sentContains(sent, "triggered") && sentContains(sent, "manual run complete") {
-					return
+					gotOutput = true
+					break
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			t.Fatalf("timed out waiting for run output, sent=%v", platform.getSent())
+			if !gotOutput {
+				t.Fatalf("timed out waiting for run output, sent=%v", platform.getSent())
+			}
+
+			// The manual run executes in a detached goroutine (RunJobNow) that
+			// writes jobs.json via CronStore.MarkRun *after* the output above is
+			// delivered. If the test returns now, that final write races the
+			// automatic t.TempDir cleanup and fails with "directory not empty".
+			// MarkRun sets LastRun and calls save() while holding the store mutex,
+			// so once store.Get observes a non-zero LastRun the write has already
+			// landed. Wait for that to join the writer before returning.
+			runDeadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(runDeadline) {
+				if j := store.Get(job.ID); j != nil && !j.LastRun.IsZero() {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		})
 	}
 }
