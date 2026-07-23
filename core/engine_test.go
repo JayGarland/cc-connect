@@ -8586,10 +8586,11 @@ func TestCleanupCAS_ConcurrentUnconditionalCloseOnce(t *testing.T) {
 	e.interactiveMu.Unlock()
 }
 
-// TestSessionMismatch_RecyclesStaleAgent verifies that getOrCreateInteractiveStateWith
-// detects when the running agent session ID differs from the active Session's
-// AgentSessionID and creates a fresh agent instead of reusing the stale one.
-func TestSessionMismatch_RecyclesStaleAgent(t *testing.T) {
+// TestSessionSwitch_RecyclesStaleAgent verifies that getOrCreateInteractiveStateWith
+// recycles a live process when the ACTIVE logical session changed (a session
+// switch: the served Session.ID no longer matches). Reuse would send messages to
+// the wrong conversation, so the stale agent must be torn down.
+func TestSessionSwitch_RecyclesStaleAgent(t *testing.T) {
 	newSess := newControllableSession("new-agent-id")
 	agent := &controllableAgent{nextSession: newSess}
 	p := &stubPlatformEngine{n: "test"}
@@ -8597,23 +8598,24 @@ func TestSessionMismatch_RecyclesStaleAgent(t *testing.T) {
 
 	key := "test:user1"
 
-	// Seed a live agent session with ID "old-agent-id".
+	// Seed a live agent process that was spawned to serve logical session "A".
 	oldSess := newControllableSession("old-agent-id")
 	e.interactiveMu.Lock()
 	e.interactiveStates[key] = &interactiveState{
-		agentSession: oldSess,
-		platform:     p,
-		replyCtx:     "ctx",
+		agentSession:    oldSess,
+		platform:        p,
+		replyCtx:        "ctx",
+		servedSessionID: "session-A",
 	}
 	e.interactiveMu.Unlock()
 
-	// The active Session now wants a DIFFERENT agent session ID.
-	session := &Session{AgentSessionID: "new-agent-id"}
+	// The active session is now a DIFFERENT logical session ("B").
+	session := &Session{ID: "session-B", AgentSessionID: "new-agent-id"}
 
 	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
 
 	if state.agentSession == oldSess {
-		t.Fatal("expected stale agent session to be replaced")
+		t.Fatal("expected stale agent session to be replaced after session switch")
 	}
 	if state.agentSession != newSess {
 		t.Fatal("expected new agent session from StartSession")
@@ -8623,13 +8625,55 @@ func TestSessionMismatch_RecyclesStaleAgent(t *testing.T) {
 	select {
 	case <-oldSess.closed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("old agent session was not closed after mismatch")
+		t.Fatal("old agent session was not closed after session switch")
 	}
 }
 
-// TestSessionClearedAfterNew_RecyclesAliveAgent verifies issue #238: after /new the
-// Session's AgentSessionID is empty but an older Claude process may still be alive;
-// it must be recycled instead of reused (which would keep prior --resume context).
+// TestSessionReuse_ForkedAgentIDDoesNotRecycle is the core regression test for the
+// silent-drop race: within the SAME logical session, the agent's Claude session_id
+// forks on --resume (so the live process reports a different id than the persisted
+// "want"), yet the healthy process MUST be reused — not cold-started. It also
+// verifies the forked id is adopted back into the Session for later cold-start.
+func TestSessionReuse_ForkedAgentIDDoesNotRecycle(t *testing.T) {
+	agent := &controllableAgent{}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:user1"
+
+	// Live process serving logical session "session-1"; its agent id has forked
+	// to "forked-id-B" while the Session still remembers the older "old-id-A".
+	liveSess := newControllableSession("forked-id-B")
+	existingState := &interactiveState{
+		agentSession:    liveSess,
+		platform:        p,
+		replyCtx:        "ctx",
+		agent:           agent,
+		servedSessionID: "session-1",
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = existingState
+	e.interactiveMu.Unlock()
+
+	session := &Session{ID: "session-1", AgentSessionID: "old-id-A"}
+
+	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
+	if state != existingState {
+		t.Fatal("expected live process to be reused across an agent-id fork, not recycled")
+	}
+	if liveSess.alive == false {
+		t.Fatal("live agent session must not be closed on a fork")
+	}
+	if got := session.GetAgentSessionID(); got != "forked-id-B" {
+		t.Fatalf("forked id not adopted: AgentSessionID = %q, want %q", got, "forked-id-B")
+	}
+}
+
+// TestSessionClearedAfterNew_RecyclesAliveAgent verifies issue #238: /new must not
+// reuse a prior Claude process's --resume context. cmdNew tears down the old state
+// AND mints a new Session.ID; the reuse gate keys on that logical id, so an older
+// process serving a different Session.ID is recycled even though a stale live
+// process is still present in the map.
 func TestSessionClearedAfterNew_RecyclesAliveAgent(t *testing.T) {
 	newSess := newControllableSession("fresh-id")
 	agent := &controllableAgent{nextSession: newSess}
@@ -8639,17 +8683,19 @@ func TestSessionClearedAfterNew_RecyclesAliveAgent(t *testing.T) {
 	oldSess := newControllableSession("prior-claude-session")
 	e.interactiveMu.Lock()
 	e.interactiveStates[key] = &interactiveState{
-		agentSession: oldSess,
-		platform:     p,
-		replyCtx:     "ctx",
+		agentSession:    oldSess,
+		platform:        p,
+		replyCtx:        "ctx",
+		servedSessionID: "old-session",
 	}
 	e.interactiveMu.Unlock()
 
-	session := &Session{AgentSessionID: ""}
+	// After /new the active session is a fresh logical session with a cleared id.
+	session := &Session{ID: "new-session", AgentSessionID: ""}
 
 	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
 	if state.agentSession == oldSess {
-		t.Fatal("expected stale agent to be recycled when AgentSessionID was cleared")
+		t.Fatal("expected stale agent to be recycled for a new logical session (#238)")
 	}
 	if state.agentSession != newSess {
 		t.Fatal("expected new agent session from StartSession")
@@ -8661,9 +8707,9 @@ func TestSessionClearedAfterNew_RecyclesAliveAgent(t *testing.T) {
 	}
 }
 
-// TestSessionMismatch_ReusesWhenIDsMatch verifies that getOrCreateInteractiveStateWith
-// returns the existing state when agent session IDs match (no unnecessary recycling).
-func TestSessionMismatch_ReusesWhenIDsMatch(t *testing.T) {
+// TestSessionReuse_SameLogicalSession verifies the live process is reused when it
+// still serves the active Session.ID (no unnecessary recycling).
+func TestSessionReuse_SameLogicalSession(t *testing.T) {
 	agent := &controllableAgent{}
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
@@ -8672,19 +8718,56 @@ func TestSessionMismatch_ReusesWhenIDsMatch(t *testing.T) {
 
 	existingSess := newControllableSession("matching-id")
 	existingState := &interactiveState{
-		agentSession: existingSess,
-		platform:     p,
-		replyCtx:     "ctx",
+		agentSession:    existingSess,
+		platform:        p,
+		replyCtx:        "ctx",
+		agent:           agent,
+		servedSessionID: "session-1",
 	}
 	e.interactiveMu.Lock()
 	e.interactiveStates[key] = existingState
 	e.interactiveMu.Unlock()
 
-	session := &Session{AgentSessionID: "matching-id"}
+	session := &Session{ID: "session-1", AgentSessionID: "matching-id"}
 
 	state := e.getOrCreateInteractiveStateWith(key, p, "ctx", session, e.sessions, nil, "")
 	if state != existingState {
-		t.Fatal("expected existing state to be reused when session IDs match")
+		t.Fatal("expected existing state to be reused for the same logical session")
+	}
+}
+
+// TestResetAllSessions_TearsDownLiveState verifies that a management-API provider
+// change (resetAllSessions) tears down live agent processes, so the reuse gate
+// cannot silently keep the old provider on the next turn.
+func TestResetAllSessions_TearsDownLiveState(t *testing.T) {
+	agent := &controllableAgent{}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	key := "test:user1"
+	liveSess := newControllableSession("live-id")
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = &interactiveState{
+		agentSession:    liveSess,
+		platform:        p,
+		replyCtx:        "ctx",
+		agent:           agent,
+		servedSessionID: "session-1",
+	}
+	e.interactiveMu.Unlock()
+
+	e.resetAllSessions()
+
+	e.interactiveMu.Lock()
+	_, present := e.interactiveStates[key]
+	e.interactiveMu.Unlock()
+	if present {
+		t.Fatal("expected interactive state to be removed after resetAllSessions")
+	}
+	select {
+	case <-liveSess.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("live agent session was not closed by resetAllSessions")
 	}
 }
 
