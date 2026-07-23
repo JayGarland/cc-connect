@@ -233,7 +233,10 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 		t.Fatalf("expected workspacePool to be initialized")
 	}
 
-	// We simulate a message in threadID "2793" with content "处理 L-0323"
+	// We simulate a message in threadID "2793" whose body mentions "L-0323".
+	// For a cooperative (empty-pattern) seat this is chat, not a dispatch route:
+	// the shard stays stable per-topic (L-2793) and does NOT hop to L-0323.
+	// Real dispatch lands each letter in its own topic and resolves via the ledger.
 	msg := &Message{
 		SessionKey: "telegram:-1003917051393:2793:7664413698",
 		ChannelKey: "-1003917051393:2793",
@@ -254,13 +257,15 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify that the workspace is L-0323 (derived from message hint)
-	if interactiveKey != "L-0323:telegram:-1003917051393:2793:7664413698" {
+	// The shard is the stable per-topic key L-2793 (from threadID), NOT the
+	// L-0323 mentioned in the body — a free-text letter mention must not switch
+	// the cooperative seat's session shard.
+	if interactiveKey != "L-2793:telegram:-1003917051393:2793:7664413698" {
 		t.Errorf("unexpected interactiveKey: %q", interactiveKey)
 	}
 
-	// The effective directory should NOT be the virtual workspace "L-0323"
-	// but the agent's workdir because "L-0323" is not an absolute path.
+	// The effective directory should NOT be the virtual workspace "L-2793"
+	// but the agent's workdir because "L-2793" is not an absolute path.
 	if effectiveDir != dummyWorkDir {
 		t.Errorf("effectiveDir = %q, want %q", effectiveDir, dummyWorkDir)
 	}
@@ -318,12 +323,16 @@ func TestWorkspacePattern_EmptyThreadIDBypass(t *testing.T) {
 		t.Fatalf("resolveWorkspacePattern with empty threadID (pattern with LETTER_ID) = %q, want %q", got1, want1)
 	}
 
-	// Scenario 2: dispatchTopicIsolation is true (and workspacePattern is empty)
+	// Scenario 2: empty-pattern dispatchTopicIsolation seat (cooperative chat seat)
+	// in a DM. A letter mentioned in the message body must NOT switch the session
+	// shard — ad-hoc chat stays on the stable "general" session, it does not hop
+	// into that letter's (often empty) shard and cold-start (L-0587). Formal letter
+	// dispatch arrives on a topic and is resolved from the ledger, not free text.
 	e.SetWorkspacePattern("")
 	e.SetDispatchTopicIsolation(true)
-	want2 := "L-0319"
+	want2 := defaultDispatchWorkspaceKey
 	if got2 := e.resolveWorkspacePattern("", "process L-0319"); got2 != want2 {
-		t.Fatalf("resolveWorkspacePattern with empty threadID (dispatchTopicIsolation) = %q, want %q", got2, want2)
+		t.Fatalf("resolveWorkspacePattern with empty threadID + letter mention (dispatchTopicIsolation) = %q, want %q", got2, want2)
 	}
 
 	// Scenario 3: default case (returns "")
@@ -340,5 +349,30 @@ func TestWorkspacePattern_EmptyThreadIDBypass(t *testing.T) {
 	e.SetDispatchTopicIsolation(true)
 	if got4 := e.resolveWorkspacePattern("", "hi"); got4 != defaultDispatchWorkspaceKey {
 		t.Fatalf("resolveWorkspacePattern with empty threadID/no letter ID (dispatchTopicIsolation) = %q, want %q", got4, defaultDispatchWorkspaceKey)
+	}
+}
+
+// TestResolveWorkspacePattern_ChatLetterMentionDoesNotSwitchShard is the L-0587
+// regression: for an empty-pattern cooperative chat seat, a letter number that
+// merely appears in the message body must NOT redirect the session to that
+// letter's shard (which cold-starts and drops the ongoing conversation). The
+// session shard stays stable — "general" in a DM, "L-<threadID>" in a topic that
+// is not a dispatch target. Formal dispatch still routes via the ledger.
+func TestResolveWorkspacePattern_ChatLetterMentionDoesNotSwitchShard(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("product-manager", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern("") // cooperative chat seat: static work_dir, no per-letter worktree
+	e.SetDispatchTopicIsolation(true)
+
+	// DM (threadless): mentioning L-0587 stays on the stable "general" shard.
+	if got := e.resolveWorkspacePattern("", "看看 L-0587 那封信"); got != defaultDispatchWorkspaceKey {
+		t.Fatalf("DM letter mention = %q, want %q (must not switch shard)", got, defaultDispatchWorkspaceKey)
+	}
+
+	// Topic with no ledger entry: mentioning L-0587 stays on the per-topic shard
+	// L-<threadID>, not the mentioned letter's shard.
+	if got := e.resolveWorkspacePattern("5720", "看看 L-0587 那封信"); got != "L-5720" {
+		t.Fatalf("topic letter mention = %q, want %q (must not switch shard)", got, "L-5720")
 	}
 }
