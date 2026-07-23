@@ -18016,6 +18016,13 @@ func (e *Engine) appendRehydrationEnv(envVars []string, ccSessionKey, workspaceD
 	return envVars
 }
 
+// defaultDispatchWorkspaceKey is the fallback session key for dispatch-topic-isolation
+// seats when a message has neither a Telegram thread (General topic, private DM) nor an
+// extractable L-XXXX letter ID. It is not an absolute path, so getOrCreateWorkspaceAgent
+// runs it against the seat's static work_dir instead of a git worktree — plain ad-hoc
+// chat gets its own persistent session without requiring a workspace binding.
+const defaultDispatchWorkspaceKey = "general"
+
 func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) string {
 	if strings.TrimSpace(threadID) == "" {
 		if e.workspacePattern != "" && !strings.Contains(e.workspacePattern, "{{THREAD_ID}}") && strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
@@ -18027,6 +18034,7 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			if letterID := ExtractLetterIDFromText(messageHint); letterID != "" {
 				return letterID
 			}
+			return defaultDispatchWorkspaceKey
 		}
 		return ""
 	}

@@ -332,4 +332,13 @@ func TestWorkspacePattern_EmptyThreadIDBypass(t *testing.T) {
 	if got3 := e.resolveWorkspacePattern("", "process L-0319"); got3 != "" {
 		t.Fatalf("resolveWorkspacePattern with empty threadID (default fallback) = %q, want empty", got3)
 	}
+
+	// Scenario 4: dispatchTopicIsolation is true, message has no letter ID —
+	// falls back to the shared default key instead of "" (L-0570 follow-up:
+	// plain ad-hoc chat in General/private DM must not demand /workspace init).
+	e.SetWorkspacePattern("")
+	e.SetDispatchTopicIsolation(true)
+	if got4 := e.resolveWorkspacePattern("", "hi"); got4 != defaultDispatchWorkspaceKey {
+		t.Fatalf("resolveWorkspacePattern with empty threadID/no letter ID (dispatchTopicIsolation) = %q, want %q", got4, defaultDispatchWorkspaceKey)
+	}
 }
