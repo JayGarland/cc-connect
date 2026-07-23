@@ -596,6 +596,16 @@ type interactiveState struct {
 	// currentTurnUserMessageTimeMs is the UserMessageTimeMs for the in-flight
 	// foreground turn (including a queued turn after EventResult).
 	currentTurnUserMessageTimeMs int64
+
+	// servedSessionID is the stable logical Session.ID this live agent process
+	// was spawned to serve. It is set once at spawn and never changes for the
+	// life of the process. The agent's own Claude session_id forks on every
+	// --resume; that fork must NOT be used to decide whether to keep a healthy
+	// process alive (doing so silently cold-starts and drops context). Reuse is
+	// gated on servedSessionID == active Session.ID instead — Session.ID never
+	// forks, so the decision is race-free. Empty means "unknown" (legacy /
+	// placeholder state) and is treated as a match to stay backward-safe.
+	servedSessionID string
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
@@ -4566,26 +4576,33 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 
 	state, ok := e.interactiveStates[sessionKey]
 	if ok && state.agentSession != nil && state.agentSession.Alive() {
-		// Verify the running agent session matches the current active session.
-		// After /new or /switch the active session changes, but the old agent
-		// process may still be alive. Reusing it would send messages to the
-		// wrong conversation context.
-		wantID := session.GetAgentSessionID()
-		currentID := state.agentSession.CurrentSessionID()
-		// Reuse only when the live process matches what the Session expects:
-		// - IDs match (same Claude session), or
-		// - the process has not reported an ID yet (startup; empty want is OK).
-		// If wantID is empty (/new, cleared session) but the process already has
-		// a concrete ID, reusing would keep --resume context — recycle (#238).
-		needRecycle := currentID != "" && (wantID == "" || wantID != currentID)
-		if !needRecycle {
+		// Decide reuse vs recycle by LOGICAL session identity, not by comparing
+		// the agent's Claude session_id. That id forks on every --resume, and the
+		// persisted "want" id (session.AgentSessionID) only catches up when a turn
+		// reaches a clean EventResult — so a string comparison races the fork and
+		// silently kills a healthy process on the very next message, cold-starting
+		// and dropping the whole conversation. Session.ID never forks: reuse while
+		// this process still serves the active logical session; recycle only when
+		// the active session genuinely changed (a session switch — /new tears the
+		// state down separately and never reaches here with a live match).
+		sameLogicalSession := state.servedSessionID == "" || state.servedSessionID == session.ID
+		if sameLogicalSession {
+			// Adopt the live process's current (possibly forked) id so a later
+			// cold-start after this process dies resumes from the right node.
+			// In-memory only — no disk IO under interactiveMu; the turn's own
+			// EventResult write-back persists it (engine.go ~line 6144).
+			if currentID := state.agentSession.CurrentSessionID(); currentID != "" && currentID != session.GetAgentSessionID() {
+				session.SetAgentSessionID(currentID, state.agent.Name())
+			}
 			return state
 		}
-		// Tear down the stale agent so we start one that matches the Session below.
-		slog.Info("interactive session mismatch, recycling",
+		// Active logical session changed (session switch) — tear down the stale
+		// agent so we start one bound to the now-active Session below.
+		slog.Info("interactive session switch, recycling",
 			"session_key", sessionKey,
-			"want_agent_session", wantID,
-			"have_agent_session", currentID,
+			"served_session", state.servedSessionID,
+			"active_session", session.ID,
+			"have_agent_session", state.agentSession.CurrentSessionID(),
 		)
 		e.stopUnsolicitedReader(state)
 		state.markStopped()
@@ -4776,6 +4793,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		replyCtx:         replyCtx,
 		agent:            agent,
 		eventsNeedResync: true,
+		servedSessionID:  session.ID,
 	}
 	adoptPendingFromPlaceholder(e.interactiveStates[sessionKey], newState)
 	state = newState
@@ -12186,6 +12204,20 @@ func (e *Engine) resetAllSessions() {
 		s.ClearHistory()
 	}
 	e.sessions.Save()
+	// Tear down every live agent process so the provider/model change takes
+	// effect on the next turn. The reuse gate keys on the logical Session.ID
+	// (not the cleared agent id), so without an explicit teardown it would reuse
+	// the running process and silently keep the old provider. This mirrors the
+	// per-session switchProvider path, which already calls cleanupInteractiveState.
+	e.interactiveMu.Lock()
+	keys := make([]string, 0, len(e.interactiveStates))
+	for k := range e.interactiveStates {
+		keys = append(keys, k)
+	}
+	e.interactiveMu.Unlock()
+	for _, k := range keys {
+		e.cleanupInteractiveState(k)
+	}
 }
 
 func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManager, switcher ProviderSwitcher, name string) {
