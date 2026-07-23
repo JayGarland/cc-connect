@@ -235,7 +235,7 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 
 	// We simulate a message in threadID "2793" whose body mentions "L-0323".
 	// For a cooperative (empty-pattern) seat this is chat, not a dispatch route:
-	// the shard stays stable per-topic (L-2793) and does NOT hop to L-0323 (L-0587).
+	// the shard stays stable per-topic (L-2793) and does NOT hop to L-0323.
 	// Real dispatch lands each letter in its own topic and resolves via the ledger.
 	msg := &Message{
 		SessionKey: "telegram:-1003917051393:2793:7664413698",
@@ -259,7 +259,7 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 
 	// The shard is the stable per-topic key L-2793 (from threadID), NOT the
 	// L-0323 mentioned in the body — a free-text letter mention must not switch
-	// the cooperative seat's session shard (L-0587).
+	// the cooperative seat's session shard.
 	if interactiveKey != "L-2793:telegram:-1003917051393:2793:7664413698" {
 		t.Errorf("unexpected interactiveKey: %q", interactiveKey)
 	}
