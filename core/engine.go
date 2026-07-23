@@ -12211,12 +12211,19 @@ func (e *Engine) resetAllSessions() {
 	// per-session switchProvider path, which already calls cleanupInteractiveState.
 	e.interactiveMu.Lock()
 	keys := make([]string, 0, len(e.interactiveStates))
-	for k := range e.interactiveStates {
+	states := make([]*interactiveState, 0, len(e.interactiveStates))
+	for k, st := range e.interactiveStates {
 		keys = append(keys, k)
+		states = append(states, st)
 	}
 	e.interactiveMu.Unlock()
-	for _, k := range keys {
-		e.cleanupInteractiveState(k)
+	// Pass the captured state as the expected pointer: cleanupInteractiveState
+	// only CAS-guards its final delete when expected is set. Without it, a turn
+	// that replaces this key while our Close() is in flight would be clobbered by
+	// an unconditional delete — orphaning a fresh live process (the very
+	// silent-drop this change prevents).
+	for i, k := range keys {
+		e.cleanupInteractiveState(k, states[i])
 	}
 }
 
