@@ -501,9 +501,10 @@ type Engine struct {
 	chatHistorySync bool
 	chatHistory     *ChatHistoryWriter
 
-	dispatchConfig         DispatchConfig
-	dispatchStore          *dispatchStore
-	dispatchWatcherStarted bool
+	dispatchConfig          DispatchConfig
+	dispatchStore           *dispatchStore
+	dispatchWatcherStarted  bool
+	topicLetterBindingStore *topicLetterBindingStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
@@ -18088,8 +18089,22 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			// scraped from the message body — that let ad-hoc chat mentioning a
 			// letter hop shards and cold-start (L-0587).
 			letterID := e.findLetterIDByTopic(threadID)
+			ledgerHit := letterID != ""
+			if !ledgerHit {
+				// Ledger miss: this topic was never [DISPATCH]-registered. Stay
+				// pinned to whatever this topic already resolved to before,
+				// rather than recomputing "L-"+threadID fresh (a no-op here since
+				// threadID is stable, but kept symmetric with the {{LETTER_ID}}
+				// branch below where the fallback source can otherwise vary).
+				if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
+					letterID = bound
+				}
+			}
 			if letterID == "" {
 				letterID = "L-" + threadID
+			}
+			if !ledgerHit {
+				e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 			}
 			return letterID
 		}
@@ -18103,11 +18118,28 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 		// empty-pattern cooperative chat seats above, where a letter mention is
 		// just conversation and must not switch shards (L-0587).
 		letterID := e.findLetterIDByTopic(threadID)
+		ledgerHit := letterID != ""
+		if !ledgerHit {
+			// Ledger miss: this topic's letter was never [DISPATCH]-registered
+			// (a real, recurring gap — e.g. general_topic_intake seats accept
+			// pursuit continuations in topics the ledger never saw). Once this
+			// topic has resolved to a letter before, stay pinned to it: recomputing
+			// from free text on every message means an ambiguous later message
+			// (e.g. "continue 650", which matches neither the L-XXXX text pattern
+			// nor anything but the threadID fallback) would silently reroute an
+			// established topic onto a brand-new, disconnected worktree.
+			if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
+				letterID = bound
+			}
+		}
 		if letterID == "" && messageHint != "" {
 			letterID = ExtractLetterIDFromText(messageHint)
 		}
 		if letterID == "" {
 			letterID = "L-" + threadID
+		}
+		if !ledgerHit {
+			e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 		}
 		workspace = strings.ReplaceAll(workspace, "{{LETTER_ID}}", letterID)
 	}

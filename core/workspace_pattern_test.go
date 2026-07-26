@@ -53,6 +53,139 @@ func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
 	}
 }
 
+// TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry reproduces
+// the bug reported against the resonova-pipeline-controller thread: a topic
+// whose letter was never registered in the dispatch ledger (a real, recurring
+// gap for pattern seats fed by ad-hoc pursuit continuations, not just fresh
+// [DISPATCH]) resolved a workspace from the first message that named the
+// letter in text, but a LATER message in the same topic that failed to match
+// the L-XXXX text pattern (e.g. "continue from where 650 stopped" — bare
+// "650", no "L-" prefix, only 3 digits) fell through to fabricating
+// "L-"+threadID, silently routing into a brand-new, disconnected worktree
+// instead of the one already in progress. Once a topic resolves, it must stay
+// pinned regardless of what later messages say.
+func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
+
+	const threadID = "6031"
+	want := filepath.Join(root, "worktrees", "letter-L-0650")
+
+	// First message names the letter explicitly; no ledger entry exists (this
+	// topic's whole letter lineage was never [DISPATCH]-registered).
+	if got := e.resolveWorkspacePattern(threadID, "L-0650 Step 0-B/C landed"); got != want {
+		t.Fatalf("first resolution = %q, want %q", got, want)
+	}
+
+	// A resume after a crash/quota-cut, phrased without the "L-" prefix and
+	// without 4+ digits, must NOT fall back to "L-"+threadID — it must stay
+	// on the worktree this topic already resolved to.
+	if got := e.resolveWorkspacePattern(threadID, "continue from where 650 stopped"); got != want {
+		t.Fatalf("resume with bare '650' = %q, want %q (must stay pinned, not fabricate L-%s)", got, want, threadID)
+	}
+
+	// No hint at all: still pinned.
+	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
+		t.Fatalf("resume with no hint = %q, want %q", got, want)
+	}
+
+	// Even a message that names a DIFFERENT, well-formed letter must not hop
+	// this established topic onto a new shard — one topic, one decider,
+	// decided once. (A genuine new letter gets its own new topic per the
+	// existing letter-per-topic dispatch convention; it does not reuse this
+	// topic's thread ID.)
+	if got := e.resolveWorkspacePattern(threadID, "L-9999"); got != want {
+		t.Fatalf("resume mentioning a different letter = %q, want %q (must stay pinned)", got, want)
+	}
+}
+
+// TestWorkspacePatternFirstResolutionViaFallbackStaysPinned covers the case
+// where even the FIRST message in a brand-new topic fails to name a letter:
+// the threadID-based fallback fires once, and must be remembered from then
+// on rather than re-derived (which would be a no-op here since threadID is
+// stable, but this guards the invariant explicitly rather than relying on
+// coincidence).
+func TestWorkspacePatternFirstResolutionViaFallbackStaysPinned(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
+
+	const threadID = "7777"
+	want := filepath.Join(root, "worktrees", "letter-L-7777")
+
+	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
+		t.Fatalf("first resolution (no hint) = %q, want %q", got, want)
+	}
+	if got := e.resolveWorkspacePattern(threadID, "L-0158"); got != want {
+		t.Fatalf("later message naming an unrelated letter = %q, want %q (must stay pinned)", got, want)
+	}
+
+	bound := e.ensureTopicLetterBindingStore().lookup("dev-pro", threadID)
+	if bound != "L-7777" {
+		t.Fatalf("persisted binding = %q, want %q", bound, "L-7777")
+	}
+}
+
+// TestWorkspacePatternLedgerAlwaysWinsOverBinding confirms the dispatch
+// ledger remains authoritative: if a topic is (later) properly
+// [DISPATCH]-registered, the ledger's answer must be used even if an earlier
+// ledger-miss already pinned this topic to a fallback ID.
+func TestWorkspacePatternLedgerAlwaysWinsOverBinding(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
+
+	const threadID = "8888"
+	fallbackWant := filepath.Join(root, "worktrees", "letter-L-8888")
+	if got := e.resolveWorkspacePattern(threadID, ""); got != fallbackWant {
+		t.Fatalf("first resolution (ledger miss) = %q, want %q", got, fallbackWant)
+	}
+
+	if err := e.ensureDispatchStore().upsert(DispatchExpectation{
+		Letter:          "L-0200",
+		To:              "dev-pro",
+		TopicID:         threadID,
+		TopicSessionKey: "telegram:-1003917051393:" + threadID + ":7664413698",
+		State:           dispatchStateDispatched,
+	}); err != nil {
+		t.Fatalf("upsert dispatch expectation: %v", err)
+	}
+
+	ledgerWant := filepath.Join(root, "worktrees", "letter-L-0200")
+	if got := e.resolveWorkspacePattern(threadID, ""); got != ledgerWant {
+		t.Fatalf("resolution after ledger registration = %q, want %q (ledger must win over a stale fallback binding)", got, ledgerWant)
+	}
+}
+
+// TestWorkspacePatternEmptyPatternDispatchTopicIsolationStaysPinned covers the
+// sibling fallback branch (workspacePattern == "" with dispatchTopicIsolation)
+// for symmetry: it also writes through ensureTopicLetterBindingStore on a
+// ledger miss, even though "L-"+threadID is already deterministic here, so
+// the two branches don't silently diverge in behavior over time.
+func TestWorkspacePatternEmptyPatternDispatchTopicIsolationStaysPinned(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
+	e.SetDataDir(root)
+	e.SetDispatchTopicIsolation(true)
+
+	const threadID = "9999"
+	want := "L-9999"
+	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
+		t.Fatalf("first resolution = %q, want %q", got, want)
+	}
+	bound := e.ensureTopicLetterBindingStore().lookup("dev-pro", threadID)
+	if bound != want {
+		t.Fatalf("persisted binding = %q, want %q", bound, want)
+	}
+	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
+		t.Fatalf("second resolution = %q, want %q", got, want)
+	}
+}
+
 func TestWorkspacePatternHelpers(t *testing.T) {
 	// Test extractThreadID
 	if got := extractThreadID("chatID:123"); got != "123" {
@@ -202,11 +335,20 @@ func TestResolveWorkspacePattern_ManualDispatchUsesMessageHint(t *testing.T) {
 		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "letter/L-0313")
 	}
 
-	// Without message hint, falls back to L-<topicID> (existing behavior)
-	wantFallback := filepath.Join(root, "worktrees", "letter-L-2793")
+	// A later message in the SAME topic with no hint must stay pinned to the
+	// letter this topic already resolved to (L-0313), not refabricate
+	// L-<topicID>. This supersedes the pre-topic-letter-binding assertion here
+	// (which fell back to L-2793 and documented that as merely "existing
+	// behavior", not a protected contract): that fallback was the same
+	// defect class as the one this test's own commit (L-0320) fixed for the
+	// hint-present case, just uncaught for the hint-dropped case — see the
+	// resonova-pipeline-controller topic-binding fix. No observed production
+	// dispatch ever reuses one Telegram topic ID across two different
+	// letters, so a topic staying pinned to its first-resolved letter is the
+	// correct invariant, not a regression.
 	gotFallback := e.resolveWorkspacePattern("2793", "")
-	if gotFallback != wantFallback {
-		t.Fatalf("resolveWorkspacePattern(no hint) = %q, want %q", gotFallback, wantFallback)
+	if gotFallback != want {
+		t.Fatalf("resolveWorkspacePattern(no hint, same topic) = %q, want %q (must stay pinned to L-0313)", gotFallback, want)
 	}
 }
 
