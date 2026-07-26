@@ -9336,11 +9336,16 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 			// so once store.Get observes a non-zero LastRun the write has already
 			// landed. Wait for that to join the writer before returning.
 			runDeadline := time.Now().Add(2 * time.Second)
+			gotRun := false
 			for time.Now().Before(runDeadline) {
 				if j := store.Get(job.ID); j != nil && !j.LastRun.IsZero() {
+					gotRun = true
 					break
 				}
 				time.Sleep(10 * time.Millisecond)
+			}
+			if !gotRun {
+				t.Fatalf("timed out waiting for cron store markrun, job=%+v", store.Get(job.ID))
 			}
 		})
 	}
