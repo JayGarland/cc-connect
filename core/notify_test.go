@@ -983,6 +983,62 @@ func TestNotifyReconcilesOpenReceiptWithoutCardAfterRestart(t *testing.T) {
 	}
 }
 
+// TestCheckNewResultsFreshSaveDoesNotClobberConcurrentReconcileWrite is a
+// regression test for L-0654: checkNewResults loads one top-level ledger
+// snapshot, then calls reconcilePendingInboxDeliveries(ledger), which reuses
+// notifyLetterArrived and durably records a Telegram card locator on disk
+// through its own independently-locked load/mutate/save cycle
+// (recordArrivalTransition + storeReceiptCard). The old code then reached the
+// `len(fresh) > 0` branch later in the same call and saved back its
+// load-time-stale snapshot — silently reverting the card locator
+// reconcilePendingInboxDeliveries had just written moments earlier. This
+// simulates exactly that ordering: an orphaned receipt (Card == nil,
+// ClosedAt == "") that reconcilePendingInboxDeliveries recovers, in the same
+// tick a brand-new RESULT file arrives to force the fresh-save branch.
+func TestCheckNewResultsFreshSaveDoesNotClobberConcurrentReconcileWrite(t *testing.T) {
+	root := t.TempDir()
+	threadsDir := filepath.Join(root, "threads")
+	indexPath := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(indexPath, []byte("# Archive INDEX\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.dataDir = root
+	e.configureNotify(NotifyConfig{Enabled: true, TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123", IndexPath: indexPath})
+
+	// Seed the ledger with one pre-existing result so the next scan takes the
+	// steady-state branch rather than the first-run seed branch.
+	writeResultFile(t, threadsDir, "alpha", "L-0100", "## Conclusion\nseed\n")
+	e.checkNewResults()
+
+	// A receipt recorded durably (e.g. before a crash) but never given a
+	// Telegram card — exactly what reconcilePendingInboxDeliveries recovers.
+	if err := e.notifyStore.recordArrival(indexResultRow{
+		Letter: "L-0200", Thread: "beta", Status: "DONE", Summary: "orphaned",
+		Path: filepath.Join(threadsDir, "beta", "L-0200.result.md"),
+	}); err != nil {
+		t.Fatalf("record arrival: %v", err)
+	}
+
+	// A brand-new result file in the same tick pushes checkNewResults into
+	// the `len(fresh) > 0` save branch after reconcilePendingInboxDeliveries
+	// (invoked earlier in the same call) has already written L-0200's card.
+	writeResultFile(t, threadsDir, "alpha", "L-0101", "## Conclusion\nbrand new\n")
+	e.checkNewResults()
+
+	if p.receiptCardsSent == 0 {
+		t.Fatal("expected reconcilePendingInboxDeliveries to send a recovery card for the orphaned receipt")
+	}
+	got, err := e.notifyStore.load()
+	if err != nil {
+		t.Fatalf("load ledger: %v", err)
+	}
+	if got.Receipts["L-0200"].Card == nil {
+		t.Fatal("checkNewResults' fresh-branch save clobbered the card reconcilePendingInboxDeliveries just wrote (L-0654 race)")
+	}
+}
+
 // TestReconcileClosedReceiptsEditsCardForScriptDrivenClose is a regression
 // test for L-0651: archive-daily.ps1 -Close writes the CLOSED row directly
 // to INDEX.md without ever calling into cc-connect, so a letter closed via

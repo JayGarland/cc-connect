@@ -405,6 +405,33 @@ func (s *notifyStore) save(ledger notifyLedger) error {
 	return AtomicWriteFile(s.path, data, 0o644)
 }
 
+// mutate loads the ledger fresh under s.mu, applies fn, and saves the
+// result — the same lock/load/mutate/save contract every other notifyStore
+// writer (recordArrivalTransition, storeReceiptCard, acknowledge, markClosed)
+// already follows. checkNewResults used to bypass this contract: it loaded
+// once at the top of the function, let reconcilePendingInboxDeliveries make
+// its own independent locked Receipts writes in between, then saved back its
+// own stale top-of-function snapshot — silently reverting whatever Receipts
+// changes had just landed on disk (L-0654). Callers now save only the delta
+// they computed, applied on top of a fresh reload, so a concurrent locked
+// writer's changes in the gap survive.
+func (s *notifyStore) mutate(fn func(*notifyLedger)) (notifyLedger, error) {
+	if s == nil {
+		return notifyLedger{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger, err := s.load()
+	if err != nil {
+		return notifyLedger{}, err
+	}
+	fn(&ledger)
+	if err := s.save(ledger); err != nil {
+		return notifyLedger{}, err
+	}
+	return ledger, nil
+}
+
 func loadLegacyNotifyLedger(path string) (notifyLedger, error) {
 	ledger := notifyLedger{Notified: map[string]string{}, Receipts: map[string]receiptRecord{}}
 	data, err := os.ReadFile(path)
@@ -1195,16 +1222,24 @@ func (e *Engine) checkNewResults() {
 	// First run: seed every existing file without notifying, or the whole
 	// archive history would fire at once.
 	if !ledger.Seeded {
+		seeded := make(map[string]string, len(files))
 		for _, f := range files {
-			ledger.Notified[f.Letter] = f.ModTime.Format(time.RFC3339Nano)
+			seeded[f.Letter] = f.ModTime.Format(time.RFC3339Nano)
 			if body, readErr := os.ReadFile(f.Path); readErr != nil {
 				slog.Warn("notify: failed to seed diff base", "letter", f.Letter, "error", readErr)
 			} else if _, baseErr := e.notifyStore.updateDiffBase(f.Letter, body); baseErr != nil {
 				slog.Warn("notify: failed to seed diff base", "letter", f.Letter, "error", baseErr)
 			}
 		}
-		ledger.Seeded = true
-		if err := e.notifyStore.save(ledger); err != nil {
+		// Apply only the Notified/Seeded delta onto a freshly reloaded
+		// ledger (via mutate) instead of save(ledger) with this call's
+		// load-time snapshot — see mutate's doc comment (L-0654).
+		if _, err := e.notifyStore.mutate(func(l *notifyLedger) {
+			for letter, ts := range seeded {
+				l.Notified[letter] = ts
+			}
+			l.Seeded = true
+		}); err != nil {
 			slog.Warn("notify: failed to seed ledger", "error", err)
 		}
 		slog.Info("notify: ledger seeded", "files", len(files))
@@ -1224,7 +1259,21 @@ func (e *Engine) checkNewResults() {
 	if len(fresh) == 0 {
 		return
 	}
-	if err := e.notifyStore.save(ledger); err != nil {
+	// scanNewResultFiles already wrote these Notified entries into the
+	// ledger snapshot loaded at the top of this function; capture just that
+	// delta and apply it on top of a fresh reload (via mutate) rather than
+	// saving back the whole stale snapshot, which would otherwise silently
+	// revert any Receipts write reconcilePendingInboxDeliveries made above
+	// in the interim (L-0654).
+	notifiedDelta := make(map[string]string, len(fresh))
+	for _, f := range fresh {
+		notifiedDelta[f.Letter] = ledger.Notified[f.Letter]
+	}
+	if _, err := e.notifyStore.mutate(func(l *notifyLedger) {
+		for letter, ts := range notifiedDelta {
+			l.Notified[letter] = ts
+		}
+	}); err != nil {
 		slog.Warn("notify: failed to save ledger", "error", err)
 		return
 	}
