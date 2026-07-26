@@ -515,6 +515,24 @@ func TestMarkdownToSimpleHTML_TableCellWithLink(t *testing.T) {
 	}
 }
 
+// TestMarkdownToSimpleHTML_TableCJKAlignment regresses a real misalignment:
+// before the East-Asian-Wide-aware width fix, tableCellVisualWidth counted
+// "调试" (2 wide runes, 4 monospace cells) as width 2, so it was over-padded
+// by 4 spaces to match a same-column "AAAAAA" (width 6) cell — pushing the
+// following " | " separator two cells too far right and breaking column
+// alignment in Chinese-language reports. With the fix, "调试" is measured at
+// width 4 and padded by only 2 spaces, landing flush with "AAAAAA".
+func TestMarkdownToSimpleHTML_TableCJKAlignment(t *testing.T) {
+	md := "| Name | Val |\n|---|---|\n| AAAAAA | 调试 |\n| B | 状态机丙 |"
+	out := MarkdownToSimpleHTML(md)
+	if !strings.Contains(out, "AAAAAA | 调试    ") {
+		t.Errorf("expected 调试 padded by 2 spaces (width 4 -> col width 8), got %q", out)
+	}
+	if !strings.Contains(out, "B      | 状态机丙") {
+		t.Errorf("expected 状态机丙 (width 8) to set the column width with no padding, got %q", out)
+	}
+}
+
 func TestTableCellVisualWidth(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -527,7 +545,8 @@ func TestTableCellVisualWidth(t *testing.T) {
 		{"~~hunt~~", 4},
 		{"***hunt***", 4},
 		{"[Waza](https://github.com/tw93/Waza)", 4},
-		{"调试错误", 4}, // 4 runes, regardless of UTF-8 byte count
+		{"调试错误", 8}, // 4 East-Asian-Wide runes, each occupies 2 monospace cells
+		{"L-0585", 6}, // ASCII stays 1 cell per rune even when mixed with CJK columns
 		{"normal", 6},
 		{"", 0},
 	}

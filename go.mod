@@ -18,6 +18,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/slack-go/slack v0.16.0
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/text v0.36.0
 	maunium.net/go/mautrix v0.27.0
 	modernc.org/sqlite v1.49.1
 	rsc.io/qr v0.2.0
@@ -66,7 +67,6 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.42.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

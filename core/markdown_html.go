@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/text/width"
 )
 
 // MarkdownToSimpleHTML converts common Markdown to a simplified HTML subset.
@@ -515,18 +517,16 @@ func escapeHTML(s string) string {
 	return s
 }
 
-// tableCellVisualWidth returns the rune count of `cell` after stripping the
-// markdown markers that convertInlineHTML would remove when rendering. Used
-// to compute column widths for <pre>-wrapped tables so that ` | ` separators
-// still line up even though the rendered HTML bytes are longer than the
-// visible text.
+// tableCellVisualWidth returns the monospace display width of `cell` after
+// stripping the markdown markers that convertInlineHTML would remove when
+// rendering. Used to compute column widths for <pre>-wrapped tables so that
+// ` | ` separators still line up even though the rendered HTML bytes are
+// longer than the visible text.
 //
-// This is deliberately approximate: it counts each rune as one column, so
-// East-Asian wide characters (which occupy two monospace cells on most
-// clients) will misalign by the same amount the previous byte-based code
-// did. Callers that need exact visual width can switch to unicode width
-// tables later; this helper's contract is "strip formatting markers, count
-// runes".
+// East-Asian Wide and Fullwidth runes (CJK ideographs, fullwidth forms, etc.)
+// occupy two monospace cells on Telegram clients, so each counts as 2; every
+// other rune (including Ambiguous-width ones, per the common terminal-width
+// convention) counts as 1.
 func tableCellVisualWidth(cell string) int {
 	// Strip bold ***x***, **x**, __x__ and bold-italic.
 	cell = reBoldItalicHTML.ReplaceAllString(cell, "$1")
@@ -542,7 +542,17 @@ func tableCellVisualWidth(cell string) int {
 	// swallow the boundary on replace. Use a local, boundary-free pattern
 	// since cell content is already trimmed and we only need to drop *x*.
 	cell = reTableCellItalic.ReplaceAllString(cell, "$1")
-	return utf8.RuneCountInString(cell)
+
+	total := 0
+	for _, r := range cell {
+		switch width.LookupRune(r).Kind() {
+		case width.EastAsianWide, width.EastAsianFullwidth:
+			total += 2
+		default:
+			total++
+		}
+	}
+	return total
 }
 
 // reTableCellItalic is used ONLY by tableCellVisualWidth to strip `*x*` from
