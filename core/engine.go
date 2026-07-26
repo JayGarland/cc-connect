@@ -501,9 +501,10 @@ type Engine struct {
 	chatHistorySync bool
 	chatHistory     *ChatHistoryWriter
 
-	dispatchConfig         DispatchConfig
-	dispatchStore          *dispatchStore
-	dispatchWatcherStarted bool
+	dispatchConfig          DispatchConfig
+	dispatchStore           *dispatchStore
+	dispatchWatcherStarted  bool
+	topicLetterBindingStore *topicLetterBindingStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
@@ -18088,8 +18089,22 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			// scraped from the message body — that let ad-hoc chat mentioning a
 			// letter hop shards and cold-start (L-0587).
 			letterID := e.findLetterIDByTopic(threadID)
+			ledgerHit := letterID != ""
+			if !ledgerHit {
+				// Ledger miss: this topic was never [DISPATCH]-registered. Stay
+				// pinned to whatever this topic already resolved to before,
+				// rather than recomputing "L-"+threadID fresh (a no-op here since
+				// threadID is stable, but kept symmetric with the {{LETTER_ID}}
+				// branch below where the fallback source can otherwise vary).
+				if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
+					letterID = bound
+				}
+			}
 			if letterID == "" {
 				letterID = "L-" + threadID
+			}
+			if !ledgerHit {
+				e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 			}
 			return letterID
 		}
@@ -18103,11 +18118,35 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 		// empty-pattern cooperative chat seats above, where a letter mention is
 		// just conversation and must not switch shards (L-0587).
 		letterID := e.findLetterIDByTopic(threadID)
-		if letterID == "" && messageHint != "" {
+		ledgerHit := letterID != ""
+		if !ledgerHit && messageHint != "" {
+			// An explicit, well-formed letter mention is a deliberate manual
+			// redirect (L-0320) and must win immediately, even for a topic that
+			// already has a remembered binding — dropping this would silently
+			// remove the manual-dispatch feature.
 			letterID = ExtractLetterIDFromText(messageHint)
+		}
+		if !ledgerHit && letterID == "" {
+			// Ledger miss AND no extractable letter in this message: this is the
+			// ambiguous-continuation case (e.g. "continue from where 650 stopped"
+			// — no "L-" prefix, only 3 digits, matches none of the extraction
+			// regexes). Stay pinned to whatever this topic last resolved to
+			// instead of fabricating "L-"+threadID, which would silently reroute
+			// an established topic onto a brand-new, disconnected worktree.
+			if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
+				letterID = bound
+			}
 		}
 		if letterID == "" {
 			letterID = "L-" + threadID
+		}
+		if !ledgerHit {
+			// Remember this resolution as the topic's new default, whether it
+			// came from an explicit mention (redirect) or the sticky binding
+			// (unchanged) or a first-ever fabrication. bind() upserts, so a later
+			// explicit redirect keeps updating what "ambiguous continuation"
+			// means for this topic going forward.
+			e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 		}
 		workspace = strings.ReplaceAll(workspace, "{{LETTER_ID}}", letterID)
 	}
