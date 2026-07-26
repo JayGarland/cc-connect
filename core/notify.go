@@ -1054,6 +1054,18 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 	return content, [][]ButtonOption{buttons, closeRow}
 }
 
+// formatClosedReceiptCard renders the terminal state of a receipt card once
+// the letter is CLOSED, regardless of which path closed it (Telegram 🔒封信
+// button or a direct archive-daily.ps1 -Close bypassing cc-connect, L-0651).
+// No buttons: every action the compact/pending-close cards offer (收件/交
+// 主秘书/🔒封信/page nav) is already gated off once ClosedAt is set (see the
+// ClosedAt guards atop showReceiptPage, closeReceiptFromInbox, etc.), so
+// re-showing them would only invite a click that dead-ends into
+// MsgReceiptUnavailable.
+func formatClosedReceiptCard(i18n *I18n, letter string) string {
+	return i18n.Tf(MsgReceiptCloseSuccess, letter)
+}
+
 // formatPendingCloseCard renders the minimal successor card posted after
 // 收件/交主秘书 acknowledges a letter that has not yet been closed (L-0455).
 // It carries only the 🔒封信 button so the close flow — deleted along with
@@ -1146,6 +1158,7 @@ func (e *Engine) runNotifyWatcher() {
 			return
 		case <-ticker.C:
 			e.checkNewResults()
+			e.reconcileClosedReceipts()
 		}
 	}
 }
@@ -1274,6 +1287,90 @@ func (e *Engine) reconcilePendingInboxDeliveries(ledger notifyLedger) {
 			Generation: record.Generation, OpenPoints: record.OpenPoints,
 			Update: record.Update,
 		})
+	}
+}
+
+// reconcileClosedReceipts detects INDEX.md CLOSED rows that a source other
+// than the Telegram 🔒封信 button produced — in practice Secretary/IDE running
+// archive-daily.ps1 -Close directly (L-0651). closeReceiptFromInbox already
+// keeps notifyStore and the Telegram card in sync for the button path; this
+// is the missing reader for the script-driven path, which writes INDEX.md
+// (the sole source of truth) without ever calling into cc-connect. It reuses
+// parseIndexRow — already trusted by /mail to recognize CLOSED rows — and
+// runs as its own ticker step (not folded into checkNewResults) so it always
+// loads a fresh ledger snapshot instead of racing checkNewResults' own
+// load-mutate-save sequence.
+func (e *Engine) reconcileClosedReceipts() {
+	if !e.notifyConfig.TelegramEnabled || strings.TrimSpace(e.notifyConfig.SessionKey) == "" {
+		return
+	}
+	indexPath := e.mailIndexPath()
+	if indexPath == "" {
+		return
+	}
+	tail := readTail(indexPath, mailDefaultTailLines)
+	if tail == "" {
+		return
+	}
+	ledger, err := e.notifyStore.load()
+	if err != nil {
+		slog.Warn("notify: failed to load ledger for closed reconciliation", "error", err)
+		return
+	}
+	for _, line := range strings.Split(tail, "\n") {
+		row, ok := parseIndexRow(line)
+		if !ok || row.typ != "CLOSED" {
+			continue
+		}
+		record, exists := ledger.Receipts[row.id]
+		if !exists || record.ClosedAt != "" {
+			continue
+		}
+		e.closeReceiptCard(row.id)
+	}
+}
+
+// closeReceiptCard marks a letter closed in notifyStore and edits its
+// Telegram card in place to the terminal "已封信" state — the same two
+// effects closeReceiptFromInbox produces for the button path (mark + edit),
+// so both paths converge on one visible end state. markClosed only ever
+// transitions ClosedAt from empty to set once (core/notify.go:586), so a
+// concurrent call from the button path racing this reconciliation step is a
+// safe no-op on whichever side loses the race.
+func (e *Engine) closeReceiptCard(letter string) {
+	record, changed, err := e.notifyStore.markClosed(letter)
+	if err != nil {
+		slog.Warn("notify: failed to mark receipt closed during reconciliation", "letter", letter, "error", err)
+		return
+	}
+	if !changed || record.Card == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	content := formatClosedReceiptCard(e.i18n, letter)
+	for _, p := range e.platforms {
+		if p.Name() != e.notifyConfig.Platform {
+			continue
+		}
+		cards, ok := p.(ReceiptCardManager)
+		if !ok {
+			return
+		}
+		if err := cards.UpdateReceiptCard(ctx, *record.Card, content, nil); err != nil {
+			// Editing an arbitrarily old card can fail (deleted, too old to
+			// edit, etc.) — degrade to best-effort removal rather than
+			// leaving a stale open-looking card with dead buttons behind
+			// (same degrade-on-edit-failure shape as L-0575's stale-card
+			// refresh and the replacement path in notifyLetterArrived).
+			slog.Warn("notify: failed to edit closed receipt card, deleting instead", "letter", letter, "error", err)
+			if deleter, ok := p.(ReceiptCardDeleter); ok {
+				if delErr := deleter.DeleteReceiptCard(ctx, *record.Card); delErr != nil {
+					slog.Warn("notify: failed to delete stale receipt card after edit failure", "letter", letter, "error", delErr)
+				}
+			}
+		}
+		return
 	}
 }
 

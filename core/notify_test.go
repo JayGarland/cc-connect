@@ -983,6 +983,103 @@ func TestNotifyReconcilesOpenReceiptWithoutCardAfterRestart(t *testing.T) {
 	}
 }
 
+// TestReconcileClosedReceiptsEditsCardForScriptDrivenClose is a regression
+// test for L-0651: archive-daily.ps1 -Close writes the CLOSED row directly
+// to INDEX.md without ever calling into cc-connect, so a letter closed via
+// Secretary/IDE (rather than the Telegram 🔒封信 button) used to leave the
+// Telegram card frozen at its pre-close state forever. reconcileClosedReceipts
+// is the missing reader for that write path.
+func TestReconcileClosedReceiptsEditsCardForScriptDrivenClose(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "INDEX.md")
+	indexBody := "# INDEX\n" +
+		"| L-0651 | QUERY | cc-connect-inbox-sync | ROOT | test query | 2026-07-26 |\n" +
+		"| L-0651 | RESULT | cc-connect-inbox-sync | ROOT | test result | 2026-07-26 |\n" +
+		"| L-0651 | CLOSED | cc-connect-inbox-sync | ROOT | closed via archive-daily.ps1 | 2026-07-26 |\n"
+	if err := os.WriteFile(indexPath, []byte(indexBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123", IndexPath: indexPath}
+
+	if err := e.notifyStore.recordArrival(indexResultRow{
+		Letter: "L-0651", Thread: "cc-connect-inbox-sync", Status: "DONE", Summary: "ready",
+		Path: filepath.Join(root, "L-0651.result.md"),
+	}); err != nil {
+		t.Fatalf("record arrival: %v", err)
+	}
+	if err := e.notifyStore.storeReceiptCard("L-0651", MessageLocator{Platform: "telegram", ChatID: 1, MessageID: 42}); err != nil {
+		t.Fatalf("store card: %v", err)
+	}
+
+	e.reconcileClosedReceipts()
+
+	if p.receiptCardsUpdated != 1 {
+		t.Fatalf("card updates = %d, want 1", p.receiptCardsUpdated)
+	}
+	if !strings.Contains(p.updatedContent, "L-0651") {
+		t.Fatalf("updated card content = %q, want it to reference L-0651", p.updatedContent)
+	}
+	if len(p.updatedButtons) != 0 {
+		t.Fatalf("closed card must have no buttons, got %#v", p.updatedButtons)
+	}
+	receipt, err := e.notifyStore.receipt("L-0651")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ClosedAt == "" {
+		t.Fatal("script-driven CLOSED row must mark the receipt closed")
+	}
+
+	// Idempotency: a second tick over the same INDEX.md must not re-edit
+	// the card or error (markClosed's ClosedAt guard makes this a no-op).
+	e.reconcileClosedReceipts()
+	if p.receiptCardsUpdated != 1 {
+		t.Fatalf("second reconciliation pass must be a no-op, card updates = %d", p.receiptCardsUpdated)
+	}
+}
+
+// TestReconcileClosedReceiptsDegradesToDeleteOnEditFailure is a regression
+// test for the graceful-degradation half of L-0651: an arbitrarily old card
+// (deleted, or past whatever edit window the platform enforces) cannot
+// always be edited in place. The reconciliation must still record the
+// closure and fall back to best-effort deletion rather than leaving a
+// stale, still-buttoned card behind forever.
+func TestReconcileClosedReceiptsDegradesToDeleteOnEditFailure(t *testing.T) {
+	root := t.TempDir()
+	indexPath := filepath.Join(root, "INDEX.md")
+	indexBody := "# INDEX\n| L-0651 | CLOSED | cc-connect-inbox-sync | ROOT | closed | 2026-07-26 |\n"
+	if err := os.WriteFile(indexPath, []byte(indexBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &receiptActionPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}, receiptCardUpdateErr: errors.New("message too old to edit")}
+	e := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.notifyStore = newNotifyStore(filepath.Join(root, "data"))
+	e.notifyConfig = NotifyConfig{TelegramEnabled: true, Platform: "telegram", SessionKey: "telegram:123:123", IndexPath: indexPath}
+
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0651", Thread: "cc-connect-inbox-sync", Status: "DONE"}); err != nil {
+		t.Fatalf("record arrival: %v", err)
+	}
+	if err := e.notifyStore.storeReceiptCard("L-0651", MessageLocator{Platform: "telegram", ChatID: 1, MessageID: 7}); err != nil {
+		t.Fatalf("store card: %v", err)
+	}
+
+	e.reconcileClosedReceipts()
+
+	receipt, err := e.notifyStore.receipt("L-0651")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ClosedAt == "" {
+		t.Fatal("closure must still be recorded even when the card edit fails")
+	}
+	if !p.deleted {
+		t.Fatal("failed edit must degrade to best-effort card deletion")
+	}
+}
+
 // TestNotifyLetterArrivedReopensPendingCloseCardInPlace is a regression test
 // for L-0478: a letter acknowledged into pending-close, then hit by a new
 // arrival generation (real revision or mtime-only touch that slipped past
