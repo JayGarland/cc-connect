@@ -2,14 +2,16 @@ package core
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
-// topicLetterBinding pins one Telegram topic (thread) to the letter ID its
-// pattern-seat workspace was first resolved to.
+// topicLetterBinding remembers the last letter ID a Telegram topic (thread)
+// resolved to, for a pattern-seat workspace whose letter couldn't be
+// determined from the dispatch ledger.
 //
 // This is deliberately separate from both dispatchStore (dispatch_expectations.json,
 // which drives QUERY/RESULT notification bookkeeping in outbox.go/notify.go and
@@ -17,7 +19,7 @@ import (
 // and WorkspaceBindingManager (workspace_bindings.json, the explicit /workspace
 // bind command for multiWorkspace seats, keyed by channelKey and consulted only
 // downstream of workspacePattern resolution). Neither fits: this store's one job
-// is pinning a pattern seat's {{LETTER_ID}} resolution per topic.
+// is remembering a pattern seat's {{LETTER_ID}} resolution per topic.
 //
 // Why it exists: findLetterIDByTopic reads the dispatch ledger, which is only
 // populated when a letter is dispatched through the strict [DISPATCH]
@@ -31,14 +33,17 @@ import (
 // resumed topic silently mints an unrelated new worktree instead of reusing
 // the one already in progress. That is the Cardinal Invariant violation
 // (durable identity from message content, not a stable key) that #54 already
-// closed for cooperative-chat (empty-pattern) seats; this closes the same
-// class for pattern seats, where a letter mention is legitimately allowed to
-// decide workspace routing (L-0320) but must only do so once per topic.
+// closed for cooperative-chat (empty-pattern) seats.
 //
-// The stable key is the Telegram thread ID. Message content (or the
-// threadID-fallback) may decide the FIRST resolution for a topic; after that,
-// the topic is pinned to whatever it first resolved to, exactly like a
-// ledger entry would be.
+// This closes the same class for pattern seats WITHOUT taking away the
+// existing manual-dispatch feature (L-0320): an explicit, well-formed letter
+// mention in the message body still redirects immediately (resolveWorkspacePattern
+// tries text extraction before consulting this store) and becomes the new
+// remembered default going forward (bind upserts, it does not lock in the
+// first resolution forever). This store is consulted only when the CURRENT
+// message fails to name a letter at all — that is the case that used to fall
+// through to fabricating "L-"+threadID instead of remembering what the topic
+// was already working on.
 type topicLetterBinding struct {
 	Project  string `json:"project"`
 	ThreadID string `json:"thread_id"`
@@ -84,15 +89,11 @@ func (s *topicLetterBindingStore) saveLocked(ledger topicLetterBindingLedger) er
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return AtomicWriteFile(s.path, data, 0o644)
 }
 
-// lookup returns the letter ID this (project, threadID) topic was already
-// bound to, or "" if no binding exists yet.
+// lookup returns the letter ID this (project, threadID) topic last resolved
+// to, or "" if no binding exists yet.
 func (s *topicLetterBindingStore) lookup(project, threadID string) string {
 	if s == nil || strings.TrimSpace(threadID) == "" {
 		return ""
@@ -101,6 +102,7 @@ func (s *topicLetterBindingStore) lookup(project, threadID string) string {
 	defer s.mu.Unlock()
 	ledger, err := s.loadLocked()
 	if err != nil {
+		slog.Warn("topic letter binding: failed to load", "project", project, "thread_id", threadID, "error", err)
 		return ""
 	}
 	for _, b := range ledger.Bindings {
@@ -111,10 +113,15 @@ func (s *topicLetterBindingStore) lookup(project, threadID string) string {
 	return ""
 }
 
-// bind persists the (project, threadID) -> letter mapping the first time it
-// is resolved. It is a no-op if a binding already exists: a later, possibly
-// worse, resolution (a message that fails to name the letter, or a
-// threadID-based fabrication) must never override an established binding.
+// bind persists the (project, threadID) -> letter mapping, overwriting any
+// prior value for this topic. This is an upsert, not write-once: an explicit,
+// well-formed letter mention (a deliberate manual-dispatch redirect, L-0320)
+// is allowed to change which letter a topic is remembered as working on, and
+// that new value becomes the default a later ambiguous continuation resolves
+// to. Only resolveWorkspacePattern's ordering — try ledger, then text
+// extraction, and consult this store solely when both come up empty —
+// prevents an incidental letter mention in ordinary conversation from
+// silently overwriting an established binding.
 func (s *topicLetterBindingStore) bind(project, threadID, letter string) {
 	if s == nil || strings.TrimSpace(threadID) == "" || strings.TrimSpace(letter) == "" {
 		return
@@ -123,10 +130,19 @@ func (s *topicLetterBindingStore) bind(project, threadID, letter string) {
 	defer s.mu.Unlock()
 	ledger, err := s.loadLocked()
 	if err != nil {
+		slog.Warn("topic letter binding: failed to load before bind", "project", project, "thread_id", threadID, "error", err)
 		return
 	}
-	for _, b := range ledger.Bindings {
+	for i := range ledger.Bindings {
+		b := &ledger.Bindings[i]
 		if b.ThreadID == threadID && strings.EqualFold(b.Project, project) {
+			if b.Letter == letter {
+				return
+			}
+			b.Letter = letter
+			if err := s.saveLocked(ledger); err != nil {
+				slog.Warn("topic letter binding: failed to save update", "project", project, "thread_id", threadID, "letter", letter, "error", err)
+			}
 			return
 		}
 	}
@@ -135,7 +151,9 @@ func (s *topicLetterBindingStore) bind(project, threadID, letter string) {
 		ThreadID: threadID,
 		Letter:   letter,
 	})
-	_ = s.saveLocked(ledger)
+	if err := s.saveLocked(ledger); err != nil {
+		slog.Warn("topic letter binding: failed to save new binding", "project", project, "thread_id", threadID, "letter", letter, "error", err)
+	}
 }
 
 func (e *Engine) ensureTopicLetterBindingStore() *topicLetterBindingStore {

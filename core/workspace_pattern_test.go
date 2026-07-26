@@ -91,13 +91,19 @@ func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.
 		t.Fatalf("resume with no hint = %q, want %q", got, want)
 	}
 
-	// Even a message that names a DIFFERENT, well-formed letter must not hop
-	// this established topic onto a new shard — one topic, one decider,
-	// decided once. (A genuine new letter gets its own new topic per the
-	// existing letter-per-topic dispatch convention; it does not reuse this
-	// topic's thread ID.)
-	if got := e.resolveWorkspacePattern(threadID, "L-9999"); got != want {
-		t.Fatalf("resume mentioning a different letter = %q, want %q (must stay pinned)", got, want)
+	// An explicit, well-formed mention of a DIFFERENT letter is a deliberate
+	// manual-dispatch redirect (L-0320) and must still win immediately — the
+	// sticky binding only fills the gap for ambiguous continuations, it does
+	// not turn off the manual-dispatch feature.
+	redirectWant := filepath.Join(root, "worktrees", "letter-L-9999")
+	if got := e.resolveWorkspacePattern(threadID, "L-9999"); got != redirectWant {
+		t.Fatalf("explicit redirect to a different letter = %q, want %q", got, redirectWant)
+	}
+
+	// The redirect becomes the new remembered default: a later ambiguous
+	// continuation now resolves to L-9999, not the original L-0650.
+	if got := e.resolveWorkspacePattern(threadID, "continue"); got != redirectWant {
+		t.Fatalf("ambiguous continuation after redirect = %q, want %q (binding must update, not stay on the old letter)", got, redirectWant)
 	}
 }
 
@@ -119,8 +125,10 @@ func TestWorkspacePatternFirstResolutionViaFallbackStaysPinned(t *testing.T) {
 	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
 		t.Fatalf("first resolution (no hint) = %q, want %q", got, want)
 	}
-	if got := e.resolveWorkspacePattern(threadID, "L-0158"); got != want {
-		t.Fatalf("later message naming an unrelated letter = %q, want %q (must stay pinned)", got, want)
+	// A later ambiguous message (no extractable letter) stays on the
+	// fallback-established binding.
+	if got := e.resolveWorkspacePattern(threadID, "still working on it"); got != want {
+		t.Fatalf("later ambiguous message = %q, want %q (must stay pinned)", got, want)
 	}
 
 	bound := e.ensureTopicLetterBindingStore().lookup("dev-pro", threadID)
