@@ -7011,6 +7011,7 @@ var builtinCommands = []struct {
 	{[]string{"receipt"}, "receipt"},
 	{[]string{"outbox"}, "outbox"},
 	{[]string{"letter"}, "letter"},
+	{[]string{"sessionboard"}, "sessionboard"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7427,6 +7428,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return e.receiveReceipt(p, msg, letter, generation)
 	case "letter":
 		return e.cmdLetter(p, msg, args)
+	case "sessionboard":
+		e.cmdSessionBoard(p, msg)
 
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
