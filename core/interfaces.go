@@ -328,6 +328,25 @@ type ReceiptCardManager interface {
 	UpdateReceiptCard(ctx context.Context, locator MessageLocator, content string, buttons [][]ButtonOption) error
 }
 
+// DispatchConfirmHandler is the Engine method a Platform calls directly when
+// Boss presses the confirm button on a dispatch-proposal card (L-0667). It
+// is the first callback in this codebase that is NOT resynthesized into a
+// core.Message and re-run through the normal handler pipeline — the button
+// press is a typed intent, not free text, and must be actuated as one.
+// letterID identifies which pending proposal to confirm; ok reports whether
+// a pending proposal was actually found (false means already-actioned or
+// unknown, not an error).
+type DispatchConfirmHandler func(p Platform, letterID string) (receipt string, ok bool, err error)
+
+// DispatchConfirmReceiver is an optional Platform extension: platforms that
+// render a dispatch-confirmation card with a callback button implement this
+// to receive the Engine's confirm handler. Mirrors the existing
+// Start(handler MessageHandler) injection shape (this interface's method is
+// called once, at setup, the same way p.Start(e.handleMessage) is).
+type DispatchConfirmReceiver interface {
+	SetDispatchConfirmHandler(handler DispatchConfirmHandler)
+}
+
 // ReceiptCardDeleter removes a proactively-sent card by its durable locator.
 // It differs from MessageDeleter, whose argument is a transient callback
 // reply context.

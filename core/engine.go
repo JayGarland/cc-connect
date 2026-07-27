@@ -505,6 +505,14 @@ type Engine struct {
 	dispatchStore           *dispatchStore
 	dispatchWatcherStarted  bool
 	topicLetterBindingStore *topicLetterBindingStore
+	// controlPlaneAudit is the append-only decision log for ControlPlane
+	// actions (L-0658 Phase 2, L-0662 narrow slice). Lazily initialized via
+	// ensureControlPlaneAudit().
+	controlPlaneAudit *controlPlaneAuditStore
+	// pendingDispatchStore holds [DISPATCH] proposals awaiting Boss's
+	// confirm-card button press (L-0667). Lazily initialized via
+	// ensurePendingDispatchStore().
+	pendingDispatchStore *pendingDispatchStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
@@ -7011,6 +7019,7 @@ var builtinCommands = []struct {
 	{[]string{"receipt"}, "receipt"},
 	{[]string{"outbox"}, "outbox"},
 	{[]string{"letter"}, "letter"},
+	{[]string{"sessionboard"}, "sessionboard"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -7427,6 +7436,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return e.receiveReceipt(p, msg, letter, generation)
 	case "letter":
 		return e.cmdLetter(p, msg, args)
+	case "sessionboard":
+		e.cmdSessionBoard(p, msg)
 
 	default:
 		if custom, ok := e.commands.Resolve(cmd); ok {
@@ -18113,19 +18124,18 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 	workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
 	if strings.Contains(workspace, "{{LETTER_ID}}") {
 		// Pattern seats (workspace_pattern with {{LETTER_ID}}) are letter-dispatch
-		// workers: a letter mentioned in the message is a manual dispatch and DOES
-		// route into that letter's worktree (L-0320). This differs from the
-		// empty-pattern cooperative chat seats above, where a letter mention is
-		// just conversation and must not switch shards (L-0587).
+		// workers. Routing into a letter's worktree comes ONLY from the dispatch
+		// ledger (findLetterIDByTopic) or the sticky topic→letter binding below —
+		// never from free text in the message body (L-0666, Phase 4 of the L-0658
+		// RFC). The prior manual-redirect fallback (ExtractLetterIDFromText,
+		// L-0320) is deliberately removed: it was the last surviving instance of
+		// a persistent workspace binding being decided by volatile message
+		// content rather than a stable key (observe-first-stable-identity.md).
+		// Manual redirection is retired in favor of the ControlPlane confirm-card
+		// dispatch flow (L-0666) as the sole sanctioned way to move a letter into
+		// a pattern-seat's worktree.
 		letterID := e.findLetterIDByTopic(threadID)
 		ledgerHit := letterID != ""
-		if !ledgerHit && messageHint != "" {
-			// An explicit, well-formed letter mention is a deliberate manual
-			// redirect (L-0320) and must win immediately, even for a topic that
-			// already has a remembered binding — dropping this would silently
-			// remove the manual-dispatch feature.
-			letterID = ExtractLetterIDFromText(messageHint)
-		}
 		if !ledgerHit && letterID == "" {
 			// Ledger miss AND no extractable letter in this message: this is the
 			// ambiguous-continuation case (e.g. "continue from where 650 stopped"

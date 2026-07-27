@@ -1128,6 +1128,102 @@ func TestReconstructReplyCtx(t *testing.T) {
 	}
 }
 
+// TestHandleCallbackQuery_DispatchConfirm proves the L-0667 confirm button
+// calls the injected DispatchConfirmHandler DIRECTLY — never via
+// p.handler/message resynthesis, unlike every other callback prefix in this
+// file (cmd:, askq:, perm:).
+func TestHandleCallbackQuery_DispatchConfirm(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	platform, err := New(map[string]any{"token": "token", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.bot = stubBot
+	p.handler = func(core.Platform, *core.Message) {
+		t.Fatal("dispatch_confirm callback must not resynthesize into the message handler")
+	}
+
+	var confirmCalls int
+	var gotLetterID string
+	p.SetDispatchConfirmHandler(func(pl core.Platform, letterID string) (string, bool, error) {
+		confirmCalls++
+		gotLetterID = letterID
+		return "✅ Dispatched " + letterID, true, nil
+	})
+
+	cb := &models.CallbackQuery{
+		ID:   "cbid",
+		From: models.User{ID: 100},
+		Data: "dispatch_confirm:L-0667",
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{
+				ID:   5,
+				Chat: models.Chat{ID: 1, Type: models.ChatTypeSupergroup},
+				Text: "📋 Dispatch Proposal",
+			},
+		},
+	}
+	p.handleCallbackQuery(context.Background(), cb)
+
+	if confirmCalls != 1 {
+		t.Fatalf("expected DispatchConfirmHandler called exactly once, got %d", confirmCalls)
+	}
+	if gotLetterID != "L-0667" {
+		t.Fatalf("letterID = %q, want L-0667", gotLetterID)
+	}
+	if stubBot.answerCallbackCalls != 1 {
+		t.Fatalf("expected AnswerCallbackQuery called once, got %d", stubBot.answerCallbackCalls)
+	}
+	// A found-and-confirmed proposal is edited by Engine.ConfirmDispatch via
+	// ReceiptCardManager, not by this platform-layer branch — so no
+	// EditMessageText call is expected here.
+	if stubBot.editMessageTextCalls != 0 {
+		t.Fatalf("expected no direct card edit on success (Engine does it), got %d calls", stubBot.editMessageTextCalls)
+	}
+}
+
+// TestHandleCallbackQuery_DispatchConfirmStale confirms a missing pending
+// proposal (double-press, or expired) edits the card to say so instead of
+// silently doing nothing or dispatching.
+func TestHandleCallbackQuery_DispatchConfirmStale(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	platform, err := New(map[string]any{"token": "token", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.bot = stubBot
+	p.handler = func(core.Platform, *core.Message) {
+		t.Fatal("dispatch_confirm callback must not resynthesize into the message handler")
+	}
+	p.SetDispatchConfirmHandler(func(pl core.Platform, letterID string) (string, bool, error) {
+		return "", false, nil // no pending proposal found
+	})
+
+	cb := &models.CallbackQuery{
+		ID:   "cbid",
+		From: models.User{ID: 100},
+		Data: "dispatch_confirm:L-9999",
+		Message: models.MaybeInaccessibleMessage{
+			Message: &models.Message{
+				ID:   5,
+				Chat: models.Chat{ID: 1, Type: models.ChatTypeSupergroup},
+				Text: "📋 Dispatch Proposal",
+			},
+		},
+	}
+	p.handleCallbackQuery(context.Background(), cb)
+
+	if stubBot.editMessageTextCalls != 1 {
+		t.Fatalf("expected the stale card to be edited once, got %d calls", stubBot.editMessageTextCalls)
+	}
+	last := stubBot.editMessageParams[len(stubBot.editMessageParams)-1]
+	if !strings.Contains(last.Text, "no longer pending") {
+		t.Fatalf("stale card text = %q, want a no-longer-pending note", last.Text)
+	}
+}
+
 func TestIsDirectedAtBot(t *testing.T) {
 	p := &Platform{token: "token", httpClient: &http.Client{}}
 	p.selfUser = &models.User{ID: 42, Username: "mybot"}
@@ -1199,6 +1295,42 @@ func TestIsDirectedAtBot(t *testing.T) {
 				Chat: models.Chat{ID: 1, Type: models.ChatTypeGroup},
 			},
 			want: false,
+		},
+		{
+			// L-0666: a bare message inside a Forum Topic whose
+			// reply_to_message is Telegram's implicit structural link to the
+			// Topic's own opening/root message (ID == MessageThreadID) — not
+			// a deliberate user reply — must NOT count as directed at the
+			// bot that happens to have posted that root message (e.g.
+			// Secretary, via its own [DISPATCH] intake message).
+			name: "bare message linked to topic root, not a deliberate reply",
+			msg: &models.Message{
+				Text:            "just talking, no @ or reply",
+				Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+				MessageThreadID: 100,
+				ReplyToMessage: &models.Message{
+					ID:   100,
+					From: &models.User{ID: 42},
+				},
+			},
+			want: false,
+		},
+		{
+			// A genuine, deliberate reply to a LATER message this bot posted
+			// inside the same Topic (not the Topic's root) must still count
+			// — this is the legitimate "continue talking to me" UX L-0666's
+			// fix must not break.
+			name: "deliberate reply to a later own message inside a topic",
+			msg: &models.Message{
+				Text:            "yes, continue",
+				Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+				MessageThreadID: 100,
+				ReplyToMessage: &models.Message{
+					ID:   105,
+					From: &models.User{ID: 42},
+				},
+			},
+			want: true,
 		},
 	}
 

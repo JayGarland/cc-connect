@@ -158,6 +158,10 @@ type Platform struct {
 	selfUser            *models.User
 	handler             core.MessageHandler
 	lifecycleHandler    core.PlatformLifecycleHandler
+	// dispatchConfirmHandler is called directly when Boss presses the
+	// confirm button on a dispatch-proposal card (L-0667) — never via
+	// message resynthesis. Injected by Engine.wireDispatchConfirmHandlers().
+	dispatchConfirmHandler core.DispatchConfirmHandler
 	cancel              context.CancelFunc
 	stopping            bool
 	generation          uint64
@@ -285,6 +289,13 @@ func (p *Platform) shouldUseRichMessage(content string) bool {
 // avoids a visible "flash" (delete + resend) for users.
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return true
+}
+
+// SetDispatchConfirmHandler implements core.DispatchConfirmReceiver.
+func (p *Platform) SetDispatchConfirmHandler(handler core.DispatchConfirmHandler) {
+	p.mu.Lock()
+	p.dispatchConfirmHandler = handler
+	p.mu.Unlock()
 }
 
 func (p *Platform) Start(handler core.MessageHandler) error {
@@ -1189,6 +1200,37 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 
 	emptyMarkup := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
 
+	// Dispatch confirm callback (L-0667): calls the injected
+	// DispatchConfirmHandler directly -- this is the one callback in this
+	// file that does NOT resynthesize a core.Message and re-enter the
+	// normal handler pipeline. The card content itself is updated by
+	// Engine.ConfirmDispatch (via ReceiptCardManager) when a pending
+	// proposal is found; this branch only handles the stale/double-press
+	// case, since only the platform layer has this specific message's text
+	// to append a note to.
+	if strings.HasPrefix(data, "dispatch_confirm:") {
+		letterID := strings.TrimPrefix(data, "dispatch_confirm:")
+		if p.dispatchConfirmHandler == nil {
+			slog.Warn("telegram: dispatch confirm pressed but no handler wired", "letter", letterID)
+			return
+		}
+		_, confirmed, err := p.dispatchConfirmHandler(p, letterID)
+		if err != nil {
+			slog.Warn("telegram: dispatch confirm failed", "letter", letterID, "error", err)
+		}
+		if !confirmed {
+			if _, editErr := bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+				ChatID:      chatID,
+				MessageID:   msgID,
+				Text:        msg.Text + "\n\n⚠️ This dispatch proposal is no longer pending.",
+				ReplyMarkup: emptyMarkup,
+			}); editErr != nil {
+				slog.Debug("telegram: dispatch confirm stale-card edit failed", "error", editErr)
+			}
+		}
+		return
+	}
+
 	// Command callbacks (cmd:/lang en, cmd:/mode yolo, etc.)
 	if strings.HasPrefix(data, "cmd:") {
 		command := strings.TrimPrefix(data, "cmd:")
@@ -1376,10 +1418,21 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 		}
 	}
 
-	// Check if replying to a message from this bot
+	// Check if replying to a message from this bot. A Telegram Forum Topic
+	// implicitly links every message's reply_to_message to the Topic's own
+	// opening/root message (whose ID equals MessageThreadID) as a structural
+	// artifact of how Topics are threaded — independent of whether the user
+	// actually tapped "Reply". Whichever seat's bot happened to post that
+	// root message (e.g. Secretary, via [DISPATCH] intake) would otherwise
+	// be silently granted "directed at me" on every later bare message in
+	// that Topic — a false, seat-agnostic privilege, not a deliberate reply.
+	// Excluding it here is a generic fix (no Secretary-specific carve-out):
+	// no seat has special reply privilege in a Topic merely for having
+	// created it (L-0666).
 	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil {
-		slog.Debug("telegram: checking reply", "bot_id", self.ID, "reply_from_id", msg.ReplyToMessage.From.ID)
-		if msg.ReplyToMessage.From.ID == self.ID {
+		isTopicRootLink := msg.MessageThreadID != 0 && msg.ReplyToMessage.ID == msg.MessageThreadID
+		slog.Debug("telegram: checking reply", "bot_id", self.ID, "reply_from_id", msg.ReplyToMessage.From.ID, "is_topic_root_link", isTopicRootLink)
+		if !isTopicRootLink && msg.ReplyToMessage.From.ID == self.ID {
 			return true
 		}
 	}
