@@ -36,17 +36,62 @@ func TestIsTopicBoundToSeat_MatchesLedgerToField(t *testing.T) {
 	}
 }
 
-// topicOwnershipReceiverStub records the checker Engine.Start() injects, so
-// the wiring itself (not just isTopicBoundToSeat's matching logic) is under
-// test — mirrors how AsyncRecoverablePlatform.SetLifecycleHandler and
-// DispatchConfirmReceiver.SetDispatchConfirmHandler are already verified.
+// TestIsTopicBoundToSeat_MatchesGeneralTopicIntakeRecording is the L-0669
+// follow-up primitive: a Topic that a seat created for itself via
+// General-topic-intake (never entering the dispatch ledger at all) must
+// still be recognized as bound to that seat once recordTopicBoundToSeat has
+// registered it — and must NOT be recognized by any other seat sharing the
+// same data directory.
+func TestIsTopicBoundToSeat_MatchesGeneralTopicIntakeRecording(t *testing.T) {
+	root := t.TempDir()
+	e := NewEngine("dev-pro", &stubAgent{}, nil, "", LangEnglish)
+	e.dataDir = root
+
+	if e.isTopicBoundToSeat("400") {
+		t.Fatal("expected an unrecorded topic to be unbound before recordTopicBoundToSeat runs")
+	}
+
+	e.recordTopicBoundToSeat("400")
+
+	if !e.isTopicBoundToSeat("400") {
+		t.Fatal("expected topic 400 to be bound to dev-pro after recordTopicBoundToSeat")
+	}
+
+	otherSeat := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	otherSeat.dataDir = root
+	if otherSeat.isTopicBoundToSeat("400") {
+		t.Fatal("expected topic 400 to NOT be bound to a different seat sharing the same data directory")
+	}
+
+	// First writer wins: a second seat racing to bind the same threadID
+	// (should never happen in practice — a Topic has exactly one creator —
+	// but the store must not let a later call silently reassign ownership).
+	otherSeat.recordTopicBoundToSeat("400")
+	if otherSeat.isTopicBoundToSeat("400") {
+		t.Fatal("expected the original binding to survive a later bind attempt from a different seat")
+	}
+	if !e.isTopicBoundToSeat("400") {
+		t.Fatal("expected dev-pro's original binding to remain intact")
+	}
+}
+
+// topicOwnershipReceiverStub records the checker and recorder Engine.Start()
+// injects, so the wiring itself (not just isTopicBoundToSeat's matching
+// logic) is under test — mirrors how AsyncRecoverablePlatform.
+// SetLifecycleHandler and DispatchConfirmReceiver.SetDispatchConfirmHandler
+// are already verified.
 type topicOwnershipReceiverStub struct {
 	stubPlatformEngine
-	checker TopicOwnershipChecker
+	checker  TopicOwnershipChecker
+	recorder TopicOwnershipRecorder
 }
 
 func (p *topicOwnershipReceiverStub) SetTopicOwnershipChecker(checker TopicOwnershipChecker) {
 	p.checker = checker
+}
+
+func (p *topicOwnershipReceiverStub) SetTopicOwnershipRecorder(recorder TopicOwnershipRecorder) {
+	p.recorder = recorder
 }
 
 func TestEngineStart_WiresTopicOwnershipChecker(t *testing.T) {
@@ -60,6 +105,9 @@ func TestEngineStart_WiresTopicOwnershipChecker(t *testing.T) {
 	}
 	if stub.checker == nil {
 		t.Fatal("expected Engine.Start to inject a TopicOwnershipChecker")
+	}
+	if stub.recorder == nil {
+		t.Fatal("expected Engine.Start to inject a TopicOwnershipRecorder")
 	}
 
 	if err := e.ensureDispatchStore().upsert(DispatchExpectation{
@@ -76,5 +124,16 @@ func TestEngineStart_WiresTopicOwnershipChecker(t *testing.T) {
 	}
 	if stub.checker("301") {
 		t.Fatal("expected injected checker to report an unrelated topic as unbound")
+	}
+
+	// End-to-end: the injected recorder, called the way a Platform would
+	// after General-topic-intake creates a Topic, makes the injected
+	// checker immediately recognize that Topic as bound.
+	if stub.checker("500") {
+		t.Fatal("expected topic 500 to be unbound before the recorder runs")
+	}
+	stub.recorder("500")
+	if !stub.checker("500") {
+		t.Fatal("expected topic 500 to be bound immediately after the injected recorder runs")
 	}
 }

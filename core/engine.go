@@ -505,6 +505,7 @@ type Engine struct {
 	dispatchStore           *dispatchStore
 	dispatchWatcherStarted  bool
 	topicLetterBindingStore *topicLetterBindingStore
+	topicSeatBindingStore   *topicSeatBindingStore
 	// controlPlaneAudit is the append-only decision log for ControlPlane
 	// actions (L-0658 Phase 2, L-0662 narrow slice). Lazily initialized via
 	// ensureControlPlaneAudit().
@@ -2567,6 +2568,7 @@ func (e *Engine) Start() error {
 		}
 		if r, ok := p.(TopicOwnershipReceiver); ok {
 			r.SetTopicOwnershipChecker(e.isTopicBoundToSeat)
+			r.SetTopicOwnershipRecorder(e.recordTopicBoundToSeat)
 		}
 		if err := p.Start(e.handleMessage); err != nil {
 			slog.Warn("platform start failed", "project", e.name, "platform", p.Name(), "error", err)
@@ -18023,12 +18025,19 @@ func (e *Engine) findLetterIDByTopic(topicID string) string {
 }
 
 // isTopicBoundToSeat implements TopicOwnershipChecker: it reports whether
-// topicID is bound to THIS engine's own seat in the dispatch ledger, reusing
-// findLetterIDByTopic's exp.To == e.name match (L-0669). A Platform calls
-// this to decide bare-text Topic routing without inferring ownership from
-// message content or Telegram's implicit reply-to-topic-root artifact.
+// topicID is bound to THIS engine's own seat, checking both durable sources
+// — the dispatch ledger (reusing findLetterIDByTopic's exp.To == e.name
+// match, for Topics opened via [DISPATCH]) and the Topic-seat binding store
+// (for Topics a seat opened for itself via General-topic-intake's explicit
+// @mention, which never enters the dispatch ledger — L-0669 follow-up). A
+// Platform calls this to decide bare-text Topic routing without inferring
+// ownership from message content or Telegram's implicit reply-to-topic-root
+// artifact.
 func (e *Engine) isTopicBoundToSeat(topicID string) bool {
-	return e.findLetterIDByTopic(topicID) != ""
+	if e.findLetterIDByTopic(topicID) != "" {
+		return true
+	}
+	return strings.EqualFold(e.ensureTopicSeatBindingStore().seatFor(topicID), e.name)
 }
 
 func (e *Engine) resolveActiveLetterID(ccSessionKey, workspaceDir, messageContent string) string {

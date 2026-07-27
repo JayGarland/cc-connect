@@ -348,24 +348,41 @@ type DispatchConfirmReceiver interface {
 }
 
 // TopicOwnershipChecker reports whether a forum-Topic/thread ID is bound to
-// this Engine's own seat in the dispatch ledger (DispatchExpectation.To ==
-// this seat, keyed by the durable TopicID/TopicSessionKey recorded at
-// dispatch time — see Engine.findLetterIDByTopic). It is the single source
-// of truth a Platform consults to decide whether a bare, non-command,
-// non-mention, non-explicit-reply message inside a Topic is directed at this
-// seat, replacing any text-content or implicit-reply-artifact heuristic
-// (L-0669, closing the gap L-0666 flagged as Evidence Gap 2 and left
-// unresolved: durable identity must come from a stable key — the ledger's
-// TopicID binding — never from message content).
+// this Engine's own seat, checked against two durable sources: the dispatch
+// ledger (DispatchExpectation.To == this seat, keyed by the TopicID/
+// TopicSessionKey recorded at [DISPATCH] time — see
+// Engine.findLetterIDByTopic) and the Topic-seat binding store (keyed by the
+// TopicID a seat recorded for itself the moment it created that Topic via an
+// explicit @mention in the General topic — see
+// Engine.recordTopicBoundToSeat). It is the single source of truth a
+// Platform consults to decide whether a bare, non-command, non-mention,
+// non-explicit-reply message inside a Topic is directed at this seat,
+// replacing any text-content or implicit-reply-artifact heuristic (L-0669,
+// closing the gap L-0666 flagged as Evidence Gap 2, and its General-topic-
+// intake follow-up: durable identity must come from a stable key — a
+// TopicID binding recorded once, deterministically, at dispatch or creation
+// time — never from re-scraping message content on every later message).
 type TopicOwnershipChecker func(topicID string) bool
+
+// TopicOwnershipRecorder lets a Platform durably register a Topic it just
+// created for itself (in direct, deterministic response to an explicit
+// @mention of its own bot username — see handleGeneralTopicIntake) as bound
+// to this seat, so later bare-text messages in that same Topic are
+// recognized via TopicOwnershipChecker without requiring a repeated @mention
+// (L-0669 follow-up). The binding is written once, at Topic-creation time,
+// from a structured signal (which bot's own username was mentioned) — never
+// inferred later from a message's content.
+type TopicOwnershipRecorder func(topicID string)
 
 // TopicOwnershipReceiver is an optional Platform extension: platforms that
 // support forum Topics implement this to receive the Engine's ownership
-// checker at startup. Mirrors the existing Start(handler MessageHandler) /
-// DispatchConfirmReceiver injection shape (this interface's method is called
-// once, at setup, the same way p.Start(e.handleMessage) is).
+// checker and recorder at startup. Mirrors the existing
+// Start(handler MessageHandler) / DispatchConfirmReceiver injection shape
+// (this interface's methods are called once, at setup, the same way
+// p.Start(e.handleMessage) is).
 type TopicOwnershipReceiver interface {
 	SetTopicOwnershipChecker(checker TopicOwnershipChecker)
+	SetTopicOwnershipRecorder(recorder TopicOwnershipRecorder)
 }
 
 // ReceiptCardDeleter removes a proactively-sent card by its durable locator.

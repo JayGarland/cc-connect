@@ -1502,6 +1502,49 @@ func TestGeneralTopicIntakeCreatesTopicAndDispatchesSyntheticThreadMessage(t *te
 	}
 }
 
+// TestGeneralTopicIntakeRecordsTopicOwnership is the L-0669 follow-up
+// acceptance test: creating a Topic via an explicit @mention in the General
+// topic must record that Topic's ownership through the injected
+// TopicOwnershipRecorder — the write side that lets a later bare-text
+// message in the same Topic be recognized by isDirectedAtBot's
+// TopicOwnershipChecker fallback without repeating the @mention.
+func TestGeneralTopicIntakeRecordsTopicOwnership(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	var recordedTopicIDs []string
+	p := &Platform{
+		token:              "token",
+		allowFrom:          "*",
+		httpClient:         &http.Client{},
+		bot:                stubBot,
+		selfUser:           &models.User{ID: 42, Username: "mybot"},
+		generalTopicIntake: true,
+		topicIntakeSeen:    make(map[string]struct{}),
+	}
+	p.topicOwnershipRecorder = func(topicID string) {
+		recordedTopicIDs = append(recordedTopicIDs, topicID)
+	}
+	p.handler = func(_ core.Platform, _ *core.Message) {}
+
+	p.handleMessage(context.Background(), &models.Message{
+		ID:   77,
+		Date: int(time.Now().Unix()),
+		Chat: models.Chat{
+			ID:    -100123,
+			Type:  models.ChatTypeSupergroup,
+			Title: "Nexus",
+		},
+		From: &models.User{ID: 9001, Username: "Jay"},
+		Text: "@mybot build the thing",
+		Entities: []models.MessageEntity{
+			{Type: models.MessageEntityTypeMention, Offset: 0, Length: 6},
+		},
+	})
+
+	if len(recordedTopicIDs) != 1 || recordedTopicIDs[0] != "824" {
+		t.Fatalf("recorded topic IDs = %v, want exactly [\"824\"] (the newly created topic's thread ID)", recordedTopicIDs)
+	}
+}
+
 func TestGeneralTopicIntakeDeduplicatesByGeneralMessageID(t *testing.T) {
 	stubBot := newStubTelegramBot()
 	p := &Platform{

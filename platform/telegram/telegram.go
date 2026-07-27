@@ -168,6 +168,12 @@ type Platform struct {
 	// ownership from message content — only isDirectedAtBot's final,
 	// no-other-signal-matched fallback consults it.
 	topicOwnershipChecker core.TopicOwnershipChecker
+	// topicOwnershipRecorder registers a Topic this seat just created for
+	// itself (General-topic-intake, triggered by an explicit @mention of
+	// THIS bot's own username) as bound to this seat, so later bare-text
+	// messages in it are recognized by topicOwnershipChecker without a
+	// repeated @mention (L-0669 follow-up). Injected by Engine.Start().
+	topicOwnershipRecorder core.TopicOwnershipRecorder
 	cancel              context.CancelFunc
 	stopping            bool
 	generation          uint64
@@ -308,6 +314,13 @@ func (p *Platform) SetDispatchConfirmHandler(handler core.DispatchConfirmHandler
 func (p *Platform) SetTopicOwnershipChecker(checker core.TopicOwnershipChecker) {
 	p.mu.Lock()
 	p.topicOwnershipChecker = checker
+	p.mu.Unlock()
+}
+
+// SetTopicOwnershipRecorder implements core.TopicOwnershipReceiver.
+func (p *Platform) SetTopicOwnershipRecorder(recorder core.TopicOwnershipRecorder) {
+	p.mu.Lock()
+	p.topicOwnershipRecorder = recorder
 	p.mu.Unlock()
 }
 
@@ -826,6 +839,16 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 		slog.Error("telegram: create forum topic returned no thread id", "chat", msg.Chat.ID, "msg_id", msg.ID)
 		_ = p.Reply(ctx, replyContext{chatID: msg.Chat.ID, messageID: msg.ID}, "Failed to create task topic: Telegram returned no thread ID.")
 		return true
+	}
+
+	// This bot's own username is the one that matched the @mention that
+	// triggered topic creation (mentioned is per-bot, checked against THIS
+	// bot's own botName by the caller) — a structured, deterministic signal
+	// that THIS seat owns the new Topic. Record it once, at creation time,
+	// so later bare-text messages in it are recognized without repeating
+	// the @mention (L-0669 follow-up).
+	if p.topicOwnershipRecorder != nil {
+		p.topicOwnershipRecorder(strconv.Itoa(topic.MessageThreadID))
 	}
 
 	newThreadID := topic.MessageThreadID
