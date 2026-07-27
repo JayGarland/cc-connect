@@ -61,6 +61,12 @@ type telegramBot interface {
 // maxRetryAfter.
 const telegramRetryMaxWait = 60 * time.Second
 
+// newTopicPlaceholderName is the cosmetic title given to a freshly created
+// forum topic before its real title (letter id or task slug) is known. Topic
+// titles are display-only; routing identity comes from the thread/topic id and
+// the dispatch ledger, never the title string (L-0674).
+const newTopicPlaceholderName = "new-task"
+
 // sendMessageWithRetry wraps bot.SendMessage and retries once when Telegram
 // returns 429 Too Many Requests, honoring the retry_after hint it reports
 // (capped at telegramRetryMaxWait). Without this, a rate-limited send — most
@@ -828,7 +834,7 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 	}
 	topic, err := bot.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{
 		ChatID: msg.Chat.ID,
-		Name:   "letter-new",
+		Name:   newTopicPlaceholderName,
 	})
 	if err != nil {
 		slog.Error("telegram: create forum topic failed", "chat", msg.Chat.ID, "msg_id", msg.ID, "error", err)
@@ -929,7 +935,7 @@ func (p *Platform) CreateTaskTopic(ctx context.Context, dashboardSessionKey, tit
 	}
 	topicTitle := strings.TrimSpace(title)
 	if topicTitle == "" {
-		topicTitle = "letter-new"
+		topicTitle = newTopicPlaceholderName
 	}
 	topic, err := bot.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{
 		ChatID: rc.chatID,

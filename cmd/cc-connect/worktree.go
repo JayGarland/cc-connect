@@ -192,7 +192,7 @@ func runWorktreePrune(args []string) {
 					// Check if active
 					shouldPrune = !activeThreads[threadID]
 					activeLabel = "thread " + threadID
-				} else if letterID != "" && branch == "letter/"+letterID {
+				} else if letterID != "" && isLetterWorktreeBranch(branch, letterID) {
 					shouldPrune = !activeLetters[letterID]
 					activeLabel = "letter " + letterID
 				}
@@ -251,6 +251,13 @@ func isThreadWorktreeBranch(branch string) bool {
 	return strings.HasPrefix(branch, "letter-") ||
 		strings.HasPrefix(branch, "letter/") ||
 		strings.HasPrefix(branch, "task-")
+}
+
+// isLetterWorktreeBranch reports whether branch is the branch for letterID.
+// It accepts both the current bare form (branch == letterID, L-0674) and the
+// legacy "letter/L-XXXX" form still present on disk for pre-L-0674 worktrees.
+func isLetterWorktreeBranch(branch, letterID string) bool {
+	return branch == letterID || branch == "letter/"+letterID
 }
 
 func extractThreadID(sessionKey string) string {

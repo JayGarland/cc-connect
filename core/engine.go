@@ -18191,14 +18191,18 @@ func (e *Engine) branchNameForWorkspace(workspace string) string {
 	if strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
 		letterID := extractLetterIDFromPath(e.workspacePattern, workspace)
 		if letterID != "" {
-			if dispatchLetterRe.MatchString(letterID) {
-				return "letter/" + letterID
-			}
+			// L-0674: L-XXXX already carries full letter semantics on its own,
+			// so the branch IS the letter id — the former hardcoded "letter/"
+			// wrapper was redundant. The stable key (letterID) is unchanged; only
+			// the cosmetic prefix is dropped.
 			return letterID
 		}
 	}
 	if threadID := extractThreadIDFromPath(e.workspacePattern, workspace); threadID != "" {
-		return "letter-" + threadID
+		// Thread-seat worktrees have no letter; reuse the existing "task-"
+		// convention (recognized by isThreadWorktreeBranch) rather than the
+		// misleading "letter-" prefix (L-0674).
+		return "task-" + threadID
 	}
 	return ""
 }
@@ -19066,7 +19070,7 @@ func (e *Engine) cmdPrune(p Platform, msg *Message, args []string) {
 			// Legacy/default behavior matching branch name
 			if threadID != "" && isThreadWorktreeBranch(currentBranch) {
 				shouldPrune = !activeThreads[threadID]
-			} else if letterID != "" && currentBranch == "letter/"+letterID {
+			} else if letterID != "" && isLetterWorktreeBranch(currentBranch, letterID) {
 				shouldPrune = !activeLetters[letterID]
 			}
 		}
@@ -19130,4 +19134,12 @@ func isThreadWorktreeBranch(branch string) bool {
 	return strings.HasPrefix(branch, "letter-") ||
 		strings.HasPrefix(branch, "letter/") ||
 		strings.HasPrefix(branch, "task-")
+}
+
+// isLetterWorktreeBranch reports whether branch is the branch for letterID.
+// It accepts both the current bare form (branch == letterID, L-0674) and the
+// legacy "letter/L-XXXX" form still present on disk for in-flight worktrees
+// created before the prefix was excised, so prune keeps recognizing them.
+func isLetterWorktreeBranch(branch, letterID string) bool {
+	return branch == letterID || branch == "letter/"+letterID
 }

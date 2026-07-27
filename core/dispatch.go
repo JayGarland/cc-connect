@@ -448,7 +448,12 @@ func virtualTopicSessionKey(dashboardSessionKey, letter string) (sessionKey, cha
 
 	sessionKey = fmt.Sprintf("telegram:%s:%s:%s", rawChatID, letterNum, userID)
 	channelKey = rawChatID + ":" + letterNum
-	topicName = "letter-" + letterNum
+	// L-0674: the topic title is cosmetic (identity is the TopicID/session key,
+	// never the name). Name it after the letter id itself — L-XXXX already
+	// carries full letter semantics, so no hardcoded "letter-" wrapper.
+	if topicName = strings.TrimSpace(letter); topicName == "" {
+		topicName = "L-" + letterNum
+	}
 	return sessionKey, channelKey, topicName, nil
 }
 
@@ -620,7 +625,7 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 			if !ok {
 				return "", fmt.Errorf("platform %s cannot create task topics", p.Name())
 			}
-			topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, "letter-"+req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
+			topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
 			if err != nil {
 				slog.Warn("failed to create task topic, falling back to virtual topic", "project", e.name, "letter", req.Letter, "error", err)
 

@@ -114,7 +114,7 @@ type stubTelegramBot struct {
 func newStubTelegramBot() *stubTelegramBot {
 	return &stubTelegramBot{
 		file:             &models.File{FilePath: "files/test.dat"},
-		createForumTopic: &models.ForumTopic{MessageThreadID: 824, Name: "letter-new"},
+		createForumTopic: &models.ForumTopic{MessageThreadID: 824, Name: "new-task"},
 	}
 }
 
@@ -1485,14 +1485,14 @@ func TestGeneralTopicIntakeCreatesTopicAndDispatchesSyntheticThreadMessage(t *te
 	if stubBot.createForumTopicCalls != 1 {
 		t.Fatalf("CreateForumTopic calls = %d, want 1", stubBot.createForumTopicCalls)
 	}
-	if len(stubBot.createTopicParams) != 1 || stubBot.createTopicParams[0].Name != "letter-new" {
-		t.Fatalf("CreateForumTopic params = %+v, want letter-L-1234", stubBot.createTopicParams)
+	if len(stubBot.createTopicParams) != 1 || stubBot.createTopicParams[0].Name != "new-task" {
+		t.Fatalf("CreateForumTopic params = %+v, want new-task", stubBot.createTopicParams)
 	}
 	if stubBot.editForumTopicCalls != 1 {
 		t.Fatalf("EditForumTopic calls = %d, want 1", stubBot.editForumTopicCalls)
 	}
-	if gotName := stubBot.editTopicParams[0].Name; gotName != "letter-new-build-the-thing" {
-		t.Fatalf("EditForumTopic name = %q, want letter-new-build-the-thing", gotName)
+	if gotName := stubBot.editTopicParams[0].Name; gotName != "new-task-build-the-thing" {
+		t.Fatalf("EditForumTopic name = %q, want new-task-build-the-thing", gotName)
 	}
 	if stubBot.SendMessageCallCount() != 2 {
 		t.Fatalf("SendMessage calls = %d, want 2 (topic bootstrap + General confirmation)", stubBot.SendMessageCallCount())

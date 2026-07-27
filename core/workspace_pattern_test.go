@@ -33,8 +33,8 @@ func TestWorkspacePatternResolvesLetterIDFromDispatchLedger(t *testing.T) {
 	if got := e.resolveWorkspacePattern("1091", ""); got != want {
 		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
 	}
-	if got := e.branchNameForWorkspace(want); got != "letter/L-0158" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "letter/L-0158")
+	if got := e.branchNameForWorkspace(want); got != "L-0158" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "L-0158")
 	}
 }
 
@@ -48,8 +48,8 @@ func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
 	if got := e.resolveWorkspacePattern("2222", ""); got != want {
 		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
 	}
-	if got := e.branchNameForWorkspace(want); got != "letter/L-2222" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "letter-2222")
+	if got := e.branchNameForWorkspace(want); got != "L-2222" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "L-2222")
 	}
 }
 
@@ -339,8 +339,8 @@ func TestResolveWorkspacePattern_MessageHintIgnoredForPatternSeats(t *testing.T)
 	if got != want {
 		t.Fatalf("resolveWorkspacePattern(message hint present) = %q, want %q (hint must be ignored)", got, want)
 	}
-	if branch := e.branchNameForWorkspace(want); branch != "letter/L-2793" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "letter/L-2793")
+	if branch := e.branchNameForWorkspace(want); branch != "L-2793" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "L-2793")
 	}
 
 	// A later message in the SAME topic — with or without a hint — must
@@ -444,10 +444,11 @@ func TestWorkspacePattern_DispatchBranchIsolation(t *testing.T) {
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	// By default, dispatchBranchIsolation is true, so it returns "letter/L-XXXX"
+	// By default, dispatchBranchIsolation is true, so it returns the bare
+	// letter id L-XXXX (the "letter/" prefix was excised in L-0674).
 	wantLetter := filepath.Join(root, "worktrees", "letter-L-0158")
-	if got := e.branchNameForWorkspace(wantLetter); got != "letter/L-0158" {
-		t.Fatalf("default branchNameForWorkspace() = %q, want %q", got, "letter/L-0158")
+	if got := e.branchNameForWorkspace(wantLetter); got != "L-0158" {
+		t.Fatalf("default branchNameForWorkspace() = %q, want %q", got, "L-0158")
 	}
 
 	// When set to false, it should return "main"
