@@ -57,13 +57,13 @@ func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
 // the bug reported against the resonova-pipeline-controller thread: a topic
 // whose letter was never registered in the dispatch ledger (a real, recurring
 // gap for pattern seats fed by ad-hoc pursuit continuations, not just fresh
-// [DISPATCH]) resolved a workspace from the first message that named the
-// letter in text, but a LATER message in the same topic that failed to match
-// the L-XXXX text pattern (e.g. "continue from where 650 stopped" — bare
-// "650", no "L-" prefix, only 3 digits) fell through to fabricating
-// "L-"+threadID, silently routing into a brand-new, disconnected worktree
-// instead of the one already in progress. Once a topic resolves, it must stay
-// pinned regardless of what later messages say.
+// [DISPATCH]) must stay pinned to its first-resolved letter regardless of
+// what any later message says. Updated for L-0666 (Phase 4 of the L-0658
+// RFC): message-hint text is no longer consulted for pattern seats AT ALL —
+// not even on the first message — so every resolution in this test fabricates
+// "L-<threadID>" and pins to that; a mention of any letter, matching or not,
+// must never redirect an established topic (the old manual-dispatch text
+// redirect, L-0320, is retired).
 func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
@@ -71,17 +71,17 @@ func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
 	const threadID = "6031"
-	want := filepath.Join(root, "worktrees", "letter-L-0650")
+	// No ledger entry exists (this topic's whole letter lineage was never
+	// [DISPATCH]-registered). The first resolution ignores the message hint
+	// entirely and fabricates "L-<threadID>".
+	want := filepath.Join(root, "worktrees", "letter-L-6031")
 
-	// First message names the letter explicitly; no ledger entry exists (this
-	// topic's whole letter lineage was never [DISPATCH]-registered).
 	if got := e.resolveWorkspacePattern(threadID, "L-0650 Step 0-B/C landed"); got != want {
-		t.Fatalf("first resolution = %q, want %q", got, want)
+		t.Fatalf("first resolution = %q, want %q (hint must be ignored)", got, want)
 	}
 
 	// A resume after a crash/quota-cut, phrased without the "L-" prefix and
-	// without 4+ digits, must NOT fall back to "L-"+threadID — it must stay
-	// on the worktree this topic already resolved to.
+	// without 4+ digits, must stay pinned.
 	if got := e.resolveWorkspacePattern(threadID, "continue from where 650 stopped"); got != want {
 		t.Fatalf("resume with bare '650' = %q, want %q (must stay pinned, not fabricate L-%s)", got, want, threadID)
 	}
@@ -91,19 +91,13 @@ func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.
 		t.Fatalf("resume with no hint = %q, want %q", got, want)
 	}
 
-	// An explicit, well-formed mention of a DIFFERENT letter is a deliberate
-	// manual-dispatch redirect (L-0320) and must still win immediately — the
-	// sticky binding only fills the gap for ambiguous continuations, it does
-	// not turn off the manual-dispatch feature.
-	redirectWant := filepath.Join(root, "worktrees", "letter-L-9999")
-	if got := e.resolveWorkspacePattern(threadID, "L-9999"); got != redirectWant {
-		t.Fatalf("explicit redirect to a different letter = %q, want %q", got, redirectWant)
-	}
-
-	// The redirect becomes the new remembered default: a later ambiguous
-	// continuation now resolves to L-9999, not the original L-0650.
-	if got := e.resolveWorkspacePattern(threadID, "continue"); got != redirectWant {
-		t.Fatalf("ambiguous continuation after redirect = %q, want %q (binding must update, not stay on the old letter)", got, redirectWant)
+	// An explicit, well-formed mention of a DIFFERENT letter must NOT
+	// redirect an established topic either — the manual-dispatch text
+	// redirect feature (L-0320) is retired (L-0666); only the dispatch
+	// ledger or the ControlPlane confirm-card flow can now bind a topic to
+	// a letter.
+	if got := e.resolveWorkspacePattern(threadID, "L-9999"); got != want {
+		t.Fatalf("mention of a different letter = %q, want %q (must stay pinned, redirect feature retired)", got, want)
 	}
 }
 
@@ -326,37 +320,39 @@ func TestIsThreadWorktreeBranch(t *testing.T) {
 // Regression test for L-0320: manual dispatch (no ledger entry) should extract
 // the letter ID from the message content (e.g. "处理 L-0313") instead of
 // fabricating L-<topicID> (e.g. L-2793).
-func TestResolveWorkspacePattern_ManualDispatchUsesMessageHint(t *testing.T) {
+func TestResolveWorkspacePattern_MessageHintIgnoredForPatternSeats(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-swift", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	// No ledger entry — simulates manual dispatch (@bot 处理 L-0313)
-	// with Telegram topic ID 2793.
-	want := filepath.Join(root, "worktrees", "letter-L-0313")
+	// No ledger entry, and a message that happens to mention L-0313 in free
+	// text (e.g. "处理 L-0313"). Per L-0666 (Phase 4 of the L-0658 RFC), a
+	// pattern seat's workspace binding is decided ONLY by the dispatch
+	// ledger (findLetterIDByTopic) or the sticky topic->letter binding —
+	// never by scraping the message body. The old manual-redirect fallback
+	// (ExtractLetterIDFromText, L-0320) is retired: the hint must be
+	// ignored entirely, falling back to fabricating "L-<threadID>" and
+	// pinning the topic to that from now on.
+	want := filepath.Join(root, "worktrees", "letter-L-2793")
 	got := e.resolveWorkspacePattern("2793", "处理 L-0313")
 	if got != want {
-		t.Fatalf("resolveWorkspacePattern(manual dispatch) = %q, want %q", got, want)
+		t.Fatalf("resolveWorkspacePattern(message hint present) = %q, want %q (hint must be ignored)", got, want)
 	}
-	if branch := e.branchNameForWorkspace(want); branch != "letter/L-0313" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "letter/L-0313")
+	if branch := e.branchNameForWorkspace(want); branch != "letter/L-2793" {
+		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "letter/L-2793")
 	}
 
-	// A later message in the SAME topic with no hint must stay pinned to the
-	// letter this topic already resolved to (L-0313), not refabricate
-	// L-<topicID>. This supersedes the pre-topic-letter-binding assertion here
-	// (which fell back to L-2793 and documented that as merely "existing
-	// behavior", not a protected contract): that fallback was the same
-	// defect class as the one this test's own commit (L-0320) fixed for the
-	// hint-present case, just uncaught for the hint-dropped case — see the
-	// resonova-pipeline-controller topic-binding fix. No observed production
-	// dispatch ever reuses one Telegram topic ID across two different
-	// letters, so a topic staying pinned to its first-resolved letter is the
-	// correct invariant, not a regression.
+	// A later message in the SAME topic — with or without a hint — must
+	// stay pinned to whatever this topic first resolved to. The hint must
+	// not redirect an already-established topic either.
 	gotFallback := e.resolveWorkspacePattern("2793", "")
 	if gotFallback != want {
-		t.Fatalf("resolveWorkspacePattern(no hint, same topic) = %q, want %q (must stay pinned to L-0313)", gotFallback, want)
+		t.Fatalf("resolveWorkspacePattern(no hint, same topic) = %q, want %q (must stay pinned)", gotFallback, want)
+	}
+	gotHintAgain := e.resolveWorkspacePattern("2793", "处理 L-0313")
+	if gotHintAgain != want {
+		t.Fatalf("resolveWorkspacePattern(hint again, same topic) = %q, want %q (hint must not redirect an established topic)", gotHintAgain, want)
 	}
 }
 
