@@ -451,6 +451,17 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 		keepPreview = pref.KeepPreviewOnFinish()
 	}
 
+	// If we should keep preview but content needs rich message and we can clean up,
+	// delete preview and send fresh instead (no wheel reinvention, minimal change).
+	if keepPreview && sp.previewMsgID != nil && NeedsRichMessage(finalText) {
+		if cleaner, ok := sp.platform.(PreviewCleaner); ok {
+			slog.Debug("stream preview finish: deleting preview to send fresh rich message",
+				"platform", sp.platform.Name())
+			_ = cleaner.DeletePreviewMessage(sp.ctx, sp.previewMsgID)
+			keepPreview = false // return false so engine calls normal Send
+		}
+	}
+
 	// If platform wants to delete the preview and send fresh, let it.
 	if cleaner, ok := sp.platform.(PreviewCleaner); ok && !keepPreview {
 		slog.Debug("stream preview finish: deleting preview (PreviewCleaner)")
