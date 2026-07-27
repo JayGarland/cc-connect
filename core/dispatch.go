@@ -507,9 +507,14 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	if e.relayManager == nil {
 		return "", fmt.Errorf("relay manager is not configured")
 	}
-	// Map protocol role keys to config project names (B2)
+	// Map protocol role keys to config project names (B2). "dev" resolves
+	// unconditionally to "dev-pro" — with dev-swift retired (L-0665) there is
+	// only one physical dev endpoint left, so no Route-based heavy/flash
+	// branching is needed here (unlike the old Secretary-side A' alias table
+	// in ROUTING.md, which existed only to pick between two endpoints).
 	alias := map[string]string{
 		"architect":        "architect-claude",
+		"dev":              "dev-pro",
 		"reviewer":         "reviewer-seat",
 		"counsel":          "counsel-seat",
 		"researcher":       "researcher-seat",

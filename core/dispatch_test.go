@@ -316,6 +316,81 @@ Type: QUERY
 	}
 }
 
+func TestExecuteDispatchResolvesDevRoleAliasToDevPro(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "dev-seat-consolidation")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0665.query.md")
+	query := `---
+ID: L-0665
+Thread: dev-seat-consolidation
+Type: QUERY
+---
+
+## Query
+`
+	if err := os.WriteFile(queryPath, []byte(query), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &mockTaskTopicPlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		createTaskTopicFunc: func(ctx context.Context, dashboardSessionKey, title, content string) (*TaskTopic, error) {
+			return nil, fmt.Errorf("not enough rights to create a topic")
+		},
+		reconstructFunc: func(sessionKey string) (any, error) {
+			return "reconstructed-ctx", nil
+		},
+	}
+
+	targetEngine := NewEngine("dev-pro", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	targetEngine.SetWorkspacePattern(filepath.Join(root, "worktrees", "task-{{THREAD_ID}}"))
+
+	sourceEngine := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sourceEngine.dataDir = root
+	sourceEngine.relayManager = NewRelayManager(root)
+	sourceEngine.relayManager.RegisterEngine("dev-pro", targetEngine)
+	sourceEngine.relayManager.RegisterEngine("secretary-seat", sourceEngine)
+
+	sourceEngine.configureDispatch(DispatchConfig{
+		Enabled:             true,
+		SourceProject:       "secretary-seat",
+		DashboardSessionKey: "telegram:-1003917051393:7664413698:0",
+		PollInterval:        1 * time.Second,
+	})
+
+	// The role alias "dev" (not a concrete seat name) must resolve natively —
+	// no Secretary-side string substitution required (L-0665).
+	req := dispatchRequest{
+		To:     "dev",
+		Letter: "L-0665",
+		Thread: "dev-seat-consolidation",
+		Path:   queryPath,
+	}
+
+	receipt, err := sourceEngine.executeDispatch(p, "telegram:-1003917051393:7664413698:0", req)
+	if err != nil {
+		t.Fatalf("executeDispatch failed: %v", err)
+	}
+
+	if receipt != "✅ Dispatched L-0665 to dev-pro" {
+		t.Errorf("unexpected receipt: %q", receipt)
+	}
+
+	open, err := sourceEngine.dispatchStore.listOpen()
+	if err != nil {
+		t.Fatalf("listOpen failed: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open expectation, got %d", len(open))
+	}
+	if exp := open[0]; exp.To != "dev-pro" {
+		t.Errorf("expected ledger expectation.To == %q, got %q", "dev-pro", exp.To)
+	}
+}
+
 func TestIsPrivateTelegramSessionKey(t *testing.T) {
 	tests := []struct {
 		sessionKey string
