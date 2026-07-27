@@ -1200,6 +1200,42 @@ func TestIsDirectedAtBot(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			// L-0666: a bare message inside a Forum Topic whose
+			// reply_to_message is Telegram's implicit structural link to the
+			// Topic's own opening/root message (ID == MessageThreadID) — not
+			// a deliberate user reply — must NOT count as directed at the
+			// bot that happens to have posted that root message (e.g.
+			// Secretary, via its own [DISPATCH] intake message).
+			name: "bare message linked to topic root, not a deliberate reply",
+			msg: &models.Message{
+				Text:            "just talking, no @ or reply",
+				Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+				MessageThreadID: 100,
+				ReplyToMessage: &models.Message{
+					ID:   100,
+					From: &models.User{ID: 42},
+				},
+			},
+			want: false,
+		},
+		{
+			// A genuine, deliberate reply to a LATER message this bot posted
+			// inside the same Topic (not the Topic's root) must still count
+			// — this is the legitimate "continue talking to me" UX L-0666's
+			// fix must not break.
+			name: "deliberate reply to a later own message inside a topic",
+			msg: &models.Message{
+				Text:            "yes, continue",
+				Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+				MessageThreadID: 100,
+				ReplyToMessage: &models.Message{
+					ID:   105,
+					From: &models.User{ID: 42},
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
