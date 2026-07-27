@@ -472,7 +472,9 @@ func (e *Engine) configureDispatch(cfg DispatchConfig) {
 	e.dispatchConfig = cfg
 	if cfg.Enabled {
 		e.ensureDispatchStore()
+		e.ensurePendingDispatchStore()
 		e.startDispatchWatcher()
+		e.wireDispatchConfirmHandlers()
 	}
 }
 
@@ -484,6 +486,13 @@ func (e *Engine) ensureDispatchStore() *dispatchStore {
 	return e.dispatchStore
 }
 
+// maybeHandleDispatchBlock is a sensor, not an actuator (L-0667): it parses
+// and validates a [DISPATCH] block, but the ONLY path that actually
+// dispatches is Boss's confirm-button press (ConfirmDispatch ->
+// ControlPlaneDispatch). This retires the former auto-execute-on-parse
+// behavior, the last of the three text-actuation holes L-0658 diagnosed
+// where a text-generation channel directly triggered a persistent,
+// cross-engine action with no confirmation step.
 func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResponse string) (handled bool, replacement string) {
 	req, ok, err := parseDispatchBlock(fullResponse)
 	if !ok {
@@ -495,12 +504,55 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	if !e.dispatchConfig.Enabled || e.name != e.dispatchConfig.SourceProject {
 		return true, fmt.Sprintf("⚠️ Dispatch rejected: project %s is not allowed to emit [DISPATCH].", e.name)
 	}
-	receipt, err := e.ControlPlaneDispatch(p, sourceSessionKey, req)
-	if err != nil {
-		slog.Warn("dispatch rejected", "project", e.name, "letter", req.Letter, "to", req.To, "error", err)
+
+	cardManager, supportsCard := p.(ReceiptCardManager)
+	if !supportsCard {
+		// A platform without card support cannot render a confirm button.
+		// Rather than silently lose dispatch capability on that platform,
+		// fall back to the pre-L-0667 auto-execute behavior — a disclosed,
+		// deliberate capability fallback (L-0667 QUERY item 5), not an
+		// oversight.
+		receipt, err := e.ControlPlaneDispatch(p, sourceSessionKey, req)
+		if err != nil {
+			slog.Warn("dispatch rejected", "project", e.name, "letter", req.Letter, "to", req.To, "error", err)
+			return true, "⚠️ Dispatch rejected: " + err.Error()
+		}
+		return true, receipt
+	}
+
+	if _, _, err := validateDispatchArchive(req); err != nil {
 		return true, "⚠️ Dispatch rejected: " + err.Error()
 	}
-	return true, receipt
+
+	var replyCtx any = sourceSessionKey
+	if rc, ok := p.(ReplyContextReconstructor); ok {
+		if reconstructed, rErr := rc.ReconstructReplyCtx(sourceSessionKey); rErr == nil {
+			replyCtx = reconstructed
+		}
+	}
+
+	buttons := [][]ButtonOption{{{Text: "✅ Confirm Dispatch", Data: "dispatch_confirm:" + req.Letter}}}
+	locator, err := cardManager.SendReceiptCard(e.ctx, replyCtx, formatDispatchProposalCard(req), buttons)
+	if err != nil {
+		slog.Warn("dispatch: failed to send confirm card, falling back to auto-execute", "project", e.name, "letter", req.Letter, "error", err)
+		receipt, execErr := e.ControlPlaneDispatch(p, sourceSessionKey, req)
+		if execErr != nil {
+			return true, "⚠️ Dispatch rejected: " + execErr.Error()
+		}
+		return true, receipt
+	}
+
+	if err := e.ensurePendingDispatchStore().upsert(PendingDispatch{
+		Request:          req,
+		SourceSessionKey: sourceSessionKey,
+		SourcePlatform:   p.Name(),
+		Card:             locator,
+		ProposedAt:       time.Now(),
+	}); err != nil {
+		slog.Warn("dispatch: failed to record pending proposal", "project", e.name, "letter", req.Letter, "error", err)
+	}
+
+	return true, fmt.Sprintf("📋 Dispatch proposal for %s posted — awaiting confirmation.", req.Letter)
 }
 
 func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispatchRequest) (string, error) {

@@ -158,6 +158,10 @@ type Platform struct {
 	selfUser            *models.User
 	handler             core.MessageHandler
 	lifecycleHandler    core.PlatformLifecycleHandler
+	// dispatchConfirmHandler is called directly when Boss presses the
+	// confirm button on a dispatch-proposal card (L-0667) — never via
+	// message resynthesis. Injected by Engine.wireDispatchConfirmHandlers().
+	dispatchConfirmHandler core.DispatchConfirmHandler
 	cancel              context.CancelFunc
 	stopping            bool
 	generation          uint64
@@ -285,6 +289,13 @@ func (p *Platform) shouldUseRichMessage(content string) bool {
 // avoids a visible "flash" (delete + resend) for users.
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return true
+}
+
+// SetDispatchConfirmHandler implements core.DispatchConfirmReceiver.
+func (p *Platform) SetDispatchConfirmHandler(handler core.DispatchConfirmHandler) {
+	p.mu.Lock()
+	p.dispatchConfirmHandler = handler
+	p.mu.Unlock()
 }
 
 func (p *Platform) Start(handler core.MessageHandler) error {
@@ -1188,6 +1199,37 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 	rctx := replyContext{chatID: chatID, threadID: threadID, messageID: msgID}
 
 	emptyMarkup := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+
+	// Dispatch confirm callback (L-0667): calls the injected
+	// DispatchConfirmHandler directly -- this is the one callback in this
+	// file that does NOT resynthesize a core.Message and re-enter the
+	// normal handler pipeline. The card content itself is updated by
+	// Engine.ConfirmDispatch (via ReceiptCardManager) when a pending
+	// proposal is found; this branch only handles the stale/double-press
+	// case, since only the platform layer has this specific message's text
+	// to append a note to.
+	if strings.HasPrefix(data, "dispatch_confirm:") {
+		letterID := strings.TrimPrefix(data, "dispatch_confirm:")
+		if p.dispatchConfirmHandler == nil {
+			slog.Warn("telegram: dispatch confirm pressed but no handler wired", "letter", letterID)
+			return
+		}
+		_, confirmed, err := p.dispatchConfirmHandler(p, letterID)
+		if err != nil {
+			slog.Warn("telegram: dispatch confirm failed", "letter", letterID, "error", err)
+		}
+		if !confirmed {
+			if _, editErr := bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+				ChatID:      chatID,
+				MessageID:   msgID,
+				Text:        msg.Text + "\n\n⚠️ This dispatch proposal is no longer pending.",
+				ReplyMarkup: emptyMarkup,
+			}); editErr != nil {
+				slog.Debug("telegram: dispatch confirm stale-card edit failed", "error", editErr)
+			}
+		}
+		return
+	}
 
 	// Command callbacks (cmd:/lang en, cmd:/mode yolo, etc.)
 	if strings.HasPrefix(data, "cmd:") {

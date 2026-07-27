@@ -509,6 +509,10 @@ type Engine struct {
 	// actions (L-0658 Phase 2, L-0662 narrow slice). Lazily initialized via
 	// ensureControlPlaneAudit().
 	controlPlaneAudit *controlPlaneAuditStore
+	// pendingDispatchStore holds [DISPATCH] proposals awaiting Boss's
+	// confirm-card button press (L-0667). Lazily initialized via
+	// ensurePendingDispatchStore().
+	pendingDispatchStore *pendingDispatchStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
