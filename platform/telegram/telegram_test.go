@@ -1485,14 +1485,13 @@ func TestGeneralTopicIntakeCreatesTopicAndDispatchesSyntheticThreadMessage(t *te
 	if stubBot.createForumTopicCalls != 1 {
 		t.Fatalf("CreateForumTopic calls = %d, want 1", stubBot.createForumTopicCalls)
 	}
-	if len(stubBot.createTopicParams) != 1 || stubBot.createTopicParams[0].Name != "new-task" {
-		t.Fatalf("CreateForumTopic params = %+v, want new-task", stubBot.createTopicParams)
+	// L-0674 pursuit: the Topic is named in one step from the input text's
+	// slug at creation time — no placeholder, no second EditForumTopic call.
+	if len(stubBot.createTopicParams) != 1 || stubBot.createTopicParams[0].Name != "build-the-thing" {
+		t.Fatalf("CreateForumTopic params = %+v, want build-the-thing", stubBot.createTopicParams)
 	}
-	if stubBot.editForumTopicCalls != 1 {
-		t.Fatalf("EditForumTopic calls = %d, want 1", stubBot.editForumTopicCalls)
-	}
-	if gotName := stubBot.editTopicParams[0].Name; gotName != "new-task-build-the-thing" {
-		t.Fatalf("EditForumTopic name = %q, want new-task-build-the-thing", gotName)
+	if stubBot.editForumTopicCalls != 0 {
+		t.Fatalf("EditForumTopic calls = %d, want 0 (title set at creation)", stubBot.editForumTopicCalls)
 	}
 	if stubBot.SendMessageCallCount() != 2 {
 		t.Fatalf("SendMessage calls = %d, want 2 (topic bootstrap + General confirmation)", stubBot.SendMessageCallCount())

@@ -832,9 +832,17 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 		slog.Error("telegram: general topic intake unavailable", "error", err)
 		return true
 	}
+	// L-0674 (pursuit): name the Topic in one step from the input text's
+	// leading words (topicTitleSlug), so no placeholder title and no second
+	// EditForumTopic round-trip. Fall back to the neutral placeholder only
+	// when the input yields no usable slug (empty / purely non-alphanumeric).
+	topicName := topicTitleSlug(text)
+	if topicName == "" {
+		topicName = newTopicPlaceholderName
+	}
 	topic, err := bot.CreateForumTopic(ctx, &tgbot.CreateForumTopicParams{
 		ChatID: msg.Chat.ID,
-		Name:   newTopicPlaceholderName,
+		Name:   topicName,
 	})
 	if err != nil {
 		slog.Error("telegram: create forum topic failed", "chat", msg.Chat.ID, "msg_id", msg.ID, "error", err)
@@ -858,20 +866,6 @@ func (p *Platform) handleGeneralTopicIntake(ctx context.Context, msg *models.Mes
 	}
 
 	newThreadID := topic.MessageThreadID
-	topicName := topic.Name
-	if slug := topicTitleSlug(text); slug != "" {
-		topicName += "-" + slug
-	}
-	if topicName != topic.Name {
-		if _, err := bot.EditForumTopic(ctx, &tgbot.EditForumTopicParams{
-			ChatID:          msg.Chat.ID,
-			MessageThreadID: newThreadID,
-			Name:            topicName,
-		}); err != nil {
-			slog.Warn("telegram: edit forum topic failed", "chat", msg.Chat.ID, "thread_id", newThreadID, "topic", topicName, "error", err)
-		}
-	}
-
 	intakeText := "Task intake from General:\n\n" + strings.TrimSpace(text)
 	sent, err := p.sendTopicIntakeMessage(ctx, bot, msg.Chat.ID, newThreadID, intakeText)
 	if err != nil {
