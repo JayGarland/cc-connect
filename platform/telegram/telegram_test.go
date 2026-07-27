@@ -1344,6 +1344,89 @@ func TestIsDirectedAtBot(t *testing.T) {
 	}
 }
 
+// TestIsDirectedAtBotTopicOwnership covers L-0669: a bare, non-command,
+// non-mention, non-explicit-reply message inside a Forum Topic is accepted
+// only when the injected TopicOwnershipChecker reports the Topic bound to
+// this seat — never by scraping msg.Text or trusting Telegram's implicit
+// reply-to-topic-root artifact (already excluded by the L-0666 case above).
+func TestIsDirectedAtBotTopicOwnership(t *testing.T) {
+	bareMsg := &models.Message{
+		Text:            "just continuing here, no @ or reply",
+		Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+		MessageThreadID: 200,
+	}
+
+	tests := []struct {
+		name    string
+		checker core.TopicOwnershipChecker
+		msg     *models.Message
+		want    bool
+	}{
+		{
+			name: "bare text accepted when topic bound to this seat",
+			checker: func(topicID string) bool {
+				return topicID == "200"
+			},
+			msg:  bareMsg,
+			want: true,
+		},
+		{
+			name: "bare text rejected when topic bound to a different seat",
+			checker: func(topicID string) bool {
+				return false
+			},
+			msg:  bareMsg,
+			want: false,
+		},
+		{
+			name:    "bare text rejected when no checker is wired",
+			checker: nil,
+			msg:     bareMsg,
+			want:    false,
+		},
+		{
+			name: "checker never consulted outside a topic (threadID == 0)",
+			checker: func(topicID string) bool {
+				t.Fatalf("checker should not be called when MessageThreadID == 0")
+				return true
+			},
+			msg: &models.Message{
+				Text: "hello everyone",
+				Chat: models.Chat{ID: 1, Type: models.ChatTypeGroup},
+			},
+			want: false,
+		},
+		{
+			name: "checker does not override an explicit @mention match",
+			checker: func(topicID string) bool {
+				return false
+			},
+			msg: &models.Message{
+				Text:            "hey @mybot do something",
+				Chat:            models.Chat{ID: 1, Type: models.ChatTypeSupergroup, IsForum: true},
+				MessageThreadID: 200,
+				Entities: []models.MessageEntity{
+					{Type: models.MessageEntityTypeMention, Offset: 4, Length: 6},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Platform{token: "token", httpClient: &http.Client{}}
+			p.selfUser = &models.User{ID: 42, Username: "mybot"}
+			p.topicOwnershipChecker = tt.checker
+
+			got := p.isDirectedAtBot(tt.msg)
+			if got != tt.want {
+				t.Fatalf("isDirectedAtBot() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGeneralTopicIntakeCreatesTopicAndDispatchesSyntheticThreadMessage(t *testing.T) {
 	stubBot := newStubTelegramBot()
 	p := &Platform{

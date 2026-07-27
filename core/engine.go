@@ -2565,6 +2565,9 @@ func (e *Engine) Start() error {
 		if async, ok := p.(AsyncRecoverablePlatform); ok {
 			async.SetLifecycleHandler(e)
 		}
+		if r, ok := p.(TopicOwnershipReceiver); ok {
+			r.SetTopicOwnershipChecker(e.isTopicBoundToSeat)
+		}
 		if err := p.Start(e.handleMessage); err != nil {
 			slog.Warn("platform start failed", "project", e.name, "platform", p.Name(), "error", err)
 			startErrs = append(startErrs, fmt.Errorf("[%s] start platform %s: %w", e.name, p.Name(), err))
@@ -18017,6 +18020,15 @@ func (e *Engine) findLetterIDByTopic(topicID string) string {
 		}
 	}
 	return ""
+}
+
+// isTopicBoundToSeat implements TopicOwnershipChecker: it reports whether
+// topicID is bound to THIS engine's own seat in the dispatch ledger, reusing
+// findLetterIDByTopic's exp.To == e.name match (L-0669). A Platform calls
+// this to decide bare-text Topic routing without inferring ownership from
+// message content or Telegram's implicit reply-to-topic-root artifact.
+func (e *Engine) isTopicBoundToSeat(topicID string) bool {
+	return e.findLetterIDByTopic(topicID) != ""
 }
 
 func (e *Engine) resolveActiveLetterID(ccSessionKey, workspaceDir, messageContent string) string {

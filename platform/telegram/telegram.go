@@ -162,6 +162,12 @@ type Platform struct {
 	// confirm button on a dispatch-proposal card (L-0667) — never via
 	// message resynthesis. Injected by Engine.wireDispatchConfirmHandlers().
 	dispatchConfirmHandler core.DispatchConfirmHandler
+	// topicOwnershipChecker answers "is this forum-Topic bound to my seat?"
+	// from the dispatch ledger, injected by Engine.Start() for the
+	// L-0669 bare-text-in-own-Topic routing path. Never used to infer
+	// ownership from message content — only isDirectedAtBot's final,
+	// no-other-signal-matched fallback consults it.
+	topicOwnershipChecker core.TopicOwnershipChecker
 	cancel              context.CancelFunc
 	stopping            bool
 	generation          uint64
@@ -295,6 +301,13 @@ func (p *Platform) KeepPreviewOnFinish() bool {
 func (p *Platform) SetDispatchConfirmHandler(handler core.DispatchConfirmHandler) {
 	p.mu.Lock()
 	p.dispatchConfirmHandler = handler
+	p.mu.Unlock()
+}
+
+// SetTopicOwnershipChecker implements core.TopicOwnershipReceiver.
+func (p *Platform) SetTopicOwnershipChecker(checker core.TopicOwnershipChecker) {
+	p.mu.Lock()
+	p.topicOwnershipChecker = checker
 	p.mu.Unlock()
 }
 
@@ -1446,6 +1459,21 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 					return true
 				}
 			}
+		}
+	}
+
+	// Structured Topic ownership (L-0669): no command, no @mention, no
+	// explicit reply matched above — the only remaining signal is whether
+	// THIS Topic is durably bound to this seat in the dispatch ledger
+	// (queried via the injected checker, never by scraping msg.Text or
+	// trusting Telegram's implicit reply-to-topic-root artifact that
+	// L-0666 already excluded above). An unbound Topic, or a Topic bound
+	// to a different seat, still falls through to false — no seat gains
+	// ownership of a Topic it wasn't explicitly dispatched into.
+	if msg.MessageThreadID != 0 && p.topicOwnershipChecker != nil {
+		if p.topicOwnershipChecker(strconv.Itoa(msg.MessageThreadID)) {
+			slog.Debug("telegram: bare text accepted via topic ownership binding", "bot", botName, "thread_id", msg.MessageThreadID)
+			return true
 		}
 	}
 

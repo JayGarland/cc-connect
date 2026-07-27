@@ -347,6 +347,27 @@ type DispatchConfirmReceiver interface {
 	SetDispatchConfirmHandler(handler DispatchConfirmHandler)
 }
 
+// TopicOwnershipChecker reports whether a forum-Topic/thread ID is bound to
+// this Engine's own seat in the dispatch ledger (DispatchExpectation.To ==
+// this seat, keyed by the durable TopicID/TopicSessionKey recorded at
+// dispatch time — see Engine.findLetterIDByTopic). It is the single source
+// of truth a Platform consults to decide whether a bare, non-command,
+// non-mention, non-explicit-reply message inside a Topic is directed at this
+// seat, replacing any text-content or implicit-reply-artifact heuristic
+// (L-0669, closing the gap L-0666 flagged as Evidence Gap 2 and left
+// unresolved: durable identity must come from a stable key — the ledger's
+// TopicID binding — never from message content).
+type TopicOwnershipChecker func(topicID string) bool
+
+// TopicOwnershipReceiver is an optional Platform extension: platforms that
+// support forum Topics implement this to receive the Engine's ownership
+// checker at startup. Mirrors the existing Start(handler MessageHandler) /
+// DispatchConfirmReceiver injection shape (this interface's method is called
+// once, at setup, the same way p.Start(e.handleMessage) is).
+type TopicOwnershipReceiver interface {
+	SetTopicOwnershipChecker(checker TopicOwnershipChecker)
+}
+
 // ReceiptCardDeleter removes a proactively-sent card by its durable locator.
 // It differs from MessageDeleter, whose argument is a transient callback
 // reply context.
