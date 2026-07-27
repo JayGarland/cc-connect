@@ -505,6 +505,10 @@ type Engine struct {
 	dispatchStore           *dispatchStore
 	dispatchWatcherStarted  bool
 	topicLetterBindingStore *topicLetterBindingStore
+	// controlPlaneAudit is the append-only decision log for ControlPlane
+	// actions (L-0658 Phase 2, L-0662 narrow slice). Lazily initialized via
+	// ensureControlPlaneAudit().
+	controlPlaneAudit *controlPlaneAuditStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore

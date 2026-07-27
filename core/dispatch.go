@@ -495,7 +495,7 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	if !e.dispatchConfig.Enabled || e.name != e.dispatchConfig.SourceProject {
 		return true, fmt.Sprintf("⚠️ Dispatch rejected: project %s is not allowed to emit [DISPATCH].", e.name)
 	}
-	receipt, err := e.executeDispatch(p, sourceSessionKey, req)
+	receipt, err := e.ControlPlaneDispatch(p, sourceSessionKey, req)
 	if err != nil {
 		slog.Warn("dispatch rejected", "project", e.name, "letter", req.Letter, "to", req.To, "error", err)
 		return true, "⚠️ Dispatch rejected: " + err.Error()
