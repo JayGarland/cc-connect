@@ -1442,9 +1442,11 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 	}
 
 	// Non-command: check @mention
+	var hasAnyMention bool
 	if msg.Entities != nil {
 		for _, e := range msg.Entities {
 			if e.Type == models.MessageEntityTypeMention {
+				hasAnyMention = true
 				mention := extractEntityText(msg.Text, e.Offset, e.Length)
 				slog.Debug("telegram: checking mention", "bot", botName, "mention", mention, "match", strings.EqualFold(mention, "@"+botName))
 				if strings.EqualFold(mention, "@"+botName) {
@@ -1465,18 +1467,24 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 	// Excluding it here is a generic fix (no Secretary-specific carve-out):
 	// no seat has special reply privilege in a Topic merely for having
 	// created it (L-0666).
+	var hasAnyExplicitReply bool
 	if msg.ReplyToMessage != nil && msg.ReplyToMessage.From != nil {
 		isTopicRootLink := msg.MessageThreadID != 0 && msg.ReplyToMessage.ID == msg.MessageThreadID
 		slog.Debug("telegram: checking reply", "bot_id", self.ID, "reply_from_id", msg.ReplyToMessage.From.ID, "is_topic_root_link", isTopicRootLink)
 		if !isTopicRootLink && msg.ReplyToMessage.From.ID == self.ID {
 			return true
 		}
+		if !isTopicRootLink {
+			hasAnyExplicitReply = true
+		}
 	}
 
 	// Also check caption entities (for photos with captions)
+	var hasAnyCaptionMention bool
 	if msg.CaptionEntities != nil {
 		for _, e := range msg.CaptionEntities {
 			if e.Type == models.MessageEntityTypeMention {
+				hasAnyCaptionMention = true
 				mention := extractEntityText(msg.Caption, e.Offset, e.Length)
 				if strings.EqualFold(mention, "@"+botName) {
 					return true
@@ -1485,15 +1493,22 @@ func (p *Platform) isDirectedAtBot(msg *models.Message) bool {
 		}
 	}
 
-	// Structured Topic ownership (L-0669): no command, no @mention, no
-	// explicit reply matched above — the only remaining signal is whether
-	// THIS Topic is durably bound to this seat in the dispatch ledger
+	// Structured Topic ownership (L-0669): no command, no @mention (to ANY
+	// bot), no explicit reply matched above — the only remaining signal is
+	// whether THIS Topic is durably bound to this seat in the dispatch ledger
 	// (queried via the injected checker, never by scraping msg.Text or
 	// trusting Telegram's implicit reply-to-topic-root artifact that
 	// L-0666 already excluded above). An unbound Topic, or a Topic bound
 	// to a different seat, still falls through to false — no seat gains
 	// ownership of a Topic it wasn't explicitly dispatched into.
-	if msg.MessageThreadID != 0 && p.topicOwnershipChecker != nil {
+	//
+	// IMPORTANT (L-0669 follow-up fix): if the message contains ANY @mention
+	// (to ANY bot) or ANY explicit reply, we MUST NOT trigger the Topic
+	// ownership fallback — only truly bare text messages get that privilege.
+	// This prevents over-reach: in a Topic bound to seat A, if Boss @mentions
+	// seat B instead, only seat B should accept it — seat A must stay silent
+	// because an explicit @mention signal overrides Topic ownership.
+	if !hasAnyMention && !hasAnyCaptionMention && !hasAnyExplicitReply && msg.MessageThreadID != 0 && p.topicOwnershipChecker != nil {
 		if p.topicOwnershipChecker(strconv.Itoa(msg.MessageThreadID)) {
 			slog.Debug("telegram: bare text accepted via topic ownership binding", "bot", botName, "thread_id", msg.MessageThreadID)
 			return true
