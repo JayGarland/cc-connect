@@ -196,6 +196,61 @@ Type: QUERY
 	}
 }
 
+// TestValidateDispatchArchiveCaseInsensitiveHeaders reproduces L-0680: a letter
+// whose front-matter uses lowercase keys (id:/type:/thread:) — which the archive
+// PowerShell tooling accepts via case-insensitive -match and registers a valid
+// INDEX row for — must NOT be silently rejected by cc-connect's stricter parser.
+// Pre-fix, headers["ID"] missed a lowercase `id:` and validation failed with
+// ID="". Post-fix, parseArchiveFrontMatter canonicalizes known keys.
+func TestValidateDispatchArchiveCaseInsensitiveHeaders(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "topology-reframe")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0679.query.md")
+	// Lowercase keys, exactly the shape that triggered the L-0680 incident.
+	query := `---
+id: L-0679
+thread: topology-reframe
+type: QUERY
+---
+
+## Query
+`
+	if err := os.WriteFile(queryPath, []byte(query), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := validateDispatchArchive(dispatchRequest{
+		To:     "architect",
+		Letter: "L-0679",
+		Thread: "topology-reframe",
+		Path:   queryPath,
+	}); err != nil {
+		t.Fatalf("validateDispatchArchive() rejected lowercase headers: %v", err)
+	}
+}
+
+// TestParseArchiveFrontMatterCanonicalizesKnownKeys pins the fix at its source:
+// known protocol keys resolve to their canonical spelling regardless of input
+// casing, while unknown keys are preserved verbatim.
+func TestParseArchiveFrontMatterCanonicalizesKnownKeys(t *testing.T) {
+	body := "---\nid: L-0001\nTYPE: QUERY\nThread: t\nX-Custom: keep\n---\n"
+	h := parseArchiveFrontMatter(body)
+	if h["ID"] != "L-0001" {
+		t.Fatalf("ID = %q, want L-0001", h["ID"])
+	}
+	if h["Type"] != "QUERY" {
+		t.Fatalf("Type = %q, want QUERY", h["Type"])
+	}
+	if h["Thread"] != "t" {
+		t.Fatalf("Thread = %q, want t", h["Thread"])
+	}
+	if h["X-Custom"] != "keep" {
+		t.Fatalf("X-Custom = %q, want keep (unknown key preserved verbatim)", h["X-Custom"])
+	}
+}
+
 func TestDispatchResultReadyIsDir(t *testing.T) {
 	root := t.TempDir()
 	resultPath := filepath.Join(root, "L-0999.result.md")

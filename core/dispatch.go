@@ -316,6 +316,31 @@ func validateDispatchArchive(req dispatchRequest) (resultPath, indexPath string,
 	return resultPath, indexPath, nil
 }
 
+// archiveHeaderCanonical maps a case-folded front-matter key to its canonical
+// protocol spelling. The archive PowerShell tooling (archive-daily.ps1) matches
+// headers with a case-insensitive `-match`, so it happily accepts a lowercase
+// `id:` and registers a valid INDEX row; cc-connect's parser was the only stage
+// in the pipeline that did a case-sensitive `headers["ID"]` lookup, so the same
+// letter that INDEX accepted was silently rejected at dispatch (L-0680). This
+// table realigns cc-connect with the tooling: any casing of a known key resolves
+// to the spelling every caller here indexes by (headers["ID"], headers["Type"],
+// …). Unknown keys are preserved verbatim.
+var archiveHeaderCanonical = map[string]string{
+	"id":                  "ID",
+	"thread":              "Thread",
+	"parent":              "Parent",
+	"type":                "Type",
+	"to":                  "To",
+	"from":                "From",
+	"route":               "Route",
+	"project":             "Project",
+	"base-repo":           "Base-Repo",
+	"date":                "Date",
+	"status":              "Status",
+	"processed-by":        "Processed-By",
+	"source-session-path": "Source-Session-Path",
+}
+
 func parseArchiveFrontMatter(text string) map[string]string {
 	headers := map[string]string{}
 	lines := strings.Split(text, "\n")
@@ -331,7 +356,11 @@ func parseArchiveFrontMatter(text string) map[string]string {
 		if !ok {
 			continue
 		}
-		headers[strings.TrimSpace(key)] = strings.TrimSpace(value)
+		key = strings.TrimSpace(key)
+		if canonical, known := archiveHeaderCanonical[strings.ToLower(key)]; known {
+			key = canonical
+		}
+		headers[key] = strings.TrimSpace(value)
 	}
 	return headers
 }
@@ -504,10 +533,11 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 		return false, ""
 	}
 	if err != nil {
-		return true, "⚠️ Dispatch rejected: " + err.Error()
+		return true, e.rejectDispatch(req, sourceSessionKey, err)
 	}
 	if !e.dispatchConfig.Enabled || e.name != e.dispatchConfig.SourceProject {
-		return true, fmt.Sprintf("⚠️ Dispatch rejected: project %s is not allowed to emit [DISPATCH].", e.name)
+		return true, e.rejectDispatch(req, sourceSessionKey,
+			fmt.Errorf("project %s is not allowed to emit [DISPATCH]", e.name))
 	}
 
 	cardManager, supportsCard := p.(ReceiptCardManager)
@@ -526,7 +556,7 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	}
 
 	if _, _, err := validateDispatchArchive(req); err != nil {
-		return true, "⚠️ Dispatch rejected: " + err.Error()
+		return true, e.rejectDispatch(req, sourceSessionKey, err)
 	}
 
 	var replyCtx any = sourceSessionKey
@@ -558,6 +588,45 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	}
 
 	return true, fmt.Sprintf("📋 Dispatch proposal for %s posted — awaiting confirmation.", req.Letter)
+}
+
+// rejectDispatch is the single exit for a [DISPATCH] rejected BEFORE it reaches
+// the control plane (bad Letter format, wrong source project, or archive
+// validation failure). It closes the L-0680 forensic-silence gap: previously
+// these branches returned only the user-facing "⚠️ Dispatch rejected" string,
+// with no slog line (a live-log grep found zero) and no control-plane audit
+// entry (recordControlPlaneDispatch only runs inside ControlPlaneDispatch,
+// which a pre-validation reject never reaches). A rejection is now visible in
+// the same two places a success is — the log and the append-only audit ledger —
+// so a dispatch that never happened can no longer be indistinguishable from one
+// that was never attempted. The returned string is unchanged so the Telegram
+// receipt behavior Boss already sees is preserved.
+func (e *Engine) rejectDispatch(req dispatchRequest, sourceSessionKey string, err error) string {
+	slog.Warn("dispatch rejected",
+		"project", e.name,
+		"letter", req.Letter,
+		"thread", req.Thread,
+		"to", req.To,
+		"path", req.Path,
+		"error", err,
+	)
+	if store := e.ensureControlPlaneAudit(); store != nil {
+		entry := ControlPlaneAuditEntry{
+			Action:           "dispatch_rejected",
+			Letter:           req.Letter,
+			Thread:           req.Thread,
+			To:               req.To,
+			SourceProject:    e.name,
+			SourceSessionKey: sourceSessionKey,
+			Outcome:          "error: " + err.Error(),
+			At:               time.Now(),
+		}
+		if auditErr := store.append(entry); auditErr != nil {
+			slog.Warn("control plane audit: failed to record dispatch rejection",
+				"letter", req.Letter, "to", req.To, "error", auditErr)
+		}
+	}
+	return "⚠️ Dispatch rejected: " + err.Error()
 }
 
 func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispatchRequest) (string, error) {
