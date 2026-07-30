@@ -213,6 +213,35 @@ func (b *stubTelegramBot) EditMessageText(_ context.Context, params *tgbot.EditM
 	return &models.Message{ID: 99}, nil
 }
 
+func TestCreateTaskTopicPreservesCreatedTopicWhenIntakeSendFails(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	stubBot.sendErr = errors.New("http2: Transport received Server's graceful shutdown GOAWAY")
+	p := &Platform{bot: stubBot}
+
+	topic, err := p.CreateTaskTopic(
+		context.Background(),
+		"telegram:-1003917051393:7664413698",
+		"L-0592",
+		"Letter intake from [DISPATCH]",
+	)
+
+	if err == nil {
+		t.Fatal("CreateTaskTopic error = nil, want intake delivery error")
+	}
+	if topic == nil {
+		t.Fatal("CreateTaskTopic topic = nil, want the successfully created topic")
+	}
+	if topic.ThreadID != "824" {
+		t.Errorf("topic.ThreadID = %q, want 824", topic.ThreadID)
+	}
+	if topic.SessionKey != "telegram:-1003917051393:824:7664413698" {
+		t.Errorf("topic.SessionKey = %q", topic.SessionKey)
+	}
+	if stubBot.createForumTopicCalls != 1 {
+		t.Errorf("CreateForumTopic calls = %d, want 1", stubBot.createForumTopicCalls)
+	}
+}
+
 func TestUpdateMessageWithButtonsIgnoresUnchangedMessage(t *testing.T) {
 	stubBot := newStubTelegramBot()
 	stubBot.editMessageErrors = []error{errors.New("message is not modified")}

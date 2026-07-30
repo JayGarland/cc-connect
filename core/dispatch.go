@@ -721,20 +721,29 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 			}
 			topic, err := creator.CreateTaskTopic(e.ctx, dashboardSessionKey, req.Letter, "Letter intake from [DISPATCH]:\n\n"+dispatchMessage)
 			if err != nil {
-				slog.Warn("failed to create task topic, falling back to virtual topic", "project", e.name, "letter", req.Letter, "error", err)
+				if topic == nil || strings.TrimSpace(topic.SessionKey) == "" {
+					slog.Warn("failed to create task topic, falling back to virtual topic", "project", e.name, "letter", req.Letter, "error", err)
 
-				sessionKey, channelKey, topicName, err = virtualTopicSessionKey(dashboardSessionKey, req.Letter)
-				if err != nil {
-					return "", fmt.Errorf("create task topic failed: %w (and dashboard session key is invalid)", err)
-				}
-
-				if rc, ok := p.(ReplyContextReconstructor); ok {
-					if reconstructed, rErr := rc.ReconstructReplyCtx(dashboardSessionKey); rErr == nil {
-						replyCtx = reconstructed
+					sessionKey, channelKey, topicName, err = virtualTopicSessionKey(dashboardSessionKey, req.Letter)
+					if err != nil {
+						return "", fmt.Errorf("create task topic failed: %w (and dashboard session key is invalid)", err)
 					}
-				}
-				if replyCtx == nil {
-					replyCtx = dashboardSessionKey
+
+					if rc, ok := p.(ReplyContextReconstructor); ok {
+						if reconstructed, rErr := rc.ReconstructReplyCtx(dashboardSessionKey); rErr == nil {
+							replyCtx = reconstructed
+						}
+					}
+					if replyCtx == nil {
+						replyCtx = dashboardSessionKey
+					}
+				} else {
+					slog.Warn("dispatch topic intake failed; continuing in created topic", "project", e.name, "letter", req.Letter, "topic_id", topic.ThreadID, "error", err)
+					sessionKey = topic.SessionKey
+					replyCtx = topic.ReplyCtx
+					topicID = topic.ThreadID
+					topicName = topic.Name
+					channelKey = chatID + ":" + topicID
 				}
 			} else {
 				if topic == nil || strings.TrimSpace(topic.SessionKey) == "" {

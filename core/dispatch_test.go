@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -368,6 +369,55 @@ Type: QUERY
 	exp := open[0]
 	if exp.Letter != "L-0154" || exp.TopicID != "" || exp.TopicSessionKey != "telegram:-1003917051393:0154:0" {
 		t.Errorf("unexpected expectation: %+v", exp)
+	}
+}
+
+func TestExecuteDispatchKeepsCreatedTopicWhenIntakeFails(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "topic-intake")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0592.query.md")
+	if err := os.WriteFile(queryPath, []byte("---\nID: L-0592\nThread: topic-intake\nType: QUERY\n---\n\n## Query\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &mockTaskTopicPlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		createTaskTopicFunc: func(context.Context, string, string, string) (*TaskTopic, error) {
+			return &TaskTopic{
+				SessionKey: "telegram:-1003917051393:824:7664413698",
+				ReplyCtx:   "topic-824",
+				ThreadID:   "824",
+				Name:       "L-0592",
+			}, errors.New("telegram: send dispatch topic intake: GOAWAY")
+		},
+	}
+
+	targetEngine := NewEngine("product-manager", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	targetEngine.SetDispatchTopicIsolation(true)
+	sourceEngine := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sourceEngine.dataDir = root
+	sourceEngine.relayManager = NewRelayManager(root)
+	sourceEngine.relayManager.RegisterEngine("product-manager", targetEngine)
+	sourceEngine.relayManager.RegisterEngine("secretary-seat", sourceEngine)
+	sourceEngine.configureDispatch(DispatchConfig{Enabled: true, SourceProject: "secretary-seat", DashboardSessionKey: "telegram:-1003917051393:7664413698"})
+
+	receipt, err := sourceEngine.executeDispatch(p, "telegram:-1003917051393:7664413698", dispatchRequest{To: "product-manager", Letter: "L-0592", Thread: "topic-intake", Path: queryPath})
+	if err != nil {
+		t.Fatalf("executeDispatch failed: %v", err)
+	}
+	if receipt != "✅ Dispatched L-0592 to product-manager in Topic #824" {
+		t.Errorf("receipt = %q", receipt)
+	}
+
+	open, err := sourceEngine.dispatchStore.listOpen()
+	if err != nil {
+		t.Fatalf("listOpen failed: %v", err)
+	}
+	if len(open) != 1 || open[0].TopicID != "824" || open[0].TopicSessionKey != "telegram:-1003917051393:824:7664413698" {
+		t.Errorf("dispatch expectation = %+v, want real Topic #824", open)
 	}
 }
 

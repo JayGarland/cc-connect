@@ -159,11 +159,11 @@ type Platform struct {
 	progressStyle         string // "legacy" | "compact" — telegram has no rich card, so "card" is mapped to "compact"
 	httpClient            *http.Client
 
-	mu                  sync.RWMutex
-	bot                 telegramBot
-	selfUser            *models.User
-	handler             core.MessageHandler
-	lifecycleHandler    core.PlatformLifecycleHandler
+	mu               sync.RWMutex
+	bot              telegramBot
+	selfUser         *models.User
+	handler          core.MessageHandler
+	lifecycleHandler core.PlatformLifecycleHandler
 	// dispatchConfirmHandler is called directly when Boss presses the
 	// confirm button on a dispatch-proposal card (L-0667) — never via
 	// message resynthesis. Injected by Engine.wireDispatchConfirmHandlers().
@@ -180,16 +180,16 @@ type Platform struct {
 	// messages in it are recognized by topicOwnershipChecker without a
 	// repeated @mention (L-0669 follow-up). Injected by Engine.Start().
 	topicOwnershipRecorder core.TopicOwnershipRecorder
-	cancel              context.CancelFunc
-	stopping            bool
-	generation          uint64
-	unavailableNotified bool
-	everConnected       bool
-	newBot              botFactory
-	newBackoffTimer     func(time.Duration) backoffTimer
-	newTypingTicker     func(time.Duration) typingTicker
-	topicIntakeMu       sync.Mutex
-	topicIntakeSeen     map[string]struct{}
+	cancel                 context.CancelFunc
+	stopping               bool
+	generation             uint64
+	unavailableNotified    bool
+	everConnected          bool
+	newBot                 botFactory
+	newBackoffTimer        func(time.Duration) backoffTimer
+	newTypingTicker        func(time.Duration) typingTicker
+	topicIntakeMu          sync.Mutex
+	topicIntakeSeen        map[string]struct{}
 }
 
 const (
@@ -952,11 +952,16 @@ func (p *Platform) CreateTaskTopic(ctx context.Context, dashboardSessionKey, tit
 			slog.Warn("telegram: edit dispatch topic failed", "chat", rc.chatID, "thread_id", newThreadID, "topic", topicName, "error", err)
 		}
 	}
+	userID := telegramUserIDFromSessionKey(dashboardSessionKey)
 	sent, err := p.sendTopicIntakeMessage(ctx, bot, rc.chatID, newThreadID, content)
 	if err != nil {
-		return nil, err
+		return &core.TaskTopic{
+			SessionKey: p.buildSessionKey(rc.chatID, newThreadID, userID),
+			ReplyCtx:   replyContext{chatID: rc.chatID, threadID: newThreadID},
+			ThreadID:   strconv.Itoa(newThreadID),
+			Name:       topicName,
+		}, fmt.Errorf("telegram: send dispatch topic intake: %w", err)
 	}
-	userID := telegramUserIDFromSessionKey(dashboardSessionKey)
 	messageID := 0
 	if sent != nil {
 		messageID = sent.ID
