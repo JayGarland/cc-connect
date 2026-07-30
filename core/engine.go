@@ -514,6 +514,10 @@ type Engine struct {
 	// confirm-card button press (L-0667). Lazily initialized via
 	// ensurePendingDispatchStore().
 	pendingDispatchStore *pendingDispatchStore
+	// pendingBulkCloseStore holds in-review "一并封信" batches offered on a
+	// dispatch confirmation card (L-0694 Option B). Lazily initialized via
+	// ensurePendingBulkCloseStore().
+	pendingBulkCloseStore *pendingBulkCloseStore
 
 	notifyConfig         NotifyConfig
 	notifyStore          *notifyStore
@@ -7420,6 +7424,18 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		if args[0] == "closecancel" && (len(args) == 2 || len(args) == 3) {
 			return e.cancelReceiptClose(p, msg, args[1])
 		}
+		if args[0] == "bulkclose" && len(args) == 2 {
+			return e.showBulkCloseReview(p, msg, args[1])
+		}
+		if args[0] == "bulkcloseconfirm" && len(args) == 2 {
+			return e.confirmBulkClose(p, msg, args[1])
+		}
+		if args[0] == "bulkclosecancel" && len(args) == 2 {
+			return e.cancelBulkClose(p, msg, args[1])
+		}
+		if args[0] == "bulkcloseretry" && len(args) == 2 {
+			return e.retryBulkClose(p, msg, args[1])
+		}
 		if args[0] == "closeconfirm" && (len(args) == 2 || len(args) == 3) {
 			generation := ""
 			if len(args) == 3 {
@@ -7905,24 +7921,24 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 		}
 		e.reply(p, msg.ReplyCtx, content)
 	}
-	pushed, pushErr, closeErr := e.runArchiveClose(letter, receipt)
-	if closeErr != nil {
-		slog.Warn("receipt: close failed", "letter", letter, "error", closeErr)
-		showRetry(e.i18n.Tf(MsgReceiptCloseFailed, letter, closeErr.Error()))
+	outcome := e.executeArchiveClose(letter, receipt)
+	if outcome.CloseErr != nil {
+		slog.Warn("receipt: close failed", "letter", letter, "error", outcome.CloseErr)
+		showRetry(e.i18n.Tf(MsgReceiptCloseFailed, letter, outcome.CloseErr.Error()))
 		return true
 	}
-	if !pushed {
-		slog.Warn("receipt: closed locally but push failed", "letter", letter, "push_error", pushErr)
-		showRetry(e.i18n.Tf(MsgReceiptClosePending, letter, pushErr))
+	if !outcome.Pushed {
+		slog.Warn("receipt: closed locally but push failed", "letter", letter, "push_error", outcome.PushErr)
+		showRetry(e.i18n.Tf(MsgReceiptClosePending, letter, outcome.PushErr))
 		return true
 	}
-	if _, changed, err := e.notifyStore.markClosed(letter); err != nil || !changed {
+	if outcome.MarkErr != nil || !outcome.Changed {
 		// The archive close+push already landed durably — only cc-connect's own
 		// local receipt bookkeeping failed. Don't report success (the card and
 		// the receipt store would then permanently disagree with each other),
 		// but don't roll back the archive either; retrying is safe and simply
 		// redoes this bookkeeping step on an already-closed letter.
-		slog.Warn("receipt: close succeeded but local receipt bookkeeping failed", "letter", letter, "error", err)
+		slog.Warn("receipt: close succeeded but local receipt bookkeeping failed", "letter", letter, "error", outcome.MarkErr)
 		showRetry(e.i18n.Tf(MsgReceiptCloseUnconfirmed, letter))
 		return true
 	}
@@ -7931,6 +7947,38 @@ func (e *Engine) closeReceiptFromInbox(p Platform, msg *Message, letter string, 
 	}
 	e.sendCloseSuccessWithExtractOption(p, msg, letter)
 	return true
+}
+
+// archiveCloseOutcome is the result of the two effects every close path
+// shares: archive-daily.ps1 -Close -Push, then the local ledger's
+// markClosed. It carries no UI — closeReceiptFromInbox (single letter) and
+// confirmBulkClose (L-0694 Option B) each render their own card/message from
+// it, but both call executeArchiveClose for the effects themselves, so the
+// close logic itself has exactly one definition site (mirrors the
+// closeReadiness single-definition-site invariant in close_readiness.go).
+type archiveCloseOutcome struct {
+	Pushed   bool
+	PushErr  string
+	CloseErr error
+	Changed  bool
+	MarkErr  error
+	Record   receiptRecord
+}
+
+// executeArchiveClose runs runArchiveClose then, on success, markClosed. It
+// performs no UI and does not check isAdmin or generation staleness —
+// callers are responsible for both before calling this (see
+// closeReceiptFromInbox and confirmBulkClose).
+func (e *Engine) executeArchiveClose(letter string, receipt receiptRecord) archiveCloseOutcome {
+	pushed, pushErr, closeErr := e.runArchiveClose(letter, receipt)
+	if closeErr != nil {
+		return archiveCloseOutcome{CloseErr: closeErr}
+	}
+	if !pushed {
+		return archiveCloseOutcome{PushErr: pushErr}
+	}
+	record, changed, markErr := e.notifyStore.markClosed(letter)
+	return archiveCloseOutcome{Pushed: true, Changed: changed, MarkErr: markErr, Record: record}
 }
 
 // sendCloseSuccessWithExtractOption posts the CLOSED success note with an

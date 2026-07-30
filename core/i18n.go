@@ -553,6 +553,33 @@ const (
 	MsgReceiptViewUpdate       MsgKey = "receipt_view_update"
 	MsgReceiptUpdatePage       MsgKey = "receipt_update_page"
 
+	// L-0694 Option A: advisory close-readiness verdict line on the inbox
+	// card (see core/close_readiness.go).
+	MsgCloseReadinessNeedsDirection   MsgKey = "close_readiness_needs_direction"
+	MsgCloseReadinessReadyWithChanges MsgKey = "close_readiness_ready_with_changes"
+	MsgCloseReadinessReady            MsgKey = "close_readiness_ready"
+	MsgCloseReadinessUnknown          MsgKey = "close_readiness_unknown"
+
+	// L-0694 Option B: same-thread unclosed letters listed on the dispatch
+	// confirmation card, plus the batch review/confirm/outcome cards for the
+	// "一并封信" bulk-close action (see core/bulk_close.go).
+	MsgBulkCloseListHeader     MsgKey = "bulk_close_list_header"
+	MsgBulkCloseListItem       MsgKey = "bulk_close_list_item"
+	MsgBulkCloseButton         MsgKey = "bulk_close_button"
+	MsgBulkCloseTruncatedNote  MsgKey = "bulk_close_truncated_note"
+	MsgBulkCloseReviewHeader   MsgKey = "bulk_close_review_header"
+	MsgBulkCloseReviewItem     MsgKey = "bulk_close_review_item"
+	MsgBulkCloseConfirmBtn     MsgKey = "bulk_close_confirm_btn"
+	MsgBulkCloseCancelBtn      MsgKey = "bulk_close_cancel_btn"
+	MsgBulkCloseCancelled      MsgKey = "bulk_close_cancelled"
+	MsgBulkCloseUnavailable    MsgKey = "bulk_close_unavailable"
+	MsgBulkCloseResultHeader   MsgKey = "bulk_close_result_header"
+	MsgBulkCloseResultClosed   MsgKey = "bulk_close_result_closed"
+	MsgBulkCloseResultLocal    MsgKey = "bulk_close_result_local"
+	MsgBulkCloseResultSkipped MsgKey = "bulk_close_result_skipped"
+	MsgBulkCloseResultFailed  MsgKey = "bulk_close_result_failed"
+	MsgBulkCloseRetryBtn      MsgKey = "bulk_close_retry_btn"
+
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
 	MsgWhoamiName      MsgKey = "whoami_name"
@@ -1035,6 +1062,142 @@ var messages = map[MsgKey]map[Language]string{
 	MsgReceiptChanges: {LangEnglish: "Changes:", LangChinese: "本次更新：", LangTraditionalChinese: "本次更新：", LangJapanese: "今回の更新:", LangSpanish: "Cambios:"},
 	MsgReceiptViewUpdate: {LangEnglish: "View this update", LangChinese: "查看本次更新", LangTraditionalChinese: "查看本次更新", LangJapanese: "今回の更新を見る", LangSpanish: "Ver esta actualización"},
 	MsgReceiptUpdatePage: {LangEnglish: "This update (Page %d/%d)\n%s", LangChinese: "本次更新（第 %d/%d 页）\n%s", LangTraditionalChinese: "本次更新（第 %d/%d 頁）\n%s", LangJapanese: "今回の更新（%d/%dページ）\n%s", LangSpanish: "Esta actualización (página %d/%d)\n%s"},
+
+	// L-0694 Option A: advisory close-readiness verdict line.
+	MsgCloseReadinessNeedsDirection: {
+		LangEnglish:            "⏸ Suggest giving direction first · %s",
+		LangChinese:            "⏸ 建议先给处置方向 · %s",
+		LangTraditionalChinese: "⏸ 建議先給處置方向 · %s",
+		LangJapanese:           "⏸ 先に対応方針の指示を推奨 · %s",
+		LangSpanish:            "⏸ Se sugiere dar dirección primero · %s",
+	},
+	MsgCloseReadinessReadyWithChanges: {
+		LangEnglish:            "✅ Suggest ready to close · DONE · updated after arrival, review changes first",
+		LangChinese:            "✅ 建议可封信 · DONE · 到货后有追击更新，建议先看变更",
+		LangTraditionalChinese: "✅ 建議可封信 · DONE · 送達後有追蹤更新，建議先看變更",
+		LangJapanese:           "✅ 結案可能と推奨 · DONE · 到着後に追跡更新あり、先に変更を確認推奨",
+		LangSpanish:            "✅ Se sugiere listo para cerrar · DONE · actualizado tras la llegada, revisar cambios primero",
+	},
+	MsgCloseReadinessReady: {
+		LangEnglish:            "✅ Suggest ready to close · DONE",
+		LangChinese:            "✅ 建议可封信 · DONE",
+		LangTraditionalChinese: "✅ 建議可封信 · DONE",
+		LangJapanese:           "✅ 結案可能と推奨 · DONE",
+		LangSpanish:            "✅ Se sugiere listo para cerrar · DONE",
+	},
+	MsgCloseReadinessUnknown: {
+		LangEnglish:            "— Status unknown, treated as not ready",
+		LangChinese:            "— 状态未知，按未封处理",
+		LangTraditionalChinese: "— 狀態未知，按未封處理",
+		LangJapanese:           "— 状態不明、未結案として扱う",
+		LangSpanish:            "— Estado desconocido, tratado como no listo",
+	},
+
+	// L-0694 Option B: bulk-close list, review, and result cards.
+	MsgBulkCloseListHeader: {
+		LangEnglish:            "Same-thread unclosed letters (%d):",
+		LangChinese:            "同 Thread 未封信（%d 封）：",
+		LangTraditionalChinese: "同 Thread 未封信（%d 封）：",
+		LangJapanese:           "同スレッドの未結案（%d 件）：",
+		LangSpanish:            "Cartas sin cerrar del mismo hilo (%d):",
+	},
+	MsgBulkCloseListItem: {
+		LangEnglish:            "• %s · %s",
+		LangChinese:            "• %s · %s",
+		LangTraditionalChinese: "• %s · %s",
+		LangJapanese:           "• %s · %s",
+		LangSpanish:            "• %s · %s",
+	},
+	MsgBulkCloseButton: {
+		LangEnglish:            "🔒 Close together (%d)",
+		LangChinese:            "🔒 一并封信 (%d)",
+		LangTraditionalChinese: "🔒 一併封信 (%d)",
+		LangJapanese:           "🔒 まとめて結案 (%d)",
+		LangSpanish:            "🔒 Cerrar juntas (%d)",
+	},
+	MsgBulkCloseTruncatedNote: {
+		LangEnglish:            "(%d more not listed — not included in this batch)",
+		LangChinese:            "（另有 %d 封未列出，不在本次封信范围内）",
+		LangTraditionalChinese: "（另有 %d 封未列出，不在本次封信範圍內）",
+		LangJapanese:           "（他に %d 件は未表示 — 今回の対象外）",
+		LangSpanish:            "(%d más no listadas — no incluidas en este lote)",
+	},
+	MsgBulkCloseReviewHeader: {
+		LangEnglish:            "🔒 Confirm closing these %d letters? This registers Boss's acceptance for each and cannot be undone.",
+		LangChinese:            "🔒 确认将以下 %d 封信标记为 CLOSED？此操作代表总裁对每一封的验收，且不可撤销。",
+		LangTraditionalChinese: "🔒 確認將以下 %d 封信標記為 CLOSED？此操作代表總裁對每一封的驗收，且不可撤銷。",
+		LangJapanese:           "🔒 以下の %d 件を CLOSED として確定しますか？各件について総裁の受諾を意味し、取り消せません。",
+		LangSpanish:            "🔒 ¿Confirmar el cierre de estas %d cartas? Esto registra la aceptación del Jefe para cada una y no se puede deshacer.",
+	},
+	MsgBulkCloseReviewItem: {
+		LangEnglish:            "• %s · %s · %s",
+		LangChinese:            "• %s · %s · %s",
+		LangTraditionalChinese: "• %s · %s · %s",
+		LangJapanese:           "• %s · %s · %s",
+		LangSpanish:            "• %s · %s · %s",
+	},
+	MsgBulkCloseConfirmBtn: {
+		LangEnglish:            "✅ Confirm close %d letters",
+		LangChinese:            "✅ 确认封信 %d 封",
+		LangTraditionalChinese: "✅ 確認封信 %d 封",
+		LangJapanese:           "✅ %d 件の結案を確定",
+		LangSpanish:            "✅ Confirmar cierre de %d cartas",
+	},
+	MsgBulkCloseCancelBtn: {
+		LangEnglish: "❌ Cancel", LangChinese: "❌ 取消", LangTraditionalChinese: "❌ 取消", LangJapanese: "❌ キャンセル", LangSpanish: "❌ Cancelar",
+	},
+	MsgBulkCloseCancelled: {
+		LangEnglish:            "Bulk close cancelled — no letters were closed.",
+		LangChinese:            "一并封信已取消——未封任何信。",
+		LangTraditionalChinese: "一併封信已取消——未封任何信。",
+		LangJapanese:           "一括結案をキャンセルしました — どの手紙も結案していません。",
+		LangSpanish:            "Cierre por lotes cancelado — no se cerró ninguna carta.",
+	},
+	MsgBulkCloseUnavailable: {
+		LangEnglish:            "This bulk-close review is no longer available.",
+		LangChinese:            "此一并封信复核已失效。",
+		LangTraditionalChinese: "此一併封信複核已失效。",
+		LangJapanese:           "この一括結案の確認はもう利用できません。",
+		LangSpanish:            "Esta revisión de cierre por lotes ya no está disponible.",
+	},
+	MsgBulkCloseResultHeader: {
+		LangEnglish:            "🔒 Bulk close result for %d letters:",
+		LangChinese:            "🔒 一并封信结果（共 %d 封）：",
+		LangTraditionalChinese: "🔒 一併封信結果（共 %d 封）：",
+		LangJapanese:           "🔒 一括結案の結果（計 %d 件）：",
+		LangSpanish:            "🔒 Resultado del cierre por lotes de %d cartas:",
+	},
+	MsgBulkCloseResultClosed: {
+		LangEnglish:            "✅ Closed: %s",
+		LangChinese:            "✅ 已封信：%s",
+		LangTraditionalChinese: "✅ 已封信：%s",
+		LangJapanese:           "✅ 結案済み：%s",
+		LangSpanish:            "✅ Cerradas: %s",
+	},
+	MsgBulkCloseResultLocal: {
+		LangEnglish:            "⚠️ Closed locally, not yet synced: %s",
+		LangChinese:            "⚠️ 本地已封信·远端未同步：%s",
+		LangTraditionalChinese: "⚠️ 本地已封信·遠端未同步：%s",
+		LangJapanese:           "⚠️ ローカルで結案済み・リモート未同期：%s",
+		LangSpanish:            "⚠️ Cerradas localmente, aún no sincronizadas: %s",
+	},
+	MsgBulkCloseResultSkipped: {
+		LangEnglish:            "⏭ Skipped (content changed since review): %s",
+		LangChinese:            "⏭ 已跳过（内容已更新，未封）：%s",
+		LangTraditionalChinese: "⏭ 已跳過（內容已更新，未封）：%s",
+		LangJapanese:           "⏭ スキップ（確認後に内容が変更）：%s",
+		LangSpanish:            "⏭ Omitidas (el contenido cambió desde la revisión): %s",
+	},
+	MsgBulkCloseResultFailed: {
+		LangEnglish:            "❌ Failed: %s",
+		LangChinese:            "❌ 失败：%s",
+		LangTraditionalChinese: "❌ 失敗：%s",
+		LangJapanese:           "❌ 失敗：%s",
+		LangSpanish:            "❌ Fallidas: %s",
+	},
+	MsgBulkCloseRetryBtn: {
+		LangEnglish: "🔁 Retry failed", LangChinese: "🔁 重试失败项", LangTraditionalChinese: "🔁 重試失敗項", LangJapanese: "🔁 失敗分を再試行", LangSpanish: "🔁 Reintentar fallidas",
+	},
 	MsgBackgroundAutoDenied: {
 		LangEnglish:            "⚠️ Background task requested permission for `%s` but was auto-denied (no active user turn). Send a message or use `/yolo` to approve future requests.",
 		LangChinese:            "⚠️ 后台任务请求使用工具 `%s` 的权限，但已自动拒绝（当前无活跃会话）。请发送消息或使用 `/yolo` 授权后续请求。",
