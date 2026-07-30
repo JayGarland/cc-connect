@@ -596,7 +596,29 @@ func TestRichMessageDisabledUsesHTMLForSendAndReply(t *testing.T) {
 	}
 }
 
-func TestSendUsesRichMessageForList(t *testing.T) {
+func TestSendUsesRichMessageForTable(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	p := &Platform{bot: stubBot}
+	ctx := context.Background()
+	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
+
+	// L-0691: only tables trigger RichMessage; a list must not.
+	content := "| A | B |\n| --- | --- |\n| 1 | 2 |"
+	if err := p.Send(ctx, rctx, content); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if stubBot.sendRichMessageCalls != 1 {
+		t.Fatalf("sendRichMessageCalls = %d, want 1", stubBot.sendRichMessageCalls)
+	}
+	if stubBot.sendMessageCalls != 0 {
+		t.Fatalf("sendMessageCalls = %d, want 0 (should not fall back on success)", stubBot.sendMessageCalls)
+	}
+}
+
+// TestSendListDoesNotUseRichMessage pins L-0691: a plain list run takes the
+// lower-latency HTML path, never RichMessage.
+func TestSendListDoesNotUseRichMessage(t *testing.T) {
 	stubBot := newStubTelegramBot()
 	p := &Platform{bot: stubBot}
 	ctx := context.Background()
@@ -607,11 +629,11 @@ func TestSendUsesRichMessageForList(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	if stubBot.sendRichMessageCalls != 1 {
-		t.Fatalf("sendRichMessageCalls = %d, want 1", stubBot.sendRichMessageCalls)
+	if stubBot.sendRichMessageCalls != 0 {
+		t.Fatalf("sendRichMessageCalls = %d, want 0 for a list (L-0691: tables only)", stubBot.sendRichMessageCalls)
 	}
-	if stubBot.sendMessageCalls != 0 {
-		t.Fatalf("sendMessageCalls = %d, want 0 (should not fall back on success)", stubBot.sendMessageCalls)
+	if stubBot.sendMessageCalls != 1 {
+		t.Fatalf("sendMessageCalls = %d, want 1 (HTML path)", stubBot.sendMessageCalls)
 	}
 }
 
@@ -660,7 +682,7 @@ func TestSendFallsBackToHTMLWhenRichMessageFails(t *testing.T) {
 	ctx := context.Background()
 	rctx := replyContext{chatID: 1, threadID: 0, messageID: 0}
 
-	content := "- item one\n- item two"
+	content := "| A | B |\n| --- | --- |\n| 1 | 2 |"
 	if err := p.Send(ctx, rctx, content); err != nil {
 		t.Fatalf("Send: %v", err)
 	}

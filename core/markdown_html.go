@@ -410,21 +410,28 @@ func convertInlineHTML(s string) string {
 	return s
 }
 
-// NeedsRichMessage reports whether md contains Markdown structure that benefits
-// from Telegram's native RichMessage rendering: a table header followed by a
-// delimiter row or a consecutive run of two or more list items. Headings and
-// single-item lists render cleanly with
-// the lower-latency HTML path. Fenced code blocks are skipped so that comments
-// or bullets inside a code sample don't trigger a false positive.
+// NeedsRichMessage reports whether md contains a genuine Markdown table — the
+// ONLY structure Telegram's native RichMessage rendering is used for.
+//
+// The trigger is deliberately narrow and structural, not a permissive
+// catch-all: RichMessage fires only when a non-blank header line with more
+// than one pipe-separated column is immediately followed by a GFM delimiter
+// row (e.g. "| --- | --- |"). That two-line signature is what uniquely
+// identifies a table; nothing else — headings, list runs, stray pipes — is
+// inferred. This intentionally replaces the earlier list-run heuristic
+// (L-0522's "consecutive list items"), which upgraded almost every structured
+// answer to a RichMessage because nearly all of them contain two or more
+// bullets or a numbered list (L-0691).
+//
+// Fenced code blocks are skipped so a table sample inside a code fence does
+// not trigger a false positive.
 func NeedsRichMessage(md string) bool {
 	inCodeBlock := false
-	listRun := 0
 	previousLine := ""
 	for _, line := range strings.Split(md, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			inCodeBlock = !inCodeBlock
-			listRun = 0
 			previousLine = ""
 			continue
 		}
@@ -435,23 +442,11 @@ func NeedsRichMessage(md string) bool {
 			previousLine = ""
 			continue
 		}
-		if reTableSepLoose.MatchString(trimmed) {
-			if tableColumnCount(previousLine) > 1 {
-				return true
-			}
-			listRun = 0
-			previousLine = trimmed
-			continue
+		// A table is uniquely identified by a header row (>1 column) directly
+		// above a delimiter row. This is the sole RichMessage trigger.
+		if reTableSepLoose.MatchString(trimmed) && tableColumnCount(previousLine) > 1 {
+			return true
 		}
-		if reUnorderedList.MatchString(line) || reOrderedList.MatchString(line) {
-			listRun++
-			if listRun >= 2 {
-				return true
-			}
-			previousLine = trimmed
-			continue
-		}
-		listRun = 0
 		previousLine = trimmed
 	}
 	return false
