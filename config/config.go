@@ -1906,6 +1906,7 @@ func GetProjectProviders(projectName string) ([]ProviderConfig, string, error) {
 	if err := toml.Unmarshal(data, cfg); err != nil {
 		return nil, "", fmt.Errorf("parse config: %w", err)
 	}
+	cfg.ResolveProviderRefs()
 	for _, p := range cfg.Projects {
 		if p.Name == projectName {
 			active, _ := p.Agent.Options["provider"].(string)

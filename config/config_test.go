@@ -1257,6 +1257,24 @@ type = "telegram"
 token = "demo-token"
 `
 
+func TestGetProjectProviders_ResolvesGlobalProviderRefs(t *testing.T) {
+	writeTestConfig(t, globalProviderRefConfigTOML)
+
+	providers, active, err := GetProjectProviders("demo")
+	if err != nil {
+		t.Fatalf("GetProjectProviders() error: %v", err)
+	}
+	if active != "" {
+		t.Fatalf("active provider = %q, want empty", active)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("providers = %#v, want one resolved provider", providers)
+	}
+	if providers[0].Name != "shared-openai" {
+		t.Fatalf("provider name = %q, want shared-openai", providers[0].Name)
+	}
+}
+
 func TestSaveProviderModel_GlobalProviderRef(t *testing.T) {
 	writeTestConfig(t, globalProviderRefConfigTOML)
 
