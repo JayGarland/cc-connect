@@ -1053,6 +1053,9 @@ func formatReceiptInboxCard(i18n *I18n, letter string, record receiptRecord, bod
 		return content, buttons
 	}
 	content := i18n.Tf(MsgReceiptCardCompact, letter, record.Thread, record.Status, record.Summary, record.ArrivedAt, record.ResultPath)
+	if line := closeReadinessLine(i18n, record); line != "" {
+		content += "\n" + line
+	}
 	if record.SourceSessionPath != "" {
 		content += "\nSource session: " + record.SourceSessionPath
 	} else if record.SourceAgentSessionID != "" {
@@ -1392,7 +1395,22 @@ func (e *Engine) closeReceiptCard(letter string) {
 		slog.Warn("notify: failed to mark receipt closed during reconciliation", "letter", letter, "error", err)
 		return
 	}
-	if !changed || record.Card == nil {
+	if !changed {
+		return
+	}
+	e.applyClosedCardState(letter, record)
+}
+
+// applyClosedCardState edits letter's own persisted inbox/pending-close card
+// (record.Card) to the terminal "已封信" state, if one exists. It is UI-only
+// — the caller must already have a record whose ClosedAt is set (via
+// markClosed) — and is shared by both the reconciliation path above (a
+// letter closed outside the button, e.g. archive-daily.ps1 -Close run
+// directly) and the L-0694 Option B bulk-close path (confirmBulkClose),
+// neither of which has a live callback reply context for each individual
+// letter's own card the way closeReceiptFromInbox does.
+func (e *Engine) applyClosedCardState(letter string, record receiptRecord) {
+	if record.Card == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

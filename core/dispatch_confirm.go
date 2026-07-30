@@ -99,6 +99,30 @@ func (s *pendingDispatchStore) takeByLetter(letter string) (PendingDispatch, boo
 	return zero, false, nil
 }
 
+// peekByLetter returns the pending proposal for a Letter ID without
+// removing it — unlike takeByLetter, used by L-0694's bulk-close review
+// flow (showBulkCloseReview/cancelBulkClose), which must be able to look at
+// (and, on cancel, redraw) the dispatch card's own content without
+// consuming the confirm-dispatch action it is independent of.
+func (s *pendingDispatchStore) peekByLetter(letter string) (PendingDispatch, bool, error) {
+	var zero PendingDispatch
+	if s == nil {
+		return zero, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ledger, err := s.loadLocked()
+	if err != nil {
+		return zero, false, err
+	}
+	for i := range ledger.Entries {
+		if ledger.Entries[i].Request.Letter == letter {
+			return ledger.Entries[i], true, nil
+		}
+	}
+	return zero, false, nil
+}
+
 func (s *pendingDispatchStore) loadLocked() (pendingDispatchLedger, error) {
 	var ledger pendingDispatchLedger
 	data, err := os.ReadFile(s.path)

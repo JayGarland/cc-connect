@@ -566,8 +566,33 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 		}
 	}
 
+	// L-0694 Option B: offer to close same-thread letters that already have
+	// a RESULT but no CLOSED row alongside this dispatch confirmation — the
+	// moment Boss is authorizing a follow-up letter is, per L-0693, exactly
+	// the moment acceptance of the prior ones has already happened in
+	// substance. This only ever appends a read-only list + one extra button;
+	// it never changes what the Confirm Dispatch button does.
 	buttons := [][]ButtonOption{{{Text: "✅ Confirm Dispatch", Data: "dispatch_confirm:" + req.Letter}}}
-	locator, err := cardManager.SendReceiptCard(e.ctx, replyCtx, formatDispatchProposalCard(req), buttons)
+	cardContent := formatDispatchProposalCard(req)
+	letters, generations, summaries, threads, truncated := e.computeSameThreadUnclosedLetters(req.Thread, req.Letter)
+	if len(letters) > 0 {
+		bulkEntry := PendingBulkClose{
+			Token:          req.Letter,
+			Letters:        letters,
+			Generations:    generations,
+			Summaries:      summaries,
+			Threads:        threads,
+			TruncatedCount: truncated,
+			ReviewedAt:     time.Now(),
+		}
+		if err := e.ensurePendingBulkCloseStore().upsert(bulkEntry); err != nil {
+			slog.Warn("dispatch: failed to record pending bulk-close offer", "project", e.name, "letter", req.Letter, "error", err)
+		} else {
+			cardContent += formatBulkCloseListSection(e.i18n, bulkEntry)
+			buttons = append(buttons, formatBulkCloseButton(e.i18n, req.Letter, len(letters)))
+		}
+	}
+	locator, err := cardManager.SendReceiptCard(e.ctx, replyCtx, cardContent, buttons)
 	if err != nil {
 		slog.Warn("dispatch: failed to send confirm card, falling back to auto-execute", "project", e.name, "letter", req.Letter, "error", err)
 		receipt, execErr := e.ControlPlaneDispatch(p, sourceSessionKey, req)

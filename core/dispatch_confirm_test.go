@@ -219,6 +219,63 @@ func TestConfirmDispatch_MissingPending(t *testing.T) {
 	}
 }
 
+// TestMaybeHandleDispatchBlock_OffersBulkCloseForUnclosedThreadLetters is
+// the L-0694 Option B wiring test: when the dispatch's own thread has an
+// earlier same-thread letter with a RESULT row but no CLOSED row, the
+// confirm card must carry a read-only list plus a second "🔒 一并封信"
+// button — without changing what "✅ Confirm Dispatch" does (still row 0,
+// still exactly the same callback data).
+func TestMaybeHandleDispatchBlock_OffersBulkCloseForUnclosedThreadLetters(t *testing.T) {
+	e, p, req, queryPath := setupConfirmDispatchFixture(t)
+	e.notifyConfig.IndexPath = filepath.Join(e.dataDir, "INDEX.md")
+	e.notifyStore = newNotifyStore(filepath.Join(e.dataDir, "notify-data"))
+	if err := os.WriteFile(e.notifyConfig.IndexPath, []byte(
+		"# INDEX\n| L-0600 | RESULT | "+req.Thread+" | ROOT | prior result | 2026-07-01 |\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	priorResultPath := filepath.Join(e.dataDir, "threads", req.Thread, "L-0600.result.md")
+	if err := os.MkdirAll(filepath.Dir(priorResultPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priorResultPath, []byte("ID: L-0600\nStatus: DONE\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.notifyStore.recordArrival(indexResultRow{Letter: "L-0600", Thread: req.Thread, Path: priorResultPath, Status: "DONE", Summary: "prior result"}); err != nil {
+		t.Fatal(err)
+	}
+
+	block := "[DISPATCH]\nTo: " + req.To + "\nLetter: " + req.Letter + "\nThread: " + req.Thread + "\nPath: " + queryPath
+	handled, replacement := e.maybeHandleDispatchBlock(p, "telegram:-1003917051393:7664413698", block)
+	if !handled {
+		t.Fatal("expected the [DISPATCH] block to be handled")
+	}
+	if !strings.Contains(replacement, "awaiting confirmation") {
+		t.Fatalf("replacement = %q", replacement)
+	}
+
+	if !strings.Contains(p.buttonContent, "L-0600") {
+		t.Fatalf("card content must list the unclosed same-thread letter, got %q", p.buttonContent)
+	}
+	if len(p.buttonRows) != 2 {
+		t.Fatalf("expected 2 button rows (confirm dispatch + bulk close), got %+v", p.buttonRows)
+	}
+	if p.buttonRows[0][0].Data != "dispatch_confirm:"+req.Letter {
+		t.Fatalf("confirm-dispatch button must be unchanged, got %+v", p.buttonRows[0])
+	}
+	if len(p.buttonRows[1]) != 1 || !strings.Contains(p.buttonRows[1][0].Data, "bulkclose "+req.Letter) {
+		t.Fatalf("expected a bulk-close button wired to this dispatch letter as token, got %+v", p.buttonRows[1])
+	}
+
+	entry, found, err := e.ensurePendingBulkCloseStore().peek(req.Letter)
+	if err != nil || !found {
+		t.Fatalf("expected a PendingBulkClose recorded under token %s, found=%v err=%v", req.Letter, found, err)
+	}
+	if len(entry.Letters) != 1 || entry.Letters[0] != "L-0600" {
+		t.Fatalf("unexpected pending bulk-close entry: %+v", entry)
+	}
+}
+
 func mustListOpen(t *testing.T, e *Engine) []DispatchExpectation {
 	t.Helper()
 	open, err := e.dispatchStore.listOpen()
