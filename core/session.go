@@ -569,6 +569,28 @@ func (sm *SessionManager) AllSessions() []*Session {
 	return out
 }
 
+// UserKeysWithPrefix returns every user key (session key) this manager tracks
+// that begins with prefix, in ascending order.
+//
+// It exists so a relay can DISCOVER a topic's existing session key instead of
+// fabricating one. The interactive session key embeds the platform user id (see
+// the telegram platform's buildSessionKey), which a bot-to-bot relay caller does
+// not have and must never guess: a fabricated key would open a second, empty
+// session beside the real conversation instead of continuing it. Callers that
+// find more than one match must fail closed rather than pick one.
+func (sm *SessionManager) UserKeysWithPrefix(prefix string) []string {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	var out []string
+	for userKey := range sm.userSessions {
+		if strings.HasPrefix(userKey, prefix) {
+			out = append(out, userKey)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // KnownAgentSessionIDs returns the set of agent session IDs tracked by cc-connect.
 // This is used to filter agent.ListSessions() output to only sessions owned by
 // cc-connect, excluding sessions created by external CLI usage in the same work_dir.
