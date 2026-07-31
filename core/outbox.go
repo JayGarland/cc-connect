@@ -39,7 +39,12 @@ const (
 // legacy/exempt-ready; a named request awaits a nonempty Verified field. It
 // performs no grammar, identity, authorship, or content validation.
 func classifyVerification(verify, verified string) verificationState {
-	if strings.TrimSpace(verify) == "" || strings.TrimSpace(verified) != "" {
+	// Protocol (L-0687): Verify is either a named verifier seat, or the
+	// exemption literal "none — <basis>". Both the legacy blank form and the
+	// "none" exemption literal are exempt-ready; only a named verifier with an
+	// empty Verified field awaits verification.
+	v := strings.TrimSpace(verify)
+	if v == "" || strings.HasPrefix(strings.ToLower(v), "none") || strings.TrimSpace(verified) != "" {
 		return verificationReady
 	}
 	return verificationAwaiting

@@ -259,6 +259,8 @@ func TestVerificationStateUsesArchiveTextOnly(t *testing.T) {
 		{name: "legacy blank verify is ready", want: verificationReady},
 		{name: "named verifier awaits empty result", verify: "architect-codex", want: verificationAwaiting},
 		{name: "any nonempty verified text is ready", verify: "architect-codex", verified: "anything at all", want: verificationReady},
+		{name: "protocol none exemption is ready", verify: "none — Boss 当场豁免预派发校验（2026-07-31 pursuit 直发）", want: verificationReady},
+		{name: "protocol none exemption hyphen variant is ready", verify: "none - letter protocol standard", want: verificationReady},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
