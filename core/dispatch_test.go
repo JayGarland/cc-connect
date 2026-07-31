@@ -831,3 +831,46 @@ Type: QUERY
 		t.Fatal("timeout waiting for workspace agent creation")
 	}
 }
+
+// TestBuildDispatchMessageEmbedsLetterContent is the L-0717 regression gate:
+// the dispatch intake message must contain the QUERY letter body itself (so
+// the target starts its conversation with the letter content directly, like
+// a General-topic @-intake), plus the result.md instruction. A letter that
+// cannot be read must fall back to a visible path pointer, never panic and
+// never drop the instruction.
+//
+// Coverage declaration (L-0697): scans buildDispatchMessage for its two
+// branches — readable letter (content embedded) and unreadable letter
+// (fallback pointer). Excludes the delivery path (dispatchSyntheticMessage,
+// unchanged, covered by existing executeDispatch tests) and archive
+// validation (validateDispatchArchive, unchanged). Instance gate, not class:
+// this is a wording/content change on an unchanged contract, not a new
+// structural invariant; a class gate would duplicate the existing
+// executeDispatch contract coverage.
+func TestBuildDispatchMessageEmbedsLetterContent(t *testing.T) {
+	dir := t.TempDir()
+	letterPath := filepath.Join(dir, "L-0100.query.md")
+	letterBody := "## Context Digest\nsome digest (L-0001)\n\n## Query\ndo the thing\n"
+	if err := os.WriteFile(letterPath, []byte(letterBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := dispatchRequest{Letter: "L-0100", Thread: "alpha", Path: letterPath}
+
+	got := buildDispatchMessage(req)
+	if !strings.Contains(got, letterBody) {
+		t.Fatalf("dispatch message must embed the letter body, got:\n%s", got)
+	}
+	if !strings.Contains(got, "L-0100.result.md") {
+		t.Fatalf("dispatch message must keep the result.md instruction, got:\n%s", got)
+	}
+
+	// Unreadable file: fall back to a visible path pointer, no panic.
+	req.Path = filepath.Join(dir, "missing.query.md")
+	got2 := buildDispatchMessage(req)
+	if !strings.Contains(got2, "missing.query.md") {
+		t.Fatalf("unreadable letter must fall back to a visible path pointer, got:\n%s", got2)
+	}
+	if !strings.Contains(got2, "L-0100.result.md") {
+		t.Fatalf("fallback message must keep the result.md instruction, got:\n%s", got2)
+	}
+}

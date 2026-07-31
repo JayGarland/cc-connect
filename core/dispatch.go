@@ -821,7 +821,15 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 }
 
 func buildDispatchMessage(req dispatchRequest) string {
-	return fmt.Sprintf("Dispatch letter %s.\n\nThread: %s\nPath: %s\n\nRead the QUERY, execute the requested work, then write %s.result.md (with Status field). Writing the INDEX RESULT row is optional as a delivery radar but is NOT task closure (CLOSED is handled only by Secretary after Boss approval).", req.Letter, req.Thread, req.Path, req.Letter)
+	instruction := fmt.Sprintf("📨 已派发 %s（Thread: %s）——任务内容如下：\n\n", req.Letter, req.Thread)
+	var body string
+	if content, err := os.ReadFile(req.Path); err == nil {
+		body = string(content)
+	} else {
+		body = fmt.Sprintf("（无法读取信件内容：%v；完整信位于 %s）", err, req.Path)
+	}
+	footer := fmt.Sprintf("\n\n—\n请按上方信件内容执行任务；完成后写 %s.result.md（含 Status 字段）。INDEX RESULT 行可选，非结案（CLOSED 由秘书在总裁批准后处理）。", req.Letter)
+	return instruction + body + footer
 }
 
 func (e *Engine) dispatchSyntheticMessage(platformName, sessionKey, channelKey string, replyCtx any, content string) {

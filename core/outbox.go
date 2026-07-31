@@ -268,7 +268,7 @@ func formatOutboxCard(i18n *I18n, record outboxRecord, letter, body string, page
 		return content, [][]ButtonOption{{
 			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/outbox page " + letter + " " + record.Generation + " 0"},
 			{Text: "🙋 我自己发", Data: "cmd:/outbox manual " + letter + " " + record.Generation},
-			{Text: "🧑‍💼 交秘书发", Data: "cmd:/outbox secretary " + letter + " " + record.Generation},
+						{Text: "⚡ 直接开始", Data: "cmd:/outbox secretary " + letter + " " + record.Generation},
 		}}
 	}
 	content += "\n\n" + i18n.Tf(MsgReceiptCardPage, page+1, pageCount, body)
