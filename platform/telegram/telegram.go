@@ -2096,7 +2096,7 @@ func (p *Platform) UpdateMessageWithButtons(ctx context.Context, rctx any, conte
 	if err != nil {
 		return err
 	}
-	var rows [][]models.InlineKeyboardButton
+	rows := make([][]models.InlineKeyboardButton, 0, len(buttons))
 	for _, row := range buttons {
 		var out []models.InlineKeyboardButton
 		for _, button := range row {
