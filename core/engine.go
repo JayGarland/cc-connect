@@ -6303,7 +6303,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					"input_tokens", event.InputTokens,
 					"output_tokens", event.OutputTokens,
 				)
-				fullResponse = e.i18n.T(MsgEmptyResponse)
+				// L-0720 defect ③: an empty response must be loud. Replace the
+				// bland placeholder with a ⚠️ warning carrying the diagnostic
+				// reason so a silent agent failure is visible in the chat, not
+				// absorbed as "(empty response)".
+				fullResponse = e.i18n.Tf(MsgEmptyResponseLoud, fmt.Sprintf(
+					"prompt_len=%d, content_len=%d, text_parts=%d, tokens_in=%d, tokens_out=%d",
+					promptLen, len(event.Content), len(textParts), event.InputTokens, event.OutputTokens,
+				))
 			}
 
 			// Strip any agent-self-reported "[ctx: ~XX%]" marker so it does not

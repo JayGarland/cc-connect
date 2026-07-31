@@ -46,3 +46,10 @@ func signalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 func forceKillCmd(cmd *exec.Cmd) error {
 	return signalProcessGroup(cmd, syscall.SIGKILL)
 }
+
+// gracefulSignalSupported reports whether this platform can deliver a graceful
+// (non-force) termination signal to the spawned process group. On Unix a
+// process group can be SIGTERM'd; on Windows the graceful taskkill (without
+// /F) is refused by the Claude Code CLI, so Close() skips the graceful phase
+// and goes straight to force-kill (L-0720).
+func gracefulSignalSupported() bool { return true }

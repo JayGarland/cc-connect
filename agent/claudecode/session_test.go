@@ -1,9 +1,11 @@
 package claudecode
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -112,6 +114,170 @@ func TestIsCompactionResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandleResult_EmptyAckBeforeContentIsNotTerminal is the L-0720 gate for
+// defect ①. On session resume the CLI emits a `type:"result"` event with empty
+// result text, no preceding content, and zero usage ~3s after the turn starts
+// (dev-pro incident, 2026-07-31, agent_session=339d34d3). The old handleResult
+// marked it Done=true, so the engine ended the turn early, delivered
+// "(empty response)", and left the still-working agent process as an orphan.
+// An empty ack before any content must keep the turn running (Done=false).
+func TestHandleResult_EmptyAckBeforeContentIsNotTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events: make(chan core.Event, 8),
+		ctx:    ctx,
+	}
+	cs.sessionID.Store("test-session")
+	cs.alive.Store(true)
+	// A turn just started: the content-produced tracker is at its zero value
+	// (false) — the agent has not emitted anything. The test deliberately does
+	// NOT touch the tracker so it also compiles and fails against the pre-fix
+	// handleResult (which set Done=true for any non-compaction result).
+
+	cs.handleResult(map[string]any{
+		"type":       "result",
+		"result":     "",
+		"session_id": "test-session",
+		// No usage: input_tokens == output_tokens == 0, matching the incident.
+	})
+
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventResult {
+			t.Fatalf("event type = %q, want %q", evt.Type, core.EventResult)
+		}
+		if evt.Done {
+			t.Errorf("empty ack result before any content: Done = true, want false — turn must NOT be ended early (L-0720)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventResult")
+	}
+}
+
+// TestHandleResult_EmptyAckWithUsageIsTerminal guards the genuine-empty-turn
+// case: a final result with empty text but real token usage means an inference
+// actually ran, so the turn is complete. Only the zero-content/zero-tokens/no-
+// content-produced combination is a protocol ack.
+func TestHandleResult_EmptyAckWithUsageIsTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events: make(chan core.Event, 8),
+		ctx:    ctx,
+	}
+	cs.sessionID.Store("test-session")
+	cs.alive.Store(true)
+	cs.turnProducedContent.Store(false)
+
+	cs.handleResult(map[string]any{
+		"type":       "result",
+		"result":     "",
+		"session_id": "test-session",
+		"usage": map[string]any{
+			"input_tokens":  float64(1500),
+			"output_tokens": float64(0),
+		},
+	})
+
+	select {
+	case evt := <-cs.events:
+		if !evt.Done {
+			t.Errorf("empty result with real usage: Done = false, want true (a genuine empty turn end)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventResult")
+	}
+}
+
+// TestHandleResult_EmptyResultAfterContentIsTerminal guards the case where the
+// agent already produced content this turn (text streamed via assistant
+// events): a later empty result is a legitimate end, and the engine delivers
+// the accumulated text. The early-ack suppression must not apply once content
+// has been produced.
+func TestHandleResult_EmptyResultAfterContentIsTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cs := &claudeSession{
+		events: make(chan core.Event, 8),
+		ctx:    ctx,
+	}
+	cs.sessionID.Store("test-session")
+	cs.alive.Store(true)
+	cs.turnProducedContent.Store(false)
+
+	// Agent streams a text chunk — content produced.
+	cs.handleAssistant(map[string]any{
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "real answer"},
+			},
+		},
+	})
+	select {
+	case <-cs.events:
+		if !cs.turnProducedContent.Load() {
+			t.Fatal("turnProducedContent not set after assistant text event")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for assistant event")
+	}
+
+	cs.handleResult(map[string]any{
+		"type":       "result",
+		"result":     "",
+		"session_id": "test-session",
+	})
+
+	select {
+	case evt := <-cs.events:
+		if !evt.Done {
+			t.Errorf("empty result after content produced: Done = false, want true (turn should end; engine delivers textParts)")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventResult")
+	}
+}
+
+// TestSend_ResetsTurnProducedContent guards the turn-boundary contract: every
+// user submission starts a fresh turn, so the tracker must be false before the
+// agent's next response. Uses an in-memory pipe so Send() can write.
+func TestSend_ResetsTurnProducedContent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	cs := &claudeSession{
+		events: make(chan core.Event, 8),
+		ctx:    ctx,
+		stdin:  pw,
+	}
+	cs.alive.Store(true)
+	cs.turnProducedContent.Store(true)
+
+	// io.Pipe is unbuffered: the reader must be draining BEFORE Send() writes,
+	// otherwise writeJSON blocks forever on the pipe.
+	readDone := make(chan struct{})
+	go func() {
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+		}
+		close(readDone)
+	}()
+
+	if err := cs.Send("hello", nil, nil); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if cs.turnProducedContent.Load() {
+		t.Fatal("turnProducedContent not reset by Send() — every submission starts a fresh turn")
+	}
+	_ = readDone
 }
 
 // TestHandleAssistantCapturesPerSubCallUsage verifies the split-source policy
@@ -750,14 +916,37 @@ func TestHelperProcess(t *testing.T) {
 	mode := os.Args[len(os.Args)-1]
 	switch mode {
 	case "sleep":
-		time.Sleep(30 * time.Second)
+		// Must outlive the L-0720 Close() budget (30s) so the red-proof run
+		// observes the pre-fix close hanging and the orphan surviving instead
+		// of the helper conveniently self-exiting at the budget edge.
+		time.Sleep(120 * time.Second)
 		os.Exit(0)
 	case "err-then-sleep":
 		_, _ = os.Stderr.WriteString("helper: starting up\n")
-		time.Sleep(30 * time.Second)
+		time.Sleep(120 * time.Second)
 		os.Exit(0)
 	case "stdin-eof-exit":
 		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	case "spawn-child-hold-stdout":
+		// Mirrors the claude.cmd → claude.exe shape on Windows: the direct
+		// child is a shim that spawns a grandchild which inherits stdout and
+		// keeps running. Used by the L-0720 Windows termination gates to prove
+		// that Close()/forceKillCmd reap the whole tree, not just the direct
+		// child. Writes "<directPID> <grandchildPID>" to CC_HELPER_PIDFILE.
+		pidFile := os.Getenv("CC_HELPER_PIDFILE")
+		child := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--", "sleep")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(3)
+		}
+		if pidFile != "" {
+			_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d %d", os.Getpid(), child.Process.Pid)), 0o644)
+		}
+		// Hold stdout open so a session readLoop cannot observe EOF while the
+		// grandchild survives. Long enough to exceed the Close() budget.
+		time.Sleep(120 * time.Second)
 		os.Exit(0)
 	default:
 		os.Exit(2)

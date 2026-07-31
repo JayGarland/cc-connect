@@ -185,6 +185,7 @@ const (
 	MsgFailedToStartAgentSession MsgKey = "failed_to_start_agent_session"
 	MsgFailedToDeleteSession     MsgKey = "failed_to_delete_session"
 	MsgEmptyResponse             MsgKey = "empty_response"
+	MsgEmptyResponseLoud         MsgKey = "empty_response_loud"
 	MsgPermissionPrompt          MsgKey = "permission_prompt"
 	MsgPermissionAllowed         MsgKey = "permission_allowed"
 	MsgPermissionApproveAll      MsgKey = "permission_approve_all"
@@ -1232,6 +1233,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "(空回應)",
 		LangJapanese:           "（空のレスポンス）",
 		LangSpanish:            "(respuesta vacía)",
+	},
+	// MsgEmptyResponseLoud is the L-0720 loud replacement for the bland
+	// MsgEmptyResponse placeholder on the interactive Telegram turn path: when
+	// the agent finishes a turn with no content, the user gets a ⚠️ warning
+	// with the diagnostic reason instead of a silent "(empty response)".
+	// %s carries the reason string built by the engine (prompt_len, content
+	// length, text_parts, tokens). MsgEmptyResponse (plain) is retained for
+	// the relay submission path, whose response contract is tested verbatim.
+	MsgEmptyResponseLoud: {
+		LangEnglish:            "⚠️ **Empty response** — the agent ended this turn without producing any content.\nDiagnostics: %s",
+		LangChinese:            "⚠️ **空响应** — 智能体本轮未产生任何内容。\n诊断信息：%s",
+		LangTraditionalChinese: "⚠️ **空回應** — 智能體本輪未產生任何內容。\n診斷資訊：%s",
+		LangJapanese:           "⚠️ **空のレスポンス** — エージェントはこのターンで何も出力しませんでした。\n診断情報：%s",
+		LangSpanish:            "⚠️ **Respuesta vacía** — el agente terminó este turno sin producir contenido.\nDiagnóstico: %s",
 	},
 	MsgPermissionPrompt: {
 		LangEnglish:            "⚠️ **Permission Request**\n\nAgent wants to use **%s**:\n\n```\n%s\n```\n\nReply **allow** / **deny** / **allow all** (skip all future prompts this session).",

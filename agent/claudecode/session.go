@@ -54,6 +54,17 @@ type claudeSession struct {
 	usageMu   sync.Mutex
 	lastUsage *core.ContextUsage
 
+	// turnProducedContent reports whether the agent has emitted any content-
+	// bearing event (assistant text, tool use, tool result, thinking) since
+	// the last user submission. Reset on Send(); set when content is emitted.
+	// An empty `type:"result"` event that arrives while this is still false —
+	// i.e. before the agent has produced anything for the turn — is a CLI
+	// protocol acknowledgment, not turn completion (L-0720: on session resume
+	// the CLI emits such an event ~3s after the turn starts; treating it as
+	// Done=true ended the turn early, delivered "(empty response)", and left
+	// the still-working agent process running as an orphan).
+	turnProducedContent atomic.Bool
+
 	// gracefulStopTimeout is how long Close() waits for a clean exit
 	// (stdin close → Stop hooks → process exit) before escalating to
 	// SIGTERM and then SIGKILL. Default: 120s to match claude-mem's
@@ -790,6 +801,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 				continue
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
+			cs.turnProducedContent.Store(true)
 			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
 			select {
 			case cs.events <- evt:
@@ -798,6 +810,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "thinking":
 			if thinking, ok := item["thinking"].(string); ok && thinking != "" {
+				cs.turnProducedContent.Store(true)
 				evt := core.Event{Type: core.EventThinking, Content: thinking}
 				select {
 				case cs.events <- evt:
@@ -807,6 +820,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 		case "text":
 			if text, ok := item["text"].(string); ok && text != "" {
+				cs.turnProducedContent.Store(true)
 				evt := core.Event{Type: core.EventText, Content: text}
 				select {
 				case cs.events <- evt:
@@ -858,6 +872,7 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 			if isError {
 				code = 1
 			}
+			cs.turnProducedContent.Store(true)
 			evt := core.Event{
 				Type:         core.EventToolResult,
 				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
@@ -925,11 +940,28 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	}
 	cs.usageMu.Unlock()
 
+	// A `type:"result"` event with empty content that arrives BEFORE the
+	// agent has produced any content this turn — and that consumed no tokens —
+	// is a CLI protocol acknowledgment on session resume, not turn completion
+	// (L-0720: dev-pro resumed a session and the CLI emitted such an event
+	// ~3.2s after the turn started; the previous code set Done=true, the
+	// engine delivered "(empty response)", and the still-working agent process
+	// became an orphan). Keep the turn running so the true completion is
+	// observed via process exit, a content-bearing result, or the CLI's
+	// explicit end signal.
+	isEmptyAck := strings.TrimSpace(content) == "" &&
+		!cs.turnProducedContent.Load() &&
+		inputTokens == 0 && outputTokens == 0
+	if isEmptyAck {
+		slog.Warn("claudeSession: empty ack result before any content; continuing turn",
+			"session_id", cs.CurrentSessionID())
+	}
+
 	evt := core.Event{
 		Type:                     core.EventResult,
 		Content:                  content,
 		SessionID:                cs.CurrentSessionID(),
-		Done:                     !isCompaction,
+		Done:                     !isCompaction && !isEmptyAck,
 		InputTokens:              inputTokens,
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
@@ -1034,6 +1066,11 @@ func (cs *claudeSession) Send(prompt string, images []core.ImageAttachment, file
 	if !cs.alive.Load() {
 		return fmt.Errorf("session process is not running")
 	}
+
+	// A new user message begins a new turn: reset the content-produced
+	// tracker so handleResult can tell an early empty ack-result from a
+	// genuine final result (L-0720).
+	cs.turnProducedContent.Store(false)
 
 	if len(images) == 0 && len(files) == 0 {
 		return cs.writeJSON(map[string]any{
@@ -1264,6 +1301,15 @@ func (cs *claudeSession) Alive() bool {
 
 var errForcedReapTimeout = errors.New("claudeSession: forced reap timed out")
 
+// windowsStdinCloseGrace is how long Close() waits for the process to exit on
+// stdin-EOF on Windows before force-killing the tree. The Claude CLI does not
+// honor graceful termination there — taskkill without /F is refused ("can only
+// be terminated forcefully with /F") and cmd.Process.Signal is unsupported
+// (L-0720). A long wait is pure delay that pushes the force-kill past the
+// caller's close budget and abandons it, orphaning the process tree. This is a
+// short courtesy window for a quick clean exit, not the Unix Stop-hook budget.
+const windowsStdinCloseGrace = 3 * time.Second
+
 func (cs *claudeSession) waitForForcedReap() error {
 	timeout := cs.forcedReapTimeout
 	if timeout <= 0 {
@@ -1300,39 +1346,56 @@ func (cs *claudeSession) Close() error {
 	if graceful <= 0 {
 		graceful = 8 * time.Second // legacy fallback
 	}
+	if !gracefulSignalSupported() {
+		// Windows: the CLI refuses graceful termination and does not exit on
+		// stdin close, so a 120s graceful wait is pure delay that pushes the
+		// force-kill past the caller's close budget — which then abandons the
+		// close and orphans the process tree (L-0720). Give stdin-EOF a short
+		// chance, then force-kill.
+		graceful = windowsStdinCloseGrace
+	}
 
 	select {
 	case <-cs.done:
 		slog.Info("claudeSession: exited cleanly after stdin close")
 		return nil
 	case <-time.After(graceful):
-		slog.Warn("claudeSession: graceful stop timed out, sending SIGTERM",
+		slog.Warn("claudeSession: graceful stop timed out",
 			"timeout", graceful)
 	}
 
 	// Phase 2: SIGTERM the whole process group — gives the process and its
 	// descendants (e.g. MCP server bridges) a second chance to run cleanup
-	// handlers that respond to signals but not stdin EOF.
-	if err := signalProcessGroup(cs.cmd, syscall.SIGTERM); err != nil {
-		slog.Warn("claudeSession: signal SIGTERM", "error", err)
+	// handlers that respond to signals but not stdin EOF. Only where the
+	// platform can deliver a graceful signal: on Windows taskkill without /F
+	// is refused by the CLI and cmd.Process.Signal is unsupported, so we skip
+	// this phase and go straight to the force-kill.
+	if gracefulSignalSupported() {
+		if err := signalProcessGroup(cs.cmd, syscall.SIGTERM); err != nil {
+			slog.Warn("claudeSession: signal SIGTERM", "error", err)
+		}
+
+		select {
+		case <-cs.done:
+			slog.Info("claudeSession: exited after SIGTERM")
+			return nil
+		case <-time.After(5 * time.Second):
+			slog.Warn("claudeSession: SIGTERM timed out, sending SIGKILL")
+		}
 	}
 
-	select {
-	case <-cs.done:
-		slog.Info("claudeSession: exited after SIGTERM")
-		return nil
-	case <-time.After(5 * time.Second):
-		slog.Warn("claudeSession: SIGTERM timed out, sending SIGKILL")
-	}
-
-	// Phase 3: SIGKILL the whole process group — last resort. Using a
-	// group-wide kill ensures grandchildren (Claude Code's MCP servers
-	// such as the Telegram bridge) are reaped along with the direct child;
-	// otherwise they can survive as orphans and spin at 100% CPU.
-	cs.cancel()
+	// Phase 3: force-kill the whole process tree — last resort. Order matters:
+	// the tree-kill (taskkill /T /F on Windows, process-group SIGKILL on Unix)
+	// MUST run while the direct child is still alive, because taskkill /T walks
+	// parent→child to enumerate the tree. cancel() (via exec.CommandContext)
+	// kills only the direct child; calling it first leaves the grandchildren
+	// orphaned — exactly the L-0720 incident, where the agent process survived
+	// the close and kept streaming into the events channel for 8+ minutes.
+	// Kill the tree first, then cancel as a fallback.
 	if err := forceKillCmd(cs.cmd); err != nil {
 		slog.Warn("claudeSession: force kill", "error", err)
 	}
+	cs.cancel()
 	if err := cs.waitForForcedReap(); err != nil {
 		pid := 0
 		if cs.cmd != nil && cs.cmd.Process != nil {

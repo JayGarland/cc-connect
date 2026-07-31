@@ -2459,6 +2459,106 @@ func TestProcessInteractiveEvents_NonTerminalResultContinuesTurn(t *testing.T) {
 	}
 }
 
+// TestProcessInteractiveEvents_EmptyAckResultContinuesTurn is the engine-level
+// contract guard for L-0720 defect ①. After the handleResult fix, an early
+// empty-ack result (empty content, zero usage, no preceding content) is emitted
+// with Done=false — exactly like the compaction event — so the engine must keep
+// reading. This pins the engine contract: a Done=false empty result is not a
+// turn end; the subsequent text and the terminal result are still observed.
+func TestProcessInteractiveEvents_EmptyAckResultContinuesTurn(t *testing.T) {
+	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "test:user1"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s1")
+	state := &interactiveState{
+		agentSession:                   agentSession,
+		platform:                       p,
+		replyCtx:                       "ctx-1",
+		currentTurnUserMessageTimeMs:   100,
+		lastCompletedUserMessageTimeMs: 0,
+	}
+	e.interactiveStates[sessionKey] = state
+
+	// Early empty ack: the fixed handleResult emits Done=false with zero usage.
+	agentSession.events <- Event{
+		Type:        EventResult,
+		Content:     "",
+		Done:        false,
+		InputTokens: 0,
+		OutputTokens: 0,
+	}
+
+	// The agent then actually works and streams content.
+	agentSession.events <- Event{Type: EventText, Content: "real work"}
+
+	// Terminal result with content.
+	finalText := "final answer"
+	agentSession.events <- Event{
+		Type:    EventResult,
+		Content: finalText,
+		Done:    true,
+	}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil, false)
+
+	state.mu.Lock()
+	gotCompleted := state.lastCompletedUserMessageTimeMs
+	state.mu.Unlock()
+	if gotCompleted != 100 {
+		t.Fatalf("lastCompletedUserMessageTimeMs = %d, want 100 (turn must complete exactly once, on the terminal result)", gotCompleted)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || sent[len(sent)-1] != finalText {
+		t.Fatalf("last sent = %q, want %q — empty ack must not end the turn early (L-0720)", sent, finalText)
+	}
+	for i, msg := range sent {
+		if msg == "" {
+			t.Fatalf("sent[%d] is empty — early ack must not leak an empty message; all sent=%v", i, sent)
+		}
+	}
+}
+
+// TestProcessInteractiveEvents_EmptyResponseWarnsLoudly is the L-0720 gate for
+// defect ③. When a turn genuinely completes with no content, the platform
+// message must be a loud ⚠️ warning carrying the diagnostic reason, not the old
+// bland "(empty response)" placeholder. Red on old logic: the old code sent the
+// plain placeholder, so the ⚠️ assertion fails.
+func TestProcessInteractiveEvents_EmptyResponseWarnsLoudly(t *testing.T) {
+	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "test:user1"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s1")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-1",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	// Turn completes with an empty result and no streamed text.
+	agentSession.events <- Event{Type: EventResult, Content: "", Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, nil, false)
+
+	sent := p.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want exactly one empty-response message", sent)
+	}
+	got := sent[0]
+	if !strings.Contains(got, "⚠️") {
+		t.Errorf("empty-response message missing ⚠️ warning: %q (L-0720)", got)
+	}
+	if !strings.Contains(got, "Empty response") {
+		t.Errorf("empty-response message missing 'Empty response' label: %q (L-0720)", got)
+	}
+	// The reason must be present so the user can see why nothing came back.
+	if !strings.Contains(got, "prompt_len") {
+		t.Errorf("empty-response message missing diagnostic reason (prompt_len): %q (L-0720)", got)
+	}
+}
+
 func TestProcessInteractiveEvents_AppendsReplyFooterWhenEnabled(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

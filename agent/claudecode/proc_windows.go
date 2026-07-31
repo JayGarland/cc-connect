@@ -29,9 +29,12 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }
 
-// signalProcessGroup is a graceful best-effort equivalent of forceKillCmd
-// on Windows: taskkill without /F asks the target to close cleanly. Falls
-// back to cmd.Process.Signal if taskkill is unavailable.
+// signalProcessGroup is kept for API symmetry with proc_unix.go. On Windows it
+// is never invoked by Close(): gracefulSignalSupported() reports false because
+// the Claude CLI refuses taskkill without /F ("can only be terminated
+// forcefully with /F") and cmd.Process.Signal is unsupported, so Close() skips
+// the graceful phase and goes straight to forceKillCmd (L-0720). If a graceful
+// attempt is ever made on Windows, taskkill /T (no /F) is the best effort.
 func signalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -75,6 +78,13 @@ func isTaskkillNotRunning(output []byte) bool {
 	return bytes.Contains(lower, []byte("there is no running instance")) ||
 		bytes.Contains(lower, []byte("not found"))
 }
+
+// gracefulSignalSupported reports whether this platform can deliver a graceful
+// termination signal. On Windows the graceful taskkill (without /F) is refused
+// by the Claude Code CLI ("can only be terminated forcefully with /F") and
+// cmd.Process.Signal is not supported, so Close() skips the SIGTERM phase and
+// goes straight to force-kill (L-0720).
+func gracefulSignalSupported() bool { return false }
 
 func processKillOutput(output []byte) string {
 	trimmed := strings.TrimSpace(string(output))
