@@ -1,6 +1,8 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +142,132 @@ func TestMaybeHandleDispatchBlock_RendersConfirmCardInsteadOfAutoExecuting(t *te
 // actuator: pressing it (ConfirmDispatch) is what finally calls
 // ControlPlaneDispatch, producing a real dispatch ledger entry and audit
 // log entry, and updates the card to the real receipt.
+type warningDispatchPlatform struct {
+	stubPlatformEngine
+	sequence      *[]string
+	warningErr    error
+	onWarning     func()
+	reconstructed string
+	warning       string
+}
+
+func (p *warningDispatchPlatform) Send(_ context.Context, replyCtx any, content string) error {
+	*p.sequence = append(*p.sequence, "warning")
+	p.reconstructed = replyCtx.(string)
+	p.warning = content
+	if p.onWarning != nil {
+		p.onWarning()
+	}
+	if p.warningErr != nil {
+		return p.warningErr
+	}
+	return nil
+}
+
+func (p *warningDispatchPlatform) ReconstructReplyCtx(sessionKey string) (any, error) {
+	return "ctx:" + sessionKey, nil
+}
+
+type failingCardDispatchPlatform struct {
+	warningDispatchPlatform
+}
+
+func (p *failingCardDispatchPlatform) SendReceiptCard(_ context.Context, _ any, _ string, _ [][]ButtonOption) (MessageLocator, error) {
+	*p.sequence = append(*p.sequence, "card")
+	return MessageLocator{}, errors.New("card unavailable")
+}
+
+func (p *failingCardDispatchPlatform) UpdateReceiptCard(context.Context, MessageLocator, string, [][]ButtonOption) error {
+	return nil
+}
+
+func TestMaybeHandleDispatchBlock_FallbackWithoutReceiptCardsWarnsBeforeDispatch(t *testing.T) {
+	e, _, req, queryPath := setupConfirmDispatchFixture(t)
+	sequence := []string{}
+	p := &warningDispatchPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "telegram"},
+		sequence:           &sequence,
+		onWarning: func() {
+			if len(mustListOpen(t, e)) != 0 {
+				t.Fatal("dispatch must not happen before fallback warning is sent")
+			}
+		},
+	}
+
+	block := "[DISPATCH]\nTo: " + req.To + "\nLetter: " + req.Letter + "\nThread: " + req.Thread + "\nPath: " + queryPath
+	handled, replacement := e.maybeHandleDispatchBlock(p, "telegram:-1003917051393:7664413698", block)
+
+	if !handled || !strings.Contains(replacement, "Dispatched "+req.Letter) {
+		t.Fatalf("maybeHandleDispatchBlock = handled:%v replacement:%q", handled, replacement)
+	}
+	if got, want := strings.Join(sequence, ","), "warning"; got != want {
+		t.Fatalf("warning operations = %q, want %q before dispatch", got, want)
+	}
+	if !strings.Contains(p.warning, "card failed") || !strings.Contains(p.warning, "automatic dispatch is happening") {
+		t.Fatalf("warning = %q, want explicit card-failure and automatic-dispatch wording", p.warning)
+	}
+	if p.reconstructed != "ctx:telegram:-1003917051393:7664413698" {
+		t.Fatalf("warning context = %q, want reconstructed source context", p.reconstructed)
+	}
+}
+
+func TestMaybeHandleDispatchBlock_FallbackAfterCardSendFailureWarnsBeforeDispatch(t *testing.T) {
+	e, _, req, queryPath := setupConfirmDispatchFixture(t)
+	sequence := []string{}
+	p := &failingCardDispatchPlatform{warningDispatchPlatform: warningDispatchPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "telegram"},
+		sequence:           &sequence,
+		onWarning: func() {
+			if len(mustListOpen(t, e)) != 0 {
+				t.Fatal("dispatch must not happen before fallback warning is sent")
+			}
+		},
+	}}
+
+	block := "[DISPATCH]\nTo: " + req.To + "\nLetter: " + req.Letter + "\nThread: " + req.Thread + "\nPath: " + queryPath
+	handled, replacement := e.maybeHandleDispatchBlock(p, "telegram:-1003917051393:7664413698", block)
+
+	if !handled || !strings.Contains(replacement, "Dispatched "+req.Letter) {
+		t.Fatalf("maybeHandleDispatchBlock = handled:%v replacement:%q", handled, replacement)
+	}
+	if got, want := strings.Join(sequence, ","), "card,warning"; got != want {
+		t.Fatalf("fallback operations = %q, want %q before dispatch", got, want)
+	}
+	if !strings.Contains(p.warning, "card failed") || !strings.Contains(p.warning, "automatic dispatch is happening") {
+		t.Fatalf("warning = %q, want explicit card-failure and automatic-dispatch wording", p.warning)
+	}
+}
+
+func TestMaybeHandleDispatchBlock_FallbackWarningFailureRejectsWithoutDispatch(t *testing.T) {
+	e, _, req, queryPath := setupConfirmDispatchFixture(t)
+	sequence := []string{}
+	p := &warningDispatchPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "telegram"},
+		sequence:           &sequence,
+		warningErr:         errors.New("warning unavailable"),
+	}
+
+	block := "[DISPATCH]\nTo: " + req.To + "\nLetter: " + req.Letter + "\nThread: " + req.Thread + "\nPath: " + queryPath
+	handled, replacement := e.maybeHandleDispatchBlock(p, "telegram:-1003917051393:7664413698", block)
+
+	if !handled || !strings.Contains(replacement, "Dispatch rejected") || !strings.Contains(replacement, "warning unavailable") {
+		t.Fatalf("maybeHandleDispatchBlock = handled:%v replacement:%q, want warning-send rejection", handled, replacement)
+	}
+	if got := strings.Join(sequence, ","); got != "warning" {
+		t.Fatalf("operation order = %q, want warning only", got)
+	}
+	if open := mustListOpen(t, e); len(open) != 0 {
+		t.Fatalf("warning-send failure must prevent dispatch, got open expectations: %+v", open)
+	}
+	entries, err := e.controlPlaneAudit.list()
+	if err != nil {
+		t.Fatalf("audit list: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Action != "dispatch_rejected" || entries[0].Letter != req.Letter {
+		t.Fatalf("audit entries = %+v, want rejected audit for %s", entries, req.Letter)
+	}
+}
+
 func TestConfirmDispatch_Success(t *testing.T) {
 	e, p, req, queryPath := setupConfirmDispatchFixture(t)
 	_ = queryPath
