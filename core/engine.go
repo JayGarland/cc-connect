@@ -559,6 +559,12 @@ type queuedMessage struct {
 	msgSessionKey     string // session key for extracting chat ID
 	channelKey        string // platform-provided channel identifier (preferred over sessionKey extraction)
 	userMessageTimeMs int64  // Feishu create_time ms (optional); see Message.UserMessageTimeMs
+
+	// respCh receives this message's turn result when the turn it starts
+	// completes. Non-nil only for a synthetic turn submitted by a caller that
+	// waits for the answer (bot-to-bot relay); nil for every human message, in
+	// which case the whole sink mechanism is inert. See deliverTurnResponse.
+	respCh chan topicTurnResult
 }
 
 // interactiveState tracks a running interactive agent session and its permission state.
@@ -621,6 +627,14 @@ type interactiveState struct {
 	// forks, so the decision is race-free. Empty means "unknown" (legacy /
 	// placeholder state) and is treated as a match to stay backward-safe.
 	servedSessionID string
+
+	// turnRespCh is the response sink for the in-flight foreground turn: the
+	// channel a synchronous caller (bot-to-bot relay) is blocked on waiting for
+	// this turn's text. It is set when the turn is started or dequeued and
+	// cleared by the first deliverTurnResponse, so exactly one result is handed
+	// back per turn. Nil for every human-originated turn — the sink adds no
+	// behaviour to the ordinary path.
+	turnRespCh chan topicTurnResult
 }
 
 // latestUserMessageWatermarkLocked returns the highest UserMessageTimeMs among
@@ -3598,6 +3612,15 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 }
 
 func (e *Engine) queueRelayHandbackForBusySession(p Platform, msg *Message, interactiveKey string, session *Session) bool {
+	return e.queueSyntheticTurnForBusySession(p, msg, interactiveKey, session, nil)
+}
+
+// queueSyntheticTurnForBusySession appends a machine-originated message to a
+// busy session's pending queue. respCh, when non-nil, is the sink the dequeued
+// turn will deliver its text into — that is what makes a bot-to-bot relay a
+// synchronous call rather than a fire-and-forget injection. Callers with no one
+// waiting (the relay handback) pass nil.
+func (e *Engine) queueSyntheticTurnForBusySession(p Platform, msg *Message, interactiveKey string, session *Session, respCh chan topicTurnResult) bool {
 	if session == nil || !session.Busy() {
 		return false
 	}
@@ -3636,6 +3659,7 @@ func (e *Engine) queueRelayHandbackForBusySession(p Platform, msg *Message, inte
 		msgSessionKey:     msg.SessionKey,
 		channelKey:        msg.ChannelKey,
 		userMessageTimeMs: msg.UserMessageTimeMs,
+		respCh:            respCh,
 	})
 	slog.Info("relay handback queued for source session",
 		"session", msg.SessionKey,
@@ -4197,6 +4221,16 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		}
 	}()
 
+	// A synchronous caller (bot-to-bot relay) may be blocked on this turn's
+	// response sink. Several paths below return before the event loop is ever
+	// reached — shutdown, no agent session — and each one would otherwise leave
+	// that caller waiting out its full relay deadline for a turn that never
+	// ran. Releasing here covers all of them at once; on the normal path the
+	// event loop has already consumed the sink and this is a no-op.
+	defer func() {
+		e.deliverTurnResponse(e.interactiveStateFor(interactiveKey), "", errTurnEndedWithoutResult)
+	}()
+
 	if e.ctx.Err() != nil {
 		return
 	}
@@ -4574,6 +4608,9 @@ func (e *Engine) workspaceContext(workspace, sessionKey string) (Agent, *Session
 // getOrCreateInteractiveStateWith accepts an optional agent override for multi-workspace mode.
 // adoptPendingFromPlaceholder copies pendingMessages from an existing placeholder
 // state to newState so queued messages are not lost when the map entry is replaced.
+// The in-flight turn's response sink moves with them: a synchronous relay caller
+// is blocked on that channel, so dropping it here would leave it waiting for a
+// turn whose state object no longer exists.
 // Must be called under interactiveMu.
 func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 	if existing == nil || existing == newState {
@@ -4584,7 +4621,36 @@ func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 		newState.pendingMessages = existing.pendingMessages
 		existing.pendingMessages = nil
 	}
+	if existing.turnRespCh != nil {
+		newState.turnRespCh = existing.turnRespCh
+		existing.turnRespCh = nil
+	}
 	existing.mu.Unlock()
+}
+
+// deliverTurnResponse hands a completed turn's text to whoever is waiting on
+// this state's response sink, and clears the sink so a turn yields exactly one
+// result. It is a no-op when no sink is set, which is every human turn.
+//
+// The send is non-blocking against a buffer-1 channel by design: this runs on
+// the interactive hot path, and a relay caller that already timed out and
+// walked away must never be able to stall the turn loop for every seat
+// (§Cardinal Rule: Hot Path = Global Impact).
+func (e *Engine) deliverTurnResponse(state *interactiveState, response string, err error) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	ch := state.turnRespCh
+	state.turnRespCh = nil
+	state.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- topicTurnResult{Response: response, Err: err}:
+	default:
+	}
 }
 
 // When agentOverride is non-nil it is used instead of e.agent to start the session.
@@ -5410,6 +5476,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		globalStatusBoard.OnTurnStart(e.name, "")
 		defer globalStatusBoard.OnTurnEnd(e.name)
 	}
+
+	// Release any synchronous caller waiting on this turn, whatever exit the
+	// turn takes. The clean path delivers the text at EventResult below, before
+	// the queue drain can install the next turn's sink; this deferred call is
+	// the catch-all for abnormal exits (channel closed, agent error, early
+	// return), which are numerous enough that hooking each one individually
+	// would be the thing that eventually misses one. deliverTurnResponse clears
+	// the sink, so whichever fires first wins and the other is a no-op.
+	defer func() {
+		e.deliverTurnResponse(state, "", errTurnEndedWithoutResult)
+	}()
 
 	var textParts []string
 	var segmentStart int // index into textParts: text before this has been sent/displayed
@@ -6367,6 +6444,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			e.noteUserTurnCompleted(state)
 
+			// Hand the finished text to a synchronous caller waiting on this
+			// turn (bot-to-bot relay), in ADDITION to the platform delivery
+			// below — never instead of it, so the topic still shows the turn.
+			// This must happen here rather than in the deferred catch-all: the
+			// queue drain further down starts the next turn and installs its
+			// own sink, which would otherwise consume this turn's result.
+			e.deliverTurnResponse(state, baseResponse, nil)
+
 			normalizedBaseResponse := strings.TrimSpace(baseResponse)
 			state.mu.Lock()
 			suppressDuplicate := normalizedBaseResponse != "" && normalizedBaseResponse == state.sideText
@@ -6891,6 +6976,14 @@ func (e *Engine) notifyDroppedQueuedMessages(state *interactiveState, reason err
 	state.mu.Unlock()
 	for _, q := range remaining {
 		e.send(q.platform, q.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), reason))
+		// A dropped synthetic turn still has a caller blocked on its sink;
+		// releasing it with the reason beats making it wait out its timeout.
+		if q.respCh != nil {
+			select {
+			case q.respCh <- topicTurnResult{Err: reason}:
+			default:
+			}
+		}
 	}
 }
 
@@ -6908,6 +7001,12 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		}
 		droppedStale := 0
 		for len(state.pendingMessages) > 0 && e.isQueuedUserMessageStaleForDrainLocked(state, state.pendingMessages[0].userMessageTimeMs) {
+			if ch := state.pendingMessages[0].respCh; ch != nil {
+				select {
+				case ch <- topicTurnResult{Err: errTurnDroppedAsStale}:
+				default:
+				}
+			}
 			state.pendingMessages = state.pendingMessages[1:]
 			droppedStale++
 		}
@@ -6929,6 +7028,9 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.currentMessageID = queued.messageID
 		state.fromVoice = queued.fromVoice
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
+		// This queued message now owns the in-flight turn, so its sink becomes
+		// the turn's sink; processInteractiveEvents below delivers into it.
+		state.turnRespCh = queued.respCh
 		state.mu.Unlock()
 
 		e.i18n.DetectAndSet(queued.content)
@@ -6942,8 +7044,13 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		as := state.agentSession // capture under lock to avoid race with cleanup (mirrors #1436)
 		state.mu.Unlock()
 		if as == nil || !as.Alive() {
-			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session ended"))
-			e.notifyDroppedQueuedMessages(state, fmt.Errorf("agent session ended"))
+			agentEnded := fmt.Errorf("agent session ended")
+			e.send(queued.platform, queued.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), agentEnded))
+			// This message was already dequeued, so its sink now lives on the
+			// state and notifyDroppedQueuedMessages (which only walks what is
+			// still queued) would not reach it.
+			e.deliverTurnResponse(state, "", agentEnded)
+			e.notifyDroppedQueuedMessages(state, agentEnded)
 			return false
 		}
 
@@ -17285,10 +17392,13 @@ func (e *Engine) platformForName(name string) Platform {
 	return platformNameOnly{name: name}
 }
 
-func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey string) (Agent, *SessionManager, string, error) {
+// The fourth return value is the resolved workspace ("" when the relay is not
+// workspace-scoped). It lets the caller look for an existing topic conversation
+// in that workspace without repeating the resolution or its side effects.
+func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey string) (Agent, *SessionManager, string, string, error) {
 	platformName, chatID, err := parseSessionKeyParts(sourceSessionKey)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("invalid source session key: %w", err)
+		return nil, nil, "", "", fmt.Errorf("invalid source session key: %w", err)
 	}
 
 	relaySessionKey := relayConversationKey(fromProject, platformName, chatID)
@@ -17305,48 +17415,54 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 		if threadID := extractThreadIDFromSessionKey(sourceSessionKey); threadID != "" {
 			workspace := e.resolveWorkspacePattern(threadID, "")
 			if workspace == "" {
-				return nil, nil, "", fmt.Errorf("resolve relay workspace from thread %q", threadID)
+				return nil, nil, "", "", fmt.Errorf("resolve relay workspace from thread %q", threadID)
 			}
 			agent, sessions, err := e.getOrCreateWorkspaceAgent(workspace)
 			if err != nil {
-				return nil, nil, "", fmt.Errorf("get relay workspace agent: %w", err)
+				return nil, nil, "", "", fmt.Errorf("get relay workspace agent: %w", err)
 			}
 			if ws := e.workspacePool.Get(workspace); ws != nil {
 				ws.Touch()
 			}
-			return agent, sessions, relaySessionKey, nil
+			return agent, sessions, relaySessionKey, workspace, nil
 		}
 	}
 
 	if !e.multiWorkspace || e.workspaceBindings == nil {
-		return e.agent, e.sessions, relaySessionKey, nil
+		return e.agent, e.sessions, relaySessionKey, "", nil
 	}
 
 	channelKey := workspaceChannelKey(platformName, chatID)
 	workspace, _, err := e.resolveWorkspace(e.platformForName(platformName), chatID)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("resolve relay workspace: %w", err)
+		return nil, nil, "", "", fmt.Errorf("resolve relay workspace: %w", err)
 	}
 	if workspace == "" {
 		if b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey); b != nil && !usable {
-			return nil, nil, "", fmt.Errorf("workspace binding unavailable for source channel %q", channelKey)
+			return nil, nil, "", "", fmt.Errorf("workspace binding unavailable for source channel %q", channelKey)
 		}
-		return nil, nil, "", fmt.Errorf("no workspace binding for source channel %q", channelKey)
+		return nil, nil, "", "", fmt.Errorf("no workspace binding for source channel %q", channelKey)
 	}
 
 	agent, sessions, err := e.getOrCreateWorkspaceAgent(workspace)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("get relay workspace agent: %w", err)
+		return nil, nil, "", "", fmt.Errorf("get relay workspace agent: %w", err)
 	}
 	if ws := e.workspacePool.Get(workspace); ws != nil {
 		ws.Touch()
 	}
-	return agent, sessions, relaySessionKey, nil
+	return agent, sessions, relaySessionKey, workspace, nil
 }
 
-// HandleRelay processes a relay message synchronously: starts or resumes a
-// dedicated relay session, sends the message to the agent, and blocks until
-// the complete response is collected (or the relay context times out).
+// HandleRelay processes a relay message synchronously and blocks until the
+// response is collected (or the relay context times out).
+//
+// When the source names a forum topic that already has a conversation, the
+// message is delivered as a turn on that conversation and this engine starts no
+// process of its own (see relay_topic_turn.go). Otherwise it falls back to the
+// dedicated relay session below: its own key, its own agent process, closed
+// when the answer is in. That fallback is still the right shape for a seat that
+// is not topic-scoped, and for a DM or General chat where no topic exists.
 func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey, message string) (string, error) {
 	slog.Info("relay: HandleRelay started", "target", e.name, "from", fromProject, "message_len", len(message))
 	if globalStatusBoard != nil {
@@ -17356,10 +17472,19 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 		}
 		globalStatusBoard.OnRelayDispatched(fromProject, e.name, summary)
 	}
-	agent, sessions, relaySessionKey, err := e.relayContextForSourceSessionKey(fromProject, sourceSessionKey)
+	agent, sessions, relaySessionKey, workspace, err := e.relayContextForSourceSessionKey(fromProject, sourceSessionKey)
 	if err != nil {
 		return "", err
 	}
+
+	switch target, terr := e.resolveRelayTopicTarget(sourceSessionKey, workspace, sessions); {
+	case terr == nil:
+		return e.relayViaTopicTurn(ctx, target, fromProject, message)
+	case !errors.Is(terr, errNoTopicSession):
+		// Ambiguous target. Refuse rather than deliver into a guess.
+		return "", terr
+	}
+
 	session := sessions.GetOrCreateActive(relaySessionKey)
 
 	// Try to acquire the session lock. Since the caller may retry a timed-out

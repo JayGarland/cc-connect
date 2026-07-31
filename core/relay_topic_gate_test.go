@@ -62,7 +62,7 @@ func TestRelayTopicResolution_MatchesInteractiveGate(t *testing.T) {
 			agent.name = regName
 			RegisterAgent(regName, func(opts map[string]any) (Agent, error) { return agent, nil })
 
-			relayAgent, relaySessions, _, err := e.relayContextForSourceSessionKey("dev-pro", sourceSessionKey)
+			relayAgent, relaySessions, _, _, err := e.relayContextForSourceSessionKey("dev-pro", sourceSessionKey)
 			if err != nil {
 				t.Fatalf("relayContextForSourceSessionKey() error = %v", err)
 			}
