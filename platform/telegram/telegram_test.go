@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -280,6 +281,37 @@ func TestUpdateMessageWithButtonsRetriesPlainTextAfterHTMLParseFailure(t *testin
 	}}}
 	if !reflect.DeepEqual(second.ReplyMarkup, wantMarkup) {
 		t.Fatalf("second ReplyMarkup = %#v, want %#v", second.ReplyMarkup, wantMarkup)
+	}
+}
+
+func TestUpdateReceiptCardSerializesEmptyKeyboardAsArray(t *testing.T) {
+	cases := []struct {
+		name    string
+		buttons [][]core.ButtonOption
+	}{
+		{name: "nil"},
+		{name: "empty", buttons: [][]core.ButtonOption{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubBot := newStubTelegramBot()
+			p := &Platform{bot: stubBot}
+			card := core.MessageLocator{Platform: p.Name(), ChatID: 1, MessageID: 2}
+
+			if err := p.UpdateReceiptCard(context.Background(), card, "receipt", tc.buttons); err != nil {
+				t.Fatalf("UpdateReceiptCard: %v", err)
+			}
+
+			params := stubBot.editMessageParams[0]
+			payload, err := json.Marshal(params.ReplyMarkup)
+			if err != nil {
+				t.Fatalf("marshal reply markup: %v", err)
+			}
+			if got, want := string(payload), `{"inline_keyboard":[]}`; got != want {
+				t.Fatalf("serialized reply markup = %s, want %s", got, want)
+			}
+		})
 	}
 }
 
