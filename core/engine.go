@@ -17295,7 +17295,13 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 
 	// Thread-scoped workspace pattern (Forum Mode) must be resolved before static
 	// bindings — resolveWorkspace only knows about DB bindings and conventions.
-	if e.workspacePattern != "" {
+	// L-0716: the gate must match the interactive path's
+	// commandContextWithWorkspace (engine.go:18263). Without dispatchTopicIsolation,
+	// the 9 isolation-only seats (architect-claude, architect-codex, reviewer-seat,
+	// counsel-seat, security-auditor-seat, researcher-seat, product-manager,
+	// qa-engineer, project-manager-seat) fall through to the global SessionManager
+	// and a relay can never reach the topic shard (L-0714 O2).
+	if e.workspacePattern != "" || e.dispatchTopicIsolation {
 		if threadID := extractThreadIDFromSessionKey(sourceSessionKey); threadID != "" {
 			workspace := e.resolveWorkspacePattern(threadID, "")
 			if workspace == "" {
