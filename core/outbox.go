@@ -27,17 +27,36 @@ type OutboxConfig struct {
 
 func (c OutboxConfig) threadsDir() string { return filepath.Join(filepath.Dir(c.IndexPath), "threads") }
 
+type verificationState string
+
+const (
+	verificationReady    verificationState = "ready"
+	verificationAwaiting verificationState = "awaiting_verification"
+	verificationInflight verificationState = "verification_inflight"
+)
+
+// classifyVerification is intentionally archive-text-only. A blank Verify is
+// legacy/exempt-ready; a named request awaits a nonempty Verified field. It
+// performs no grammar, identity, authorship, or content validation.
+func classifyVerification(verify, verified string) verificationState {
+	if strings.TrimSpace(verify) == "" || strings.TrimSpace(verified) != "" {
+		return verificationReady
+	}
+	return verificationAwaiting
+}
+
 type queryFileInfo struct {
-	Letter, Thread, Path, To, Route, Summary, Digest string
-	ModTime                                          time.Time
+	Letter, Thread, Path, To, Route, Verify, Verified, Summary, Digest string
+	ModTime                                                            time.Time
 }
 type outboxRecord struct {
-	Thread, To, Route, QueryPath, Generation, Summary string
-	Card                                              *MessageLocator
-	Dispatched                                        bool
-	RefreshPending                                    bool      `json:"refresh_pending,omitempty"`
-	Attempts                                          int       `json:"attempts,omitempty"`
-	RetryAt                                           time.Time `json:"retry_at,omitempty"`
+	Thread, To, Route, Verify, QueryPath, Generation, Summary string
+	Verification                                              verificationState `json:"verification"`
+	Card                                                      *MessageLocator
+	Dispatched                                                bool
+	RefreshPending                                            bool      `json:"refresh_pending,omitempty"`
+	Attempts                                                  int       `json:"attempts,omitempty"`
+	RetryAt                                                   time.Time `json:"retry_at,omitempty"`
 }
 
 // outboxLedger is the daemon-owned delivery projection. Archive files and
@@ -196,7 +215,7 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 		if err != nil {
 			return err
 		}
-		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
+		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Verify: h["Verify"], Verified: h["Verified"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
 		return nil
 	})
 	// Historical archives may contain duplicate L-IDs. The Outbox lifecycle is
@@ -223,9 +242,28 @@ func displayOutboxRoute(route string) string {
 	return route
 }
 
+func verificationCallbackToken(letter, generation string) string {
+	// Keep the full letter and generation in the durable ledger. Callback data
+	// carries only this fixed-width lookup token, resolved against an existing
+	// current record; it never supplies a verifier destination.
+	return contentDigest([]byte(letter + "\x00" + generation))
+}
+
 func formatOutboxCard(i18n *I18n, record outboxRecord, letter, body string, page, pageCount int) (string, [][]ButtonOption) {
 	route := displayOutboxRoute(record.Route)
 	content := fmt.Sprintf("📤 %s\nThread: %s\nTo: %s\nRoute: %s\nSummary: %s\nQuery: %s", letter, record.Thread, record.To, route, record.Summary, filepath.Base(record.QueryPath))
+	if record.Verification == verificationAwaiting || record.Verification == verificationInflight {
+		content += "\nAwaiting verification: " + record.Verify
+		if record.Verification == verificationInflight {
+			return content + "\nVerification requested.", [][]ButtonOption{{
+				{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/outbox page " + letter + " " + record.Generation + " 0"},
+			}}
+		}
+		return content, [][]ButtonOption{{
+			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/outbox page " + letter + " " + record.Generation + " 0"},
+			{Text: "🔎 Request verification", Data: "verification_request:" + verificationCallbackToken(letter, record.Generation)},
+		}}
+	}
 	if pageCount <= 0 {
 		return content, [][]ButtonOption{{
 			{Text: i18n.T(MsgReceiptViewOriginal), Data: "cmd:/outbox page " + letter + " " + record.Generation + " 0"},
@@ -334,7 +372,7 @@ func (e *Engine) checkOutbox() {
 	// available through /outbox, but must never be emitted as a burst of cards.
 	if !e.outboxSeeded {
 		for _, q := range queries {
-			e.outboxRecords[q.Letter] = outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: q.Digest, Summary: q.Summary}
+			e.outboxRecords[q.Letter] = outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, Verify: q.Verify, QueryPath: q.Path, Generation: q.Digest, Summary: q.Summary, Verification: classifyVerification(q.Verify, q.Verified)}
 		}
 		e.outboxSeeded = true
 		if err := e.outboxStore.save(outboxLedger{Seeded: true, Records: e.outboxRecords}); err != nil {
@@ -459,7 +497,7 @@ func (e *Engine) publishOutbox(q queryFileInfo) {
 		}
 	}
 	e.outboxMu.Unlock()
-	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, QueryPath: q.Path, Generation: generation, Summary: q.Summary}
+	record := outboxRecord{Thread: q.Thread, To: q.To, Route: q.Route, Verify: q.Verify, QueryPath: q.Path, Generation: generation, Summary: q.Summary, Verification: classifyVerification(q.Verify, q.Verified)}
 	if hadPrior {
 		record.Card = prior.Card
 	}
@@ -568,6 +606,10 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 			return true
 		}
 		e.reply(p, msg.ReplyCtx, "❌ Outbox item is unavailable.")
+		return true
+	}
+	if (record.Verification == verificationAwaiting || record.Verification == verificationInflight) && (args[0] == "manual" || args[0] == "secretary") {
+		e.reply(p, msg.ReplyCtx, "⚠️ Dispatch is awaiting verification.")
 		return true
 	}
 	if args[0] == "manual" {

@@ -1211,6 +1211,33 @@ func TestReconstructReplyCtx(t *testing.T) {
 	}
 }
 
+func TestHandleCallbackQuery_VerificationRequestIsTypedAndIdempotent(t *testing.T) {
+	stubBot := newStubTelegramBot()
+	platform, err := New(map[string]any{"token": "token", "allow_from": "*"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p := platform.(*Platform)
+	p.bot = stubBot
+	p.handler = func(core.Platform, *core.Message) { t.Fatal("verification request must not resynthesize a message") }
+	calls := 0
+	p.SetVerificationRequestHandler(func(pl core.Platform, token string) (string, bool, error) {
+		calls++
+		if token != "abc" {
+			t.Fatalf("callback token = %q", token)
+		}
+		return "Verification requested", true, nil
+	})
+	cb := &models.CallbackQuery{ID: "cbid", From: models.User{ID: 100}, Data: "verification_request:abc", Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: 5, Chat: models.Chat{ID: 1, Type: models.ChatTypeSupergroup}, Text: "Outbox"}}}
+	p.handleCallbackQuery(context.Background(), cb)
+	if calls != 1 {
+		t.Fatalf("handler calls = %d", calls)
+	}
+	if stubBot.editMessageTextCalls != 0 {
+		t.Fatalf("platform should leave card refresh to Engine, edits = %d", stubBot.editMessageTextCalls)
+	}
+}
+
 // TestHandleCallbackQuery_DispatchConfirm proves the L-0667 confirm button
 // calls the injected DispatchConfirmHandler DIRECTLY — never via
 // p.handler/message resynthesis, unlike every other callback prefix in this

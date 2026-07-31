@@ -347,6 +347,15 @@ type DispatchConfirmReceiver interface {
 	SetDispatchConfirmHandler(handler DispatchConfirmHandler)
 }
 
+// VerificationRequestHandler accepts an explicit request to deliver verification
+// work for an archive generation. The callback is not a verifier decision.
+type VerificationRequestHandler func(p Platform, callbackToken string) (receipt string, ok bool, err error)
+
+// VerificationRequestReceiver accepts the Engine's typed verification callback.
+type VerificationRequestReceiver interface {
+	SetVerificationRequestHandler(handler VerificationRequestHandler)
+}
+
 // TopicOwnershipChecker reports whether a forum-Topic/thread ID is bound to
 // this Engine's own seat, checked against two durable sources: the dispatch
 // ledger (DispatchExpectation.To == this seat, keyed by the TopicID/

@@ -171,6 +171,9 @@ func (e *Engine) wireDispatchConfirmHandlers() {
 		if r, ok := p.(DispatchConfirmReceiver); ok {
 			r.SetDispatchConfirmHandler(e.ConfirmDispatch)
 		}
+		if r, ok := p.(VerificationRequestReceiver); ok {
+			r.SetVerificationRequestHandler(e.RequestVerification)
+		}
 	}
 }
 
@@ -191,7 +194,20 @@ func formatDispatchProposalCard(req dispatchRequest) string {
 // twice.
 func (e *Engine) ConfirmDispatch(p Platform, letterID string) (receipt string, ok bool, err error) {
 	store := e.ensurePendingDispatchStore()
-	pending, found, err := store.takeByLetter(letterID)
+	pending, found, err := store.peekByLetter(letterID)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, nil
+	}
+	e.outboxMu.RLock()
+	verification := e.outboxRecords[letterID].Verification
+	e.outboxMu.RUnlock()
+	if verification == verificationAwaiting || verification == verificationInflight {
+		return "", false, nil
+	}
+	pending, found, err = store.takeByLetter(letterID)
 	if err != nil {
 		return "", false, err
 	}

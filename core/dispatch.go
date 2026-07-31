@@ -333,6 +333,8 @@ var archiveHeaderCanonical = map[string]string{
 	"to":                  "To",
 	"from":                "From",
 	"route":               "Route",
+	"verify":              "Verify",
+	"verified":            "Verified",
 	"project":             "Project",
 	"base-repo":           "Base-Repo",
 	"date":                "Date",

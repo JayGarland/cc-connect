@@ -513,7 +513,8 @@ type Engine struct {
 	// pendingDispatchStore holds [DISPATCH] proposals awaiting Boss's
 	// confirm-card button press (L-0667). Lazily initialized via
 	// ensurePendingDispatchStore().
-	pendingDispatchStore *pendingDispatchStore
+	pendingDispatchStore         *pendingDispatchStore
+	verificationExpectationStore *verificationExpectationStore
 	// pendingBulkCloseStore holds in-review "一并封信" batches offered on a
 	// dispatch confirmation card (L-0694 Option B). Lazily initialized via
 	// ensurePendingBulkCloseStore().

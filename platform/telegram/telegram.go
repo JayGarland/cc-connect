@@ -167,7 +167,8 @@ type Platform struct {
 	// dispatchConfirmHandler is called directly when Boss presses the
 	// confirm button on a dispatch-proposal card (L-0667) — never via
 	// message resynthesis. Injected by Engine.wireDispatchConfirmHandlers().
-	dispatchConfirmHandler core.DispatchConfirmHandler
+	dispatchConfirmHandler     core.DispatchConfirmHandler
+	verificationRequestHandler core.VerificationRequestHandler
 	// topicOwnershipChecker answers "is this forum-Topic bound to my seat?"
 	// from the dispatch ledger, injected by Engine.Start() for the
 	// L-0669 bare-text-in-own-Topic routing path. Never used to infer
@@ -313,6 +314,12 @@ func (p *Platform) KeepPreviewOnFinish() bool {
 func (p *Platform) SetDispatchConfirmHandler(handler core.DispatchConfirmHandler) {
 	p.mu.Lock()
 	p.dispatchConfirmHandler = handler
+	p.mu.Unlock()
+}
+
+func (p *Platform) SetVerificationRequestHandler(handler core.VerificationRequestHandler) {
+	p.mu.Lock()
+	p.verificationRequestHandler = handler
 	p.mu.Unlock()
 }
 
@@ -1240,6 +1247,20 @@ func (p *Platform) handleCallbackQuery(ctx context.Context, cb *models.CallbackQ
 	rctx := replyContext{chatID: chatID, threadID: threadID, messageID: msgID}
 
 	emptyMarkup := &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}}
+
+	if strings.HasPrefix(data, "verification_request:") {
+		token := strings.TrimPrefix(data, "verification_request:")
+		if token == "" || p.verificationRequestHandler == nil {
+			slog.Warn("telegram: verification request unavailable")
+			return
+		}
+		if _, ok, err := p.verificationRequestHandler(p, token); err != nil {
+			slog.Warn("telegram: verification request failed", "error", err)
+		} else if !ok {
+			slog.Debug("telegram: verification request already handled")
+		}
+		return
+	}
 
 	// Dispatch confirm callback (L-0667): calls the injected
 	// DispatchConfirmHandler directly -- this is the one callback in this

@@ -227,6 +227,152 @@ func TestFormatOutboxCardShowsMetadataAndReadOnlyButtons(t *testing.T) {
 	}
 }
 
+func TestVerificationStateUsesArchiveTextOnly(t *testing.T) {
+	cases := []struct {
+		name, verify, verified string
+		want                   verificationState
+	}{
+		{name: "legacy blank verify is ready", want: verificationReady},
+		{name: "named verifier awaits empty result", verify: "architect-codex", want: verificationAwaiting},
+		{name: "any nonempty verified text is ready", verify: "architect-codex", verified: "anything at all", want: verificationReady},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyVerification(tc.verify, tc.verified); got != tc.want {
+				t.Fatalf("classifyVerification(%q, %q) = %q, want %q", tc.verify, tc.verified, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatOutboxCardAwaitingVerificationShowsRequestOnly(t *testing.T) {
+	record := outboxRecord{Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "L-0100.query.md", Generation: "g1", Summary: "Ship it", Verify: "architect-codex", Verification: verificationAwaiting}
+	content, buttons := formatOutboxCard(NewI18n(LangEnglish), record, "L-0100", "", 0, 0)
+	if !strings.Contains(content, "Awaiting verification: architect-codex") {
+		t.Fatalf("content = %q", content)
+	}
+	if len(buttons) != 1 || len(buttons[0]) != 2 || buttons[0][1].Data != "verification_request:"+verificationCallbackToken("L-0100", "g1") {
+		t.Fatalf("buttons = %#v", buttons)
+	}
+	for _, row := range buttons {
+		for _, button := range row {
+			if len([]byte(button.Data)) > 64 {
+				t.Fatalf("callback data exceeds Telegram limit: %d bytes: %q", len([]byte(button.Data)), button.Data)
+			}
+		}
+	}
+}
+
+func TestFormatOutboxCardVerificationCallbackFitsTelegramLimit(t *testing.T) {
+	letter := "L-999999999999999999999999999999999999999999999999999999999999"
+	generation := strings.Repeat("g", 4096)
+	_, buttons := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", QueryPath: "L.query.md", Generation: generation, Verify: "verifier", Verification: verificationAwaiting}, letter, "", 0, 0)
+	if got := len([]byte(buttons[0][1].Data)); got > 64 {
+		t.Fatalf("verification callback is %d bytes, exceeds Telegram limit: %q", got, buttons[0][1].Data)
+	}
+}
+func TestOutboxManualRejectsAwaitingVerification(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {Generation: "g", Verification: verificationAwaiting}}
+	if !e.handleOutboxCommand(p, &Message{ReplyCtx: "chat"}, []string{"manual", "L-0100", "g"}) {
+		t.Fatal("command not handled")
+	}
+	if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "awaiting verification") {
+		t.Fatalf("reply = %q", got)
+	}
+	if e.outboxManual["L-0100"] {
+		t.Fatal("awaiting letter was marked manually dispatched")
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestRequestVerificationRequiresConfiguredRelayDelivery(t *testing.T) {
+	root := t.TempDir()
+	path := writeQueryFile(t, filepath.Join(root, "threads"), "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nVerify: architect-codex\nVerified:\nDate: 2026-07-18\n---\n")
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.dataDir = root
+	e.outboxRecords = map[string]outboxRecord{"L-0100": {QueryPath: path, Generation: contentDigest(mustReadFile(t, path)), Verify: "architect-codex", Verification: verificationAwaiting}}
+	_, ok, err := e.RequestVerification(&stubPlatformEngine{n: "telegram"}, verificationCallbackToken("L-0100", e.outboxRecords["L-0100"].Generation))
+	if err == nil || ok {
+		t.Fatalf("unconfigured delivery = ok:%v err:%v", ok, err)
+	}
+	if _, found, getErr := newVerificationExpectationStore(root).get("L-0100", e.outboxRecords["L-0100"].Generation); getErr != nil || found {
+		t.Fatalf("failed delivery must release expectation: found:%v err:%v", found, getErr)
+	}
+	if got := e.outboxRecords["L-0100"].Verification; got != verificationAwaiting {
+		t.Fatalf("state after failed delivery = %q, want awaiting", got)
+	}
+}
+
+func TestRequestVerificationReleasesFailedDeliveryForRetry(t *testing.T) {
+	root := t.TempDir()
+	path := writeQueryFile(t, filepath.Join(root, "threads"), "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nVerify: verifier-seat\nVerified:\nDate: 2026-07-18\n---\n")
+	generation := contentDigest(mustReadFile(t, path))
+	source := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	source.dataDir = root
+	source.outboxConfig = OutboxConfig{SessionKey: "telegram:1:0"}
+	source.outboxRecords = map[string]outboxRecord{"L-0100": {QueryPath: path, Generation: generation, Verify: "verifier-seat", Verification: verificationAwaiting}}
+	source.relayManager = NewRelayManager(root)
+	source.relayManager.RegisterEngine("secretary-seat", source)
+	source.relayManager.Bind("telegram", "1", map[string]string{"secretary-seat": "", "verifier-seat": ""})
+
+	_, ok, err := source.RequestVerification(&stubPlatformEngine{n: "telegram"}, verificationCallbackToken("L-0100", generation))
+	if err == nil || ok {
+		t.Fatalf("failed relay = ok:%v err:%v", ok, err)
+	}
+	if got := source.outboxRecords["L-0100"].Verification; got != verificationAwaiting {
+		t.Fatalf("state = %q, want awaiting", got)
+	}
+	if _, found, err := newVerificationExpectationStore(root).get("L-0100", generation); err != nil || found {
+		t.Fatalf("failed relay left inflight expectation: found:%v err:%v", found, err)
+	}
+}
+
+func TestRequestVerificationRelaysOneVerifierIntakeWithoutImplementationDispatch(t *testing.T) {
+	root := t.TempDir()
+	path := writeQueryFile(t, filepath.Join(root, "threads"), "alpha", "L-0100", "---\nID: L-0100\nThread: alpha\nType: QUERY\nTo: dev-pro\nVerify: verifier-seat\nVerified:\nDate: 2026-07-18\n---\n")
+	generation := contentDigest(mustReadFile(t, path))
+	source := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	source.dataDir = root
+	source.outboxConfig = OutboxConfig{SessionKey: "telegram:1:0"}
+	source.outboxRecords = map[string]outboxRecord{"L-0100": {QueryPath: path, Generation: generation, Verify: "verifier-seat", Verification: verificationAwaiting}}
+	verifierSession := &msgRecordingAgentSession{events: make(chan Event, 1)}
+	verifier := NewEngine("verifier-seat", &msgRecordingAgent{nextSession: verifierSession}, nil, "", LangEnglish)
+	source.relayManager = NewRelayManager(root)
+	source.relayManager.RegisterEngine("secretary-seat", source)
+	source.relayManager.RegisterEngine("verifier-seat", verifier)
+	source.relayManager.Bind("telegram", "1", map[string]string{"secretary-seat": "", "verifier-seat": ""})
+	_, ok, err := source.RequestVerification(&stubPlatformEngine{n: "telegram"}, verificationCallbackToken("L-0100", generation))
+	if err != nil || !ok {
+		t.Fatalf("request = ok:%v err:%v", ok, err)
+	}
+	_, ok, err = source.RequestVerification(&stubPlatformEngine{n: "telegram"}, verificationCallbackToken("L-0100", generation))
+	if err != nil || ok {
+		t.Fatalf("duplicate = ok:%v err:%v", ok, err)
+	}
+	if prompts := verifierSession.prompts(); len(prompts) != 1 || !strings.Contains(prompts[0], "Query: "+path) || strings.Contains(prompts[0], "Generation:") || !strings.Contains(prompts[0], "Do not create a RESULT or dispatch the implementation task.") {
+		t.Fatalf("verifier intake = %#v", prompts)
+	}
+	if len(mustListOpen(t, source)) != 0 {
+		t.Fatal("verification request created an implementation dispatch")
+	}
+	if source.outboxRecords["L-0100"].Verification != verificationInflight {
+		t.Fatalf("state = %q", source.outboxRecords["L-0100"].Verification)
+	}
+	if _, found, err := newVerificationExpectationStore(root).get("L-0100", generation); err != nil || !found {
+		t.Fatalf("successful relay did not retain expectation: found:%v err:%v", found, err)
+	}
+}
+
 func TestFormatOutboxCardShowsDefaultForEmptyRoute(t *testing.T) {
 	content, _ := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", QueryPath: "F:\\archive\\L-0100.query.md", Generation: "g1", Summary: "Ship it"}, "L-0100", "", 0, 0)
 	if !strings.Contains(content, "Route: default") {

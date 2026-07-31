@@ -219,6 +219,25 @@ func TestConfirmDispatch_MissingPending(t *testing.T) {
 	}
 }
 
+func TestConfirmDispatchRejectsAwaitingArchiveVerification(t *testing.T) {
+	e, p, req, queryPath := setupConfirmDispatchFixture(t)
+	e.pendingDispatchStore = newPendingDispatchStore(e.dataDir)
+	if err := e.pendingDispatchStore.upsert(PendingDispatch{Request: req, SourceSessionKey: "telegram:1:1", Card: MessageLocator{Platform: "telegram", MessageID: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	e.outboxRecords = map[string]outboxRecord{req.Letter: {QueryPath: queryPath, Generation: "g", Verification: verificationAwaiting}}
+	_, ok, err := e.ConfirmDispatch(p, req.Letter)
+	if err != nil || ok {
+		t.Fatalf("ConfirmDispatch = ok:%v err:%v", ok, err)
+	}
+	if len(mustListOpen(t, e)) != 0 {
+		t.Fatal("awaiting verification dispatched")
+	}
+	if _, found, err := e.pendingDispatchStore.peekByLetter(req.Letter); err != nil || !found {
+		t.Fatalf("pending proposal must remain: found:%v err:%v", found, err)
+	}
+}
+
 // TestMaybeHandleDispatchBlock_OffersBulkCloseForUnclosedThreadLetters is
 // the L-0694 Option B wiring test: when the dispatch's own thread has an
 // earlier same-thread letter with a RESULT row but no CLOSED row, the
