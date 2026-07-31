@@ -227,6 +227,30 @@ func TestFormatOutboxCardShowsMetadataAndReadOnlyButtons(t *testing.T) {
 	}
 }
 
+// TestFormatOutboxCardDirectStartButtonLabel is the L-0717 regression gate:
+// the outbox card's dispatch-actuator button must be labeled "⚡ 直接开始"
+// (not the misleading "交秘书发" — no secretary AI runs at click time) and
+// must keep the unchanged cmd:/outbox secretary callback data.
+//
+// Coverage declaration (L-0697): scans formatOutboxCard's dispatch-actuator
+// button for the label + callback pair. Excludes the manual button and the
+// view-original button (unchanged, covered by the existing metadata test)
+// and all verification-state branches (unchanged). Instance gate, not class:
+// a single button label/content contract on an unchanged actuator.
+func TestFormatOutboxCardDirectStartButtonLabel(t *testing.T) {
+	_, buttons := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", Route: "heavy", QueryPath: "F:\\archive\\L-0100.query.md", Generation: "g1", Summary: "Ship it"}, "L-0100", "", 0, 0)
+	if len(buttons) != 1 || len(buttons[0]) != 3 {
+		t.Fatalf("buttons = %#v, want one row of three", buttons)
+	}
+	actuator := buttons[0][2]
+	if actuator.Text != "⚡ 直接开始" {
+		t.Fatalf("dispatch actuator button label = %q, want %q", actuator.Text, "⚡ 直接开始")
+	}
+	if actuator.Data != "cmd:/outbox secretary L-0100 g1" {
+		t.Fatalf("dispatch actuator button callback = %q, want unchanged cmd:/outbox secretary L-0100 g1", actuator.Data)
+	}
+}
+
 func TestVerificationStateUsesArchiveTextOnly(t *testing.T) {
 	cases := []struct {
 		name, verify, verified string
