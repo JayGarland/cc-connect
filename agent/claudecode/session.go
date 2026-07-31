@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,6 +60,7 @@ type claudeSession struct {
 	// Stop hook timeout. The wait ends as soon as the process exits,
 	// so typical shutdowns take seconds, not the full timeout.
 	gracefulStopTimeout time.Duration
+	forcedReapTimeout   time.Duration
 	ccHooks             *ccPermissionHookRunner // Claude Code PermissionRequest hook runner
 
 	// startupWarning holds a one-time message to surface to the IM user at
@@ -497,6 +499,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		cancel:              cancel,
 		done:                make(chan struct{}),
 		gracefulStopTimeout: 120 * time.Second,
+		forcedReapTimeout:   5 * time.Second,
 		ccHooks:             newCCPermissionHookRunner(workDir),
 		startupWarning:      rootDowngradeWarning,
 		promptFilePath:      cleanupPromptPath,
@@ -1259,6 +1262,22 @@ func (cs *claudeSession) Alive() bool {
 	return cs.alive.Load()
 }
 
+var errForcedReapTimeout = errors.New("claudeSession: forced reap timed out")
+
+func (cs *claudeSession) waitForForcedReap() error {
+	timeout := cs.forcedReapTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	select {
+	case <-cs.done:
+		return nil
+	case <-time.After(timeout):
+		return errForcedReapTimeout
+	}
+}
+
 func (cs *claudeSession) Close() error {
 	// Best-effort cleanup of the --append-system-prompt-file temp file on
 	// every exit path. The file is small (~9KB) and OS temp cleanup also
@@ -1314,7 +1333,14 @@ func (cs *claudeSession) Close() error {
 	if err := forceKillCmd(cs.cmd); err != nil {
 		slog.Warn("claudeSession: force kill", "error", err)
 	}
-	<-cs.done
+	if err := cs.waitForForcedReap(); err != nil {
+		pid := 0
+		if cs.cmd != nil && cs.cmd.Process != nil {
+			pid = cs.cmd.Process.Pid
+		}
+		slog.Error("claudeSession: forced reap timed out", "timeout", cs.forcedReapTimeout, "pid", pid)
+		return err
+	}
 	return nil
 }
 

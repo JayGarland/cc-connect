@@ -3,6 +3,7 @@ package claudecode
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -353,6 +354,34 @@ closed:
 	case <-cs.done:
 	case <-timeout:
 		t.Fatal("HANG: done not closed within 5s after ctx cancel")
+	}
+}
+
+func TestClaudeSessionWaitForForcedReap_TimesOut(t *testing.T) {
+	cs := &claudeSession{
+		done:              make(chan struct{}),
+		forcedReapTimeout: 100 * time.Millisecond,
+	}
+
+	started := time.Now()
+	err := cs.waitForForcedReap()
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, errForcedReapTimeout) {
+		t.Fatalf("waitForForcedReap() error = %v, want errForcedReapTimeout", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("waitForForcedReap() took %s, want bounded wait", elapsed)
+	}
+}
+
+func TestClaudeSessionWaitForForcedReap_ReturnsAfterDone(t *testing.T) {
+	done := make(chan struct{})
+	cs := &claudeSession{done: done, forcedReapTimeout: 100 * time.Millisecond}
+	close(done)
+
+	if err := cs.waitForForcedReap(); err != nil {
+		t.Fatalf("waitForForcedReap() error = %v, want nil", err)
 	}
 }
 
