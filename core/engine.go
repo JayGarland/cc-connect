@@ -1810,26 +1810,16 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		ModeOverride: job.Mode,
 	}
 
-	// Resolve workspace-specific agent and sessions for multi-workspace mode.
-	// Priority: job.WorkDir (explicit) > workspace binding > global agent fallback.
-	agent := e.agent
-	sessions := e.sessions
-	workspaceDir := ""
-
-	if e.multiWorkspace {
-		channelID := extractChannelID(sessionKey)
-		if channelID != "" {
-			workspace, _, err := e.resolveWorkspace(targetPlatform, channelID)
-			if err == nil && workspace != "" {
-				wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(workspace, sessionKey)
-				if err == nil {
-					agent = wsAgent
-					sessions = wsSessions
-					workspaceDir = effectiveDir
-				}
-			}
-		}
-	}
+	// Resolve the agent and sessions for this job.
+	// Priority: job.WorkDir (explicit) > the session key's own workspace > global.
+	//
+	// The second step is the same resolver the card callbacks use: a scheduled
+	// job holds a session key and no Message, exactly like them. It used to
+	// consult only resolveWorkspace (channel bindings), which no
+	// dispatch_topic_isolation seat has — so a job on such a seat ran against the
+	// global SessionManager under a bare interactive key, i.e. as a second agent
+	// process beside the very conversation it was scheduled in.
+	agent, sessions, workspaceDir := e.workspaceContextForSessionKey(sessionKey)
 
 	if job.WorkDir != "" {
 		wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(job.WorkDir)
@@ -2013,24 +2003,9 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		ModeOverride: job.Mode,
 	}
 
-	agent := e.agent
-	sessions := e.sessions
-	workspaceDir := ""
-
-	if e.multiWorkspace {
-		channelID := extractChannelID(sessionKey)
-		if channelID != "" {
-			workspace, _, err := e.resolveWorkspace(targetPlatform, channelID)
-			if err == nil && workspace != "" {
-				wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(workspace, sessionKey)
-				if err == nil {
-					agent = wsAgent
-					sessions = wsSessions
-					workspaceDir = effectiveDir
-				}
-			}
-		}
-	}
+	// Priority: job.WorkDir (explicit) > the session key's own workspace > global.
+	// Same resolver the card callbacks and cron jobs use — see ExecuteCronJob.
+	agent, sessions, workspaceDir := e.workspaceContextForSessionKey(sessionKey)
 
 	if job.WorkDir != "" {
 		wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(job.WorkDir)
@@ -17405,21 +17380,22 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 	// counsel-seat, security-auditor-seat, researcher-seat, product-manager,
 	// qa-engineer, project-manager-seat) from falling through to the global
 	// SessionManager where a relay can never reach the topic shard (L-0714 O2).
-	if e.workspacePattern != "" || e.dispatchTopicIsolation {
-		if threadID := extractThreadIDFromSessionKey(sourceSessionKey); threadID != "" {
-			workspace := e.topicWorkspaceKey(threadID, "")
-			if workspace == "" {
-				return nil, nil, "", "", fmt.Errorf("resolve relay workspace from thread %q", threadID)
-			}
-			agent, sessions, err := e.getOrCreateWorkspaceAgent(workspace)
-			if err != nil {
-				return nil, nil, "", "", fmt.Errorf("get relay workspace agent: %w", err)
-			}
-			if ws := e.workspacePool.Get(workspace); ws != nil {
-				ws.Touch()
-			}
-			return agent, sessions, relaySessionKey, workspace, nil
+	// An empty thread id is not a missing one: a DM and a General-topic message
+	// both produce it, and for a dispatch_topic_isolation seat topicWorkspaceKey
+	// answers "general" — the same shard that seat's own conversation uses.
+	// Requiring a thread id here meant a relay into an isolation seat's DM or
+	// General fell through to the binding lookup, which those seats never have,
+	// and HandleRelay returned `no workspace binding for source channel` instead
+	// of delivering.
+	if workspace := e.topicWorkspaceKey(extractThreadIDFromSessionKey(sourceSessionKey), ""); workspace != "" {
+		agent, sessions, err := e.getOrCreateWorkspaceAgent(workspace)
+		if err != nil {
+			return nil, nil, "", "", fmt.Errorf("get relay workspace agent: %w", err)
 		}
+		if ws := e.workspacePool.Get(workspace); ws != nil {
+			ws.Touch()
+		}
+		return agent, sessions, relaySessionKey, workspace, nil
 	}
 
 	if !e.multiWorkspace || e.workspaceBindings == nil {
@@ -18527,9 +18503,24 @@ func (e *Engine) resolveMessageWorkspaceContext(p Platform, msg *Message) (messa
 // sessionContextForKey resolves the agent and session manager for a sessionKey.
 // It uses existing workspace bindings and falls back to global context if unresolved.
 func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager) {
+	agent, sessions, _ := e.workspaceContextForSessionKey(sessionKey)
+	return agent, sessions
+}
+
+// workspaceContextForSessionKey is the decider for callers that hold a session
+// key and no Message: card callbacks, cron and timer jobs, out-of-band sends.
+// It answers the same as resolveMessageWorkspaceContext does for a message on
+// that key — the third return is the effective workspace directory ("" for the
+// global context), which is the interactive-key prefix.
+//
+// It deliberately does NOT call resolveWorkspace: that auto-binds a workspace by
+// convention (see its step 3), and drawing a card or firing a timer must not
+// create a persistent binding as a side effect. Binding lookup here is
+// read-only.
+func (e *Engine) workspaceContextForSessionKey(sessionKey string) (Agent, *SessionManager, string) {
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
 		if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
-			return wsAgent, wsSessions
+			return wsAgent, wsSessions, workspace
 		}
 	}
 	// Topic/isolation workspace, resolved from the stable key exactly as
@@ -18542,17 +18533,17 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 	// are the card renderers, so a seat's /list card listed one store while the
 	// typed command read another.
 	if workspace := e.topicWorkspaceKey(extractThreadIDFromSessionKey(sessionKey), ""); workspace != "" {
-		if wsAgent, wsSessions, _, _, err := e.workspaceContext(workspace, sessionKey); err == nil {
-			return wsAgent, wsSessions
+		if wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(workspace, sessionKey); err == nil {
+			return wsAgent, wsSessions, effectiveDir
 		}
 	}
 	if !e.multiWorkspace || e.workspaceBindings == nil {
-		return e.agent, e.sessions
+		return e.agent, e.sessions, ""
 	}
 	if channelKey := extractWorkspaceChannelKey(sessionKey); channelKey != "" {
 		if b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey); usable {
-			if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(normalizeWorkspacePath(b.Workspace)); err == nil {
-				return wsAgent, wsSessions
+			if wsAgent, wsSessions, _, effectiveDir, err := e.workspaceContext(normalizeWorkspacePath(b.Workspace), sessionKey); err == nil {
+				return wsAgent, wsSessions, effectiveDir
 			}
 		}
 	}
@@ -18565,10 +18556,10 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 	// to the same agent session.
 	if workspace := e.workspaceFromLiveState(sessionKey); workspace != "" {
 		if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
-			return wsAgent, wsSessions
+			return wsAgent, wsSessions, workspace
 		}
 	}
-	return e.agent, e.sessions
+	return e.agent, e.sessions, ""
 }
 
 func (e *Engine) bindSendWorkDir(sessionKey, workDir string) {

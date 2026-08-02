@@ -248,6 +248,7 @@ func TestRelayTopicTarget_MatchesInteractiveSessionTarget(t *testing.T) {
 // interactive key a message belongs to.
 var routingPrimitives = map[string]bool{
 	"resolveWorkspacePattern":   true,
+	"resolveWorkspace":          true,
 	"workspaceContext":          true,
 	"getOrCreateWorkspaceAgent": true,
 }
@@ -266,25 +267,42 @@ var routingPrimitives = map[string]bool{
 //     the same answer across the whole seat × channel matrix.
 var messageRoutingHomes = []string{
 	"resolveMessageWorkspaceContext",
-	"sessionContextForKey",
 	"topicWorkspaceKey",
 	"workspaceContext",
+	"workspaceContextForSessionKey",
+}
+
+// explicitWorkDirOverrides call a primitive with a directory their *caller*
+// named — `cron job.WorkDir`, `timer job.WorkDir`, `cc-connect send --cwd`.
+// There is nothing to agree with: the directory is the instruction, not a
+// derivation from the channel. They are listed separately from debt so the two
+// are not confused, and each is required to route everything *else* through a
+// home (cron and timer do: workspaceContextForSessionKey, then the override).
+var explicitWorkDirOverrides = []string{
+	"ExecuteCronJob",
+	"ExecuteTimerJob",
+	"SendToSessionInWorkDir",
 }
 
 // messageRoutingDebt is the frozen inventory of functions that still re-derive
 // routing for a non-message entry point. Each is a place the next divergence can
 // appear. The count may only decrease.
 //
-// Baseline history — each step is a letter that cured one:
+// Baseline history — each step is a change that cured one:
 //
 //	6 → handleMessage and commandContextWithWorkspace resolved independently
 //	    (that pair is what let /new stop clearing DM sessions)
 //	5 → both routed through resolveMessageWorkspaceContext
 //	4 → observeChatMessage routed through topicWorkspaceKey
+//	1 → cron and timer routed through workspaceContextForSessionKey (they had
+//	    consulted channel bindings only, which no isolation seat has, so a
+//	    scheduled job ran as a second process beside its own conversation);
+//	    what remains of them is only the explicit job.WorkDir override
+//
+// The one left is relayContextForSourceSessionKey: its topic branch now shares
+// topicWorkspaceKey, but its binding branch still resolves independently and
+// still calls resolveWorkspace, which auto-binds by convention.
 var messageRoutingDebt = []string{
-	"ExecuteCronJob",
-	"ExecuteTimerJob",
-	"SendToSessionInWorkDir",
 	"relayContextForSourceSessionKey",
 }
 
@@ -373,11 +391,10 @@ func TestMessageRouting_HasOneDecider(t *testing.T) {
 	callers := routingPrimitiveCallers(t, routingPrimitives)
 
 	allowed := map[string]bool{}
-	for _, fn := range messageRoutingHomes {
-		allowed[fn] = true
-	}
-	for _, fn := range messageRoutingDebt {
-		allowed[fn] = true
+	for _, group := range [][]string{messageRoutingHomes, messageRoutingDebt, explicitWorkDirOverrides} {
+		for _, fn := range group {
+			allowed[fn] = true
+		}
 	}
 
 	var offenders []string

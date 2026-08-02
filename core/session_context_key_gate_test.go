@@ -60,6 +60,18 @@ func TestSessionContextForKey_MatchesDecider(t *testing.T) {
 // neither can be aligned on a narrower table than the other.
 func forEachSeatChannelLiveRow(t *testing.T, check func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext)) {
 	t.Helper()
+	forEachRow(t, []bool{false, true}, check)
+}
+
+// forEachSeatChannelRow drives the same seat × channel product without the
+// live/cold dimension, for resolvers that never read e.interactiveStates.
+func forEachSeatChannelRow(t *testing.T, check func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext)) {
+	t.Helper()
+	forEachRow(t, []bool{false}, check)
+}
+
+func forEachRow(t *testing.T, liveModes []bool, check func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext)) {
+	t.Helper()
 	const (
 		uid      = "7664413698"
 		groupID  = "-1003917051393"
@@ -89,7 +101,7 @@ func forEachSeatChannelLiveRow(t *testing.T, check func(t *testing.T, e *Engine,
 
 	for _, seat := range seats {
 		for _, ch := range channels {
-			for _, live := range []bool{false, true} {
+			for _, live := range liveModes {
 				name := seat.name + "/" + ch.name
 				if live {
 					name += "/live_state"
@@ -183,6 +195,50 @@ func TestInteractiveKeyForSessionKey_MatchesDecider(t *testing.T) {
 		if got := e.interactiveKeyForSessionKey(sessionKey); got != wsCtx.interactiveKey {
 			t.Fatalf("interactiveKeyForSessionKey = %q, message path files state under %q — a caller that creates state here builds it beside the conversation",
 				got, wsCtx.interactiveKey)
+		}
+	})
+}
+
+// G4 — a relay must reach a seat's DM and General, not only its topics.
+//
+// relayContextForSourceSessionKey required a non-empty thread id before it would
+// consult the topic/isolation resolver. A DM and a General-topic message produce
+// an empty one, so on the ten dispatch_topic_isolation seats a relay fell
+// through to the channel-binding lookup, which those seats never have, and
+// HandleRelay returned
+//
+//	no workspace binding for source channel "telegram:-1003917051393"
+//
+// — the relay was not misrouted, it never arrived. Measured 2026-08-02 against
+// an engine wired the way main.go wires an isolation seat.
+//
+// Coverage declaration (L-0697): scan surface = relayContextForSourceSessionKey,
+// invoked directly over {DM, General, letter topic} × {pattern+iso, pattern,
+// iso, binding-only, single} — the same 15 seat/channel combinations the other
+// gates use, minus the live/cold dimension, which this function does not read.
+// Rows where the seat resolves no workspace at all assert the error is still
+// returned: relay into an unbound channel must keep failing loudly rather than
+// silently landing in the global manager.
+func TestRelayContext_ReachesThreadlessChannels(t *testing.T) {
+	forEachSeatChannelRow(t, func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext) {
+		_, sessions, _, workspace, err := e.relayContextForSourceSessionKey("secretary-seat", sessionKey)
+
+		if wsCtx.workspace == "" {
+			// The message path leaves this channel on the global manager. A relay
+			// may either refuse loudly (multi-workspace seat with no binding) or
+			// land on that same global manager (single-workspace seat). What it
+			// must not do is quietly resolve a workspace of its own.
+			if err == nil && sessions != e.sessions {
+				t.Fatalf("relay resolved workspace %q while the message path stays global; a relay must not invent a workspace the conversation does not use", workspace)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("relayContextForSourceSessionKey() error = %v — the message path resolves this channel to %q, so a relay must reach it too",
+				err, wsCtx.workspace)
+		}
+		if sessions != wsCtx.sessions {
+			t.Fatalf("relay resolved store %q, message path resolved %q", storeName(sessions), storeName(wsCtx.sessions))
 		}
 	})
 }
