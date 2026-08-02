@@ -275,3 +275,36 @@ func (e *Engine) relayVerificationBlock(letterID, generation, queryPath, author,
 	}
 	return "Verification BLOCK relayed to " + author + ".", true, nil
 }
+
+// relayVerificationRegister completes the 先审后存 loop (L-0766 N2): once the
+// verifier has PASSed (`Verified:` non-empty) an unregistered pending-QC letter,
+// the author seat is relayed a request to register it. Registration surfaces the
+// INDEX QUERY row, after which the outbox scan treats the letter as a registered
+// ready query and the card becomes dispatchable. Idempotency is the same
+// LetterID+Generation key as the request and BLOCK legs.
+func (e *Engine) relayVerificationRegister(letterID, generation, queryPath, author, verifier string) (string, bool, error) {
+	store := e.ensureVerificationExpectationStore()
+	entry := VerificationExpectation{LetterID: letterID, Generation: generation, Verifier: verifier, QueryPath: queryPath, State: verificationExpectationInflight, RequestedAt: time.Now().UTC()}
+	requested, err := store.request(entry)
+	if err != nil || !requested {
+		return "", requested, err
+	}
+	release := func(deliveryErr error) (string, bool, error) {
+		if releaseErr := store.release(letterID, generation); releaseErr != nil {
+			return "", false, fmt.Errorf("%v; release verification expectation: %w", deliveryErr, releaseErr)
+		}
+		return "", false, deliveryErr
+	}
+	if e.relayManager == nil {
+		return release(fmt.Errorf("verification relay manager is not configured"))
+	}
+	sourceSessionKey, err := e.verificationVenueSessionKey(letterID)
+	if err != nil {
+		return release(err)
+	}
+	registerMessage := "[PRE-DISPATCH VERIFICATION PASS]\nQuery: " + queryPath + "\nVerifier: " + verifier + "\n\nThe letter passed pre-dispatch verification. Register it (run archive-daily on this QUERY) so it enters the outbox and can be dispatched."
+	if _, err := e.relayManager.Send(context.Background(), RelayRequest{From: e.name, To: author, SessionKey: sourceSessionKey, Message: registerMessage, Visibility: RelayVisibilityNone}); err != nil {
+		return release(fmt.Errorf("deliver verification register: %w", err))
+	}
+	return "Verification PASS register relayed to " + author + ".", true, nil
+}

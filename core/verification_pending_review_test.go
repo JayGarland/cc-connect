@@ -249,18 +249,20 @@ func TestVerificationRelayUsesNoVisibility(t *testing.T) {
 // to the verifier (the Generation change auto-invalidates the old expectation).
 func TestClassifyPendingReviewStateMachine(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
-		want pendingReviewAction
+		name     string
+		verified string
+		body     string
+		want     pendingReviewAction
 	}{
-		{"fresh no comments → verifier", "---\nVerify: architect-codex\n---\n## Query\nx\n", pendingReviewRequestVerifier},
-		{"verifier BLOCK → author", "---\nVerify: architect-codex\n---\n## Query\nx\n\n<!-- 校验 (2026-08-02): architect-codex-L-0911 —— BLOCK: cite the line number -->\n", pendingReviewRelayBlockToAuthor},
-		{"author Correction after BLOCK → verifier again", "---\nVerify: architect-codex\n---\n## Query\nx\n\n<!-- 校验 (2026-08-02): architect-codex-L-0911 —— BLOCK: stale baseline -->\n\n<!-- Correction (2026-08-02): secretary-L-0911 —— fixed baseline -->\n", pendingReviewRequestVerifier},
+		{"fresh no comments → verifier", "", "---\nVerify: architect-codex\n---\n## Query\nx\n", pendingReviewRequestVerifier},
+		{"verifier BLOCK → author", "", "---\nVerify: architect-codex\n---\n## Query\nx\n\n<!-- 校验 (2026-08-02): architect-codex-L-0911 —— BLOCK: cite the line number -->\n", pendingReviewRelayBlockToAuthor},
+		{"author Correction after BLOCK → verifier again", "", "---\nVerify: architect-codex\n---\n## Query\nx\n\n<!-- 校验 (2026-08-02): architect-codex-L-0911 —— BLOCK: stale baseline -->\n\n<!-- Correction (2026-08-02): secretary-L-0911 —— fixed baseline -->\n", pendingReviewRequestVerifier},
+		{"PASS Verified → author registers (N2)", "architect-codex-L-0913 · 2026-08-02 · PASS", "---\nVerify: architect-codex\n---\n## Query\nx\n\n<!-- 校验 (2026-08-02): architect-codex-L-0913 —— PASS -->\n", pendingReviewRegisterToAuthor},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyPendingReview(tc.body); got != tc.want {
-				t.Fatalf("classifyPendingReview = %v, want %v", got, tc.want)
+			if got := classifyPendingReview(tc.verified, tc.body); got != tc.want {
+				t.Fatalf("classifyPendingReview(%q, body) = %v, want %v", tc.verified, got, tc.want)
 			}
 		})
 	}
@@ -332,5 +334,115 @@ func TestCheckPendingReviewBlockRelayIdempotent(t *testing.T) {
 
 	if got := len(authorSession.prompts()); got != 1 {
 		t.Fatalf("idempotency: BLOCK relayed %d time(s), want 1", got)
+	}
+}
+
+// ─── L-0766 N1: 待质检卡片视图 ─────────────────────────────────────────────
+
+// TestFormatOutboxCardPendingQCReadOnly proves the pending-QC card is read-only:
+// an unregistered letter renders with ⏳ 待质检（未登记） and only a "view
+// original" button — no dispatch buttons. After PASS (N2) it shows 已校验 · 待登记
+// while still unregistered.
+func TestFormatOutboxCardPendingQCReadOnly(t *testing.T) {
+	card, buttons := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", QueryPath: "L-0913.query.md", Generation: "g1", Summary: "Ship it", Verify: "architect-codex", Unregistered: true, Verification: verificationPendingQC}, "L-0913", "", 0, 0)
+	if !strings.Contains(card, "⏳ 待质检（未登记）") {
+		t.Fatalf("pending-QC card = %q, want ⏳ 待质检 marker", card)
+	}
+	for _, row := range buttons {
+		for _, b := range row {
+			if strings.HasPrefix(b.Data, "cmd:/outbox manual") || strings.HasPrefix(b.Data, "cmd:/outbox secretary") || strings.HasPrefix(b.Data, "verification_request:") {
+				t.Fatalf("pending-QC card must not carry dispatch/request button, got %q", b.Data)
+			}
+		}
+	}
+	// PASS state (N2) while still unregistered shows 已校验 · 待登记, still read-only.
+	cardPass, _ := formatOutboxCard(NewI18n(LangEnglish), outboxRecord{Thread: "alpha", To: "dev-pro", QueryPath: "L-0913.query.md", Generation: "g2", Summary: "Ship it", Verify: "architect-codex", Verified: "architect-codex-L-0913 · 2026-08-02 · PASS", Unregistered: true, Verification: verificationPendingQC}, "L-0913", "", 0, 0)
+	if !strings.Contains(cardPass, "已校验 · 待登记") {
+		t.Fatalf("passed pending-QC card = %q, want 已校验 · 待登记", cardPass)
+	}
+}
+
+// TestOutboxCommandRejectsPendingQCDispatch proves the N1 guard: manual and
+// secretary dispatch are refused for a pending-QC card, so an unregistered
+// letter can never be dispatched before verification passes and is registered.
+func TestOutboxCommandRejectsPendingQCDispatch(t *testing.T) {
+	p := &stubPlatformEngine{n: "telegram"}
+	e := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	e.outboxRecords = map[string]outboxRecord{"L-0913": {Generation: "g", Verification: verificationPendingQC, Unregistered: true}}
+	for _, cmd := range []string{"manual", "secretary"} {
+		if !e.handleOutboxCommand(p, &Message{ReplyCtx: "chat"}, []string{cmd, "L-0913", "g"}) {
+			t.Fatalf("command %q not handled", cmd)
+		}
+		if got := strings.Join(p.getSent(), "\n"); !strings.Contains(got, "待质检") {
+			t.Fatalf("%s reply = %q, want 待质检 rejection", cmd, got)
+		}
+		if e.outboxManual["L-0913"] {
+			t.Fatalf("%s marked a pending-QC letter manually dispatched", cmd)
+		}
+		p.clearSent()
+	}
+}
+
+// TestScanPendingReviewIncludesPassedForRegistration proves the scan serves N2:
+// a PASSed-but-unregistered letter (Verified non-empty) is still returned by the
+// pending-QC scan so the register relay can fire; it is NOT misclassified as a
+// fresh pending file.
+func TestScanPendingReviewIncludesPassedForRegistration(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(index, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeQueryFile(t, threads, "alpha", "L-0914", "---\nID: L-0914\nThread: alpha\nType: QUERY\nTo: dev-pro\nVerify: architect-codex\nVerified: architect-codex-L-0914 · 2026-08-02 · PASS\nFrom: secretary-L-0914\nDate: 2026-08-02\n---\n\n## Query\npassed\n")
+	got, err := scanPendingReviewQueries(threads, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Letter != "L-0914" || !got[0].Unregistered {
+		t.Fatalf("pending-QC scan = %#v, want L-0914 unregistered", got)
+	}
+	if classifyPendingReview(got[0].Verified, "---\nVerified: architect-codex-L-0914 · 2026-08-02 · PASS\n---\n") != pendingReviewRegisterToAuthor {
+		t.Fatal("PASSed letter must classify as register-to-author, not re-request")
+	}
+}
+
+// ─── L-0766 N2: PASS→登记回环 ──────────────────────────────────────────────
+
+// TestCheckPendingReviewRelaysRegisterOnPass proves the N2 register relay: when
+// the pending-QC scan sees a PASSed Verified header, it relays a register request
+// to the author seat — closing the 先审后存 loop. Idempotent per generation.
+func TestCheckPendingReviewRelaysRegisterOnPass(t *testing.T) {
+	root := t.TempDir()
+	threads := filepath.Join(root, "threads")
+	index := filepath.Join(root, "INDEX.md")
+	if err := os.WriteFile(index, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeQueryFile(t, threads, "alpha", "L-0915", "---\nID: L-0915\nThread: alpha\nType: QUERY\nTo: dev-pro\nVerify: architect-codex\nVerified: architect-codex-L-0915 · 2026-08-02 · PASS\nFrom: secretary-L-0915\nDate: 2026-08-02\n---\n\n## Query\npassed\n")
+
+	verifierSession := &msgRecordingAgentSession{events: make(chan Event, 1)}
+	verifier := NewEngine("architect-codex", &msgRecordingAgent{nextSession: verifierSession}, nil, "", LangEnglish)
+	authorSession := &msgRecordingAgentSession{events: make(chan Event, 1)}
+	author := NewEngine("secretary-seat", &msgRecordingAgent{nextSession: authorSession}, nil, "", LangEnglish)
+	source := NewEngine("secretary-seat", &stubAgent{}, nil, "", LangEnglish)
+	source.dataDir = root
+	source.outboxConfig = OutboxConfig{Enabled: true, IndexPath: index, SessionKey: "telegram:1:0"}
+	source.relayManager = NewRelayManager(root)
+	source.relayManager.RegisterEngine("secretary-seat", author)
+	source.relayManager.RegisterEngine("architect-codex", verifier)
+	source.relayManager.Bind("telegram", "1", map[string]string{"secretary-seat": "", "architect-codex": ""})
+
+	source.checkPendingReview()
+	source.checkPendingReview()
+
+	if got := len(verifierSession.prompts()); got != 0 {
+		t.Fatalf("verifier received %d relay(s) on a PASSed file, want 0", got)
+	}
+	if got := len(authorSession.prompts()); got != 1 {
+		t.Fatalf("author received %d register relay(s), want exactly 1 (idempotent)", got)
+	}
+	if msg := authorSession.prompts()[0]; !strings.Contains(msg, "passed pre-dispatch verification") {
+		t.Fatalf("register relay = %q, want PASS register instruction", msg)
 	}
 }
