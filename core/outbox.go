@@ -52,7 +52,13 @@ func classifyVerification(verify, verified string) verificationState {
 
 type queryFileInfo struct {
 	Letter, Thread, Path, To, Route, Verify, Verified, Summary, Digest string
-	ModTime                                                            time.Time
+	// From is the letter's author seat header (e.g. "secretary-L-0042"), used by
+	// the pending-QC scan to route BLOCK findings back to the author for
+	// correction. Registered letters reuse To for relay; pending-QC letters have
+	// no outbox record and no dispatch target, so the author is the only relay
+	// recipient.
+	From     string
+	ModTime  time.Time
 }
 type outboxRecord struct {
 	Thread, To, Route, Verify, QueryPath, Generation, Summary string
@@ -220,7 +226,7 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 		if err != nil {
 			return err
 		}
-		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Verify: h["Verify"], Verified: h["Verified"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
+		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Verify: h["Verify"], Verified: h["Verified"], From: h["From"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
 		return nil
 	})
 	// Historical archives may contain duplicate L-IDs. The Outbox lifecycle is
@@ -238,6 +244,219 @@ func scanOutboxQueries(threadsDir, indexPath string, dispatched map[string]bool)
 		}
 	}
 	return unique, err
+}
+
+// scanPendingReviewQueries finds letters that must be auto-submitted for
+// pre-dispatch verification but have no outbox record yet: files whose QUERY row
+// is not in the INDEX, whose `Verify:` names a verifier (not a `none` exemption),
+// and whose `Verified:` is still empty. Under 先审后存 (review-before-register)
+// these are written and left unregistered until verification passes, so they
+// never enter the awaiting_verification state the button path serves.
+//
+// Coverage declaration (L-0697 / L-0757): this scan walks the same threads dir
+// as scanOutboxQueries and applies one inverted predicate — `registeredQuery` is
+// skipped instead of required. Every `.query.md` file that meets the pending-QC
+// predicate (unregistered + named verifier + empty Verified) is returned; no
+// further whitelist narrows it. The only exclusions are the ones scanOutboxQueries
+// already applies (invalid letter id, terminal result) plus the registered-query
+// skip, each justified in code below.
+func scanPendingReviewQueries(threadsDir, indexPath string) ([]queryFileInfo, error) {
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, err
+	}
+	registered := string(index)
+	var out []queryFileInfo
+	err = filepath.WalkDir(threadsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".query.md") {
+			return nil
+		}
+		letter := strings.TrimSuffix(d.Name(), ".query.md")
+		registeredQuery := strings.Contains(registered, "| "+letter+" | QUERY |")
+		terminal := strings.Contains(registered, "| "+letter+" | RESULT |") || strings.Contains(registered, "| "+letter+" | CLOSED |")
+		if _, resultErr := os.Stat(filepath.Join(filepath.Dir(path), letter+".result.md")); resultErr == nil {
+			terminal = true
+		}
+		// Registered letters are served by the outbox card flow; pending-QC is
+		// specifically the unregistered population.
+		if registeredQuery || !validLetterID(letter) || terminal {
+			return nil
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h := parseArchiveFrontMatter(string(body))
+		if h["ID"] != letter || h["Type"] != "QUERY" || h["Thread"] == "" || h["To"] == "" || h["Date"] == "" {
+			return nil
+		}
+		// Pending-QC predicate: `Verify:` names a verifier and `Verified:` is
+		// empty. classifyVerification returns verificationAwaiting exactly then;
+		// `Verify: none` exemptions and already-PASSed letters both classify ready
+		// and are excluded, so the auto-trigger never submits an exempt or
+		// registered file.
+		if classifyVerification(h["Verify"], h["Verified"]) != verificationAwaiting {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out = append(out, queryFileInfo{Letter: letter, Thread: h["Thread"], Path: path, To: h["To"], Route: h["Route"], Verify: h["Verify"], Verified: h["Verified"], From: h["From"], Summary: firstNonEmptyAfter(strings.Split(string(body), "\n"), "## Query"), Digest: contentDigest(body), ModTime: info.ModTime()})
+		return nil
+	})
+	return out, err
+}
+
+// checkPendingReview is the 先审后存 auto-trigger. On every outbox poll it scans
+// for unregistered pending-QC letters and, for each, advances the review round:
+// a letter with no BLOCK yet is relayed to its verifier (record-less entry); a
+// letter carrying a 校验 BLOCK comment is relayed back to its author seat for
+// correction (L-0762 item 3). Idempotency is the expectation store's
+// LetterID+Generation key: repeated scans of the same file generation produce no
+// second relay, and any edit (author correction) changes the content digest so
+// the next scan fires the next round.
+func (e *Engine) checkPendingReview() {
+	if !e.outboxConfig.Enabled || e.outboxConfig.IndexPath == "" {
+		return
+	}
+	queries, err := scanPendingReviewQueries(e.outboxConfig.threadsDir(), e.outboxConfig.IndexPath)
+	if err != nil {
+		slog.Warn("pending review: scan failed", "error", err)
+		return
+	}
+	for _, q := range queries {
+		e.advancePendingReview(q)
+	}
+}
+
+// pendingReviewAction classifies the next step for a pending-QC letter based on
+// its current file state (archive text only).
+type pendingReviewAction int
+
+const (
+	pendingReviewNone pendingReviewAction = iota
+	pendingReviewRequestVerifier
+	pendingReviewRelayBlockToAuthor
+)
+
+// classifyPendingReview reads a pending-QC query body and decides whether the
+// verifier must act (fresh or author-corrected), the author must act (a 校验
+// BLOCK comment is the latest review comment), or nothing should happen.
+// Passed (Verified non-empty) letters are excluded upstream by the scan.
+func classifyPendingReview(body string) pendingReviewAction {
+	// The latest review comment governs the next actor. A BLOCK comment written
+	// by the verifier is append-only: `<!-- 校验 ... —— BLOCK: ... -->`. The
+	// author's Correction comments are `<!-- Correction ... -->`. A correction
+	// that follows a BLOCK means the author already acted, so the verifier is
+	// next.
+	lastVerify := strings.LastIndex(body, "<!-- 校验")
+	lastCorrection := strings.LastIndex(body, "<!-- Correction")
+	if lastVerify < 0 {
+		return pendingReviewRequestVerifier
+	}
+	if lastCorrection > lastVerify {
+		// Author corrected after the last verification comment → verifier re-reviews.
+		return pendingReviewRequestVerifier
+	}
+	// Last review comment is a verification verdict. BLOCK → author corrects;
+	// PASS is excluded upstream (Verified non-empty).
+	if strings.Contains(body[lastVerify:], "BLOCK") {
+		return pendingReviewRelayBlockToAuthor
+	}
+	return pendingReviewRequestVerifier
+}
+
+// extractBlockFinding returns the finding text of the most recent 校验 BLOCK
+// comment, used as the relay body when a BLOCK is handed back to the author.
+func extractBlockFinding(body string) string {
+	marker := "BLOCK:"
+	i := strings.LastIndex(body, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(marker):]
+	if j := strings.Index(rest, "-->"); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// advancePendingReview drives one pending-QC letter through its next review
+// round. It is idempotent per LetterID+Generation via the expectation store, so
+// it is safe to call on every poll.
+func (e *Engine) advancePendingReview(q queryFileInfo) {
+	// Re-read the body so classification and the generation hash both describe
+	// the current file state; a concurrent edit changes the digest and therefore
+	// the expectation key, invalidating any stale entry.
+	body, err := os.ReadFile(q.Path)
+	if err != nil {
+		slog.Warn("pending review: cannot read query", "letter", q.Letter, "error", err)
+		return
+	}
+	generation := contentDigest(body)
+	action := classifyPendingReview(string(body))
+	switch action {
+	case pendingReviewRequestVerifier:
+		receipt, ok, err := e.requestVerificationRecordless(q.Letter, generation, q.Verify, q.Path)
+		if err != nil {
+			slog.Warn("pending review: request failed", "letter", q.Letter, "error", err)
+			return
+		}
+		if !ok {
+			slog.Debug("pending review: already requested", "letter", q.Letter, "receipt", receipt)
+		}
+	case pendingReviewRelayBlockToAuthor:
+		author := pendingReviewAuthorProject(q.From)
+		if author == "" {
+			slog.Warn("pending review: cannot resolve author seat", "letter", q.Letter, "from", q.From)
+			return
+		}
+		receipt, ok, err := e.relayVerificationBlock(q.Letter, generation, q.Path, author, q.Verify, extractBlockFinding(string(body)))
+		if err != nil {
+			slog.Warn("pending review: block relay failed", "letter", q.Letter, "error", err)
+			return
+		}
+		if !ok {
+			slog.Debug("pending review: block already relayed", "letter", q.Letter, "receipt", receipt)
+		}
+	}
+}
+
+// pendingReviewAuthorProject resolves the QUERY's `From:` logical seat (L-0539
+// instance form `<seat>-L-XXXX`) to the relay-registered project name that must
+// receive BLOCK findings for correction. The author is the seat that wrote the
+// letter; corrections belong to the author seat per L-0761. Returns "" when the
+// seat cannot be mapped.
+func pendingReviewAuthorProject(from string) string {
+	seat := from
+	if i := strings.Index(from, "-L-"); i > 0 {
+		seat = from[:i]
+	}
+	if seat == "" {
+		return ""
+	}
+	// Role aliases mirror executeDispatch's resolution (dispatch.go:679-689) plus
+	// the seats that write QUERYs (secretary) or review them, mapping a logical
+	// seat to the configured project name that hosts it. The pending-QC author is
+	// typically the secretary (writes QUERYs) or an engineer under Boss's
+	// horizontal direction.
+	alias := map[string]string{
+		"architect":        "architect-claude",
+		"secretary":        "secretary-seat",
+		"dev":              "dev-pro",
+		"reviewer":         "reviewer-seat",
+		"counsel":          "counsel-seat",
+		"researcher":       "researcher-seat",
+		"security-auditor": "security-auditor-seat",
+	}
+	if mapped, ok := alias[seat]; ok {
+		return mapped
+	}
+	return seat
 }
 
 func displayOutboxRoute(route string) string {
@@ -336,6 +555,7 @@ func (e *Engine) configureOutbox(cfg OutboxConfig) {
 					return
 				case <-ticker.C:
 					e.checkOutbox()
+					e.checkPendingReview()
 				}
 			}
 		}()
