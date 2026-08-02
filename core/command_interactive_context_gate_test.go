@@ -252,29 +252,110 @@ var routingPrimitives = map[string]bool{
 	"getOrCreateWorkspaceAgent": true,
 }
 
-// messageRoutingResolvers is the frozen baseline of functions that call a
-// routing primitive directly. It is a declared inventory of existing debt, not
-// an approval list for new code: the count may only decrease.
+// messageRoutingHomes are the functions allowed to touch a routing primitive
+// because resolving is their job:
 //
-//   - workspaceContext / resolveMessageWorkspaceContext are the intended homes —
-//     the primitive itself and the single decider both message paths call;
-//   - the other six each re-derive routing for a non-message entry point
-//     (cron, timer, relay, out-of-band send, chat transcript, key lookup). Each
-//     one is a place where the next divergence can appear; they are listed so
-//     that fixing one is a ratchet step, and adding a ninth is a test failure.
+//   - workspaceContext — the primitive that turns a workspace into an agent +
+//     SessionManager + effective dir;
+//   - topicWorkspaceKey — the single gate in front of resolveWorkspacePattern
+//     (pinned to exactly one caller by TestResolveWorkspacePattern_HasOneCaller);
+//   - resolveMessageWorkspaceContext — the decider for a Message;
+//   - sessionContextForKey — the decider for a bare session key, which card
+//     callbacks need because they carry no Message. It is a second entry point,
+//     not a second opinion: TestSessionContextForKey_MatchesDecider pins it to
+//     the same answer across the whole seat × channel matrix.
+var messageRoutingHomes = []string{
+	"resolveMessageWorkspaceContext",
+	"sessionContextForKey",
+	"topicWorkspaceKey",
+	"workspaceContext",
+}
+
+// messageRoutingDebt is the frozen inventory of functions that still re-derive
+// routing for a non-message entry point. Each is a place the next divergence can
+// appear. The count may only decrease.
 //
-// G1 red proof: before this fix handleMessage and commandContextWithWorkspace
-// each resolved independently — the set had 9 members, and the two extra names
-// are exactly the pair that disagreed.
-var messageRoutingResolvers = []string{
+// Baseline history — each step is a letter that cured one:
+//
+//	6 → handleMessage and commandContextWithWorkspace resolved independently
+//	    (that pair is what let /new stop clearing DM sessions)
+//	5 → both routed through resolveMessageWorkspaceContext
+//	4 → observeChatMessage routed through topicWorkspaceKey
+var messageRoutingDebt = []string{
 	"ExecuteCronJob",
 	"ExecuteTimerJob",
 	"SendToSessionInWorkDir",
-	"observeChatMessage",
 	"relayContextForSourceSessionKey",
-	"resolveMessageWorkspaceContext",
-	"sessionContextForKey",
-	"workspaceContext",
+}
+
+// TestResolveWorkspacePattern_HasOneCaller pins the gate in front of
+// resolveWorkspacePattern to a single site.
+//
+// Four call sites each wrote the gate out by hand and two of them wrote it
+// differently: the message path tested `workspacePattern != "" ||
+// dispatchTopicIsolation`, sessionContextForKey tested `workspacePattern != ""`
+// and additionally required a thread id. That second copy is why every
+// dispatch_topic_isolation seat resolved the wrong SessionManager from a bare
+// session key, in a DM, in General and in a letter topic alike.
+//
+// Coverage declaration (L-0697): same AST scan and same scope as
+// TestMessageRouting_HasOneDecider below — every non-test file in package core,
+// no whitelist. Exclusion: _test.go, which may call it directly to assert
+// shard behaviour.
+func TestResolveWorkspacePattern_HasOneCaller(t *testing.T) {
+	callers := routingPrimitiveCallers(t, map[string]bool{"resolveWorkspacePattern": true})
+	delete(callers, "topicWorkspaceKey")
+	if len(callers) > 0 {
+		var names []string
+		for fn, where := range callers {
+			names = append(names, fn+" ("+where+")")
+		}
+		sort.Strings(names)
+		t.Fatalf("resolveWorkspacePattern is called outside topicWorkspaceKey:\n  %s\n\nGo through topicWorkspaceKey, or the gate in front of it gets written out by hand again and the copies drift.",
+			strings.Join(names, "\n  "))
+	}
+}
+
+// routingPrimitiveCallers returns enclosing function name → first call position
+// for every call to one of prims in package core's non-test files.
+func routingPrimitiveCallers(t *testing.T, prims map[string]bool) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	fset := token.NewFileSet()
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || !prims[sel.Sel.Name] {
+					return true
+				}
+				if _, seen := out[fn.Name.Name]; !seen {
+					out[fn.Name.Name] = fset.Position(call.Pos()).String()
+				}
+				return true
+			})
+		}
+	}
+	return out
 }
 
 // TestMessageRouting_HasOneDecider refuses a new function that resolves message
@@ -289,63 +370,45 @@ var messageRoutingResolvers = []string{
 // directly to build state. To be caught, a new resolver only has to call one of
 // the three primitives — the shape every past divergence had.
 func TestMessageRouting_HasOneDecider(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	callers := routingPrimitiveCallers(t, routingPrimitives)
+
+	allowed := map[string]bool{}
+	for _, fn := range messageRoutingHomes {
+		allowed[fn] = true
 	}
-	allowed := make(map[string]bool, len(messageRoutingResolvers))
-	for _, fn := range messageRoutingResolvers {
+	for _, fn := range messageRoutingDebt {
 		allowed[fn] = true
 	}
 
-	found := map[string]bool{}
 	var offenders []string
-	fset := token.NewFileSet()
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-		f, err := parser.ParseFile(fset, file, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", file, err)
-		}
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || !routingPrimitives[sel.Sel.Name] {
-					return true
-				}
-				found[fn.Name.Name] = true
-				if !allowed[fn.Name.Name] {
-					offenders = append(offenders, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
-				}
-				return true
-			})
+	for fn, where := range callers {
+		if !allowed[fn] {
+			offenders = append(offenders, fn+" ("+where+")")
 		}
 	}
-
 	if len(offenders) > 0 {
 		sort.Strings(offenders)
-		t.Fatalf("these functions resolve message routing on their own:\n  %s\n\nMessage routing has one decider: resolveMessageWorkspaceContext. Call it instead of resolveWorkspacePattern/workspaceContext/getOrCreateWorkspaceAgent directly — handleMessage and commandContextWithWorkspace each having their own copy is what let /new stop clearing DM sessions.",
-			strings.Join(offenders, "\n  "))
+		t.Fatalf("these functions resolve message routing on their own:\n  %s\n\nRouting is resolved in %v and nowhere else. A message resolves through resolveMessageWorkspaceContext, a bare session key through sessionContextForKey; both must agree. Each independent copy is a future divergence — that is how /new stopped clearing DM sessions, and how the card renderers ended up reading a different store than the typed command.",
+			strings.Join(offenders, "\n  "), messageRoutingHomes)
 	}
 
-	// Frozen baseline: the inventory may shrink, never grow. A name that
-	// disappears must be deleted from messageRoutingResolvers in the same change.
-	if len(found) > len(messageRoutingResolvers) {
-		t.Fatalf("routing resolvers = %d, frozen baseline = %d", len(found), len(messageRoutingResolvers))
+	// Frozen debt inventory: may shrink, never grow. A name that no longer
+	// resolves must be removed in the same change that cured it, so the baseline
+	// ratchets down instead of quietly holding a slot open.
+	var stillDebt int
+	for _, fn := range messageRoutingDebt {
+		if _, ok := callers[fn]; ok {
+			stillDebt++
+			continue
+		}
+		t.Fatalf("%q no longer resolves routing on its own; drop it from messageRoutingDebt so the baseline ratchets %d → %d", fn, len(messageRoutingDebt), len(messageRoutingDebt)-1)
 	}
-	for _, fn := range messageRoutingResolvers {
-		if !found[fn] {
-			t.Fatalf("%q is in the frozen baseline but no longer calls a routing primitive; remove it from messageRoutingResolvers so the baseline ratchets down to %d", fn, len(found))
+	if stillDebt > len(messageRoutingDebt) {
+		t.Fatalf("independent resolvers = %d, frozen baseline = %d", stillDebt, len(messageRoutingDebt))
+	}
+	for _, fn := range messageRoutingHomes {
+		if _, ok := callers[fn]; !ok {
+			t.Fatalf("%q is declared a routing home but resolves nothing; the declaration and the code have drifted", fn)
 		}
 	}
 }

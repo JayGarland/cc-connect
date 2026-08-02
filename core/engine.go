@@ -1632,11 +1632,7 @@ func (e *Engine) observeChatMessage(msg *Message, workspaceDir, speaker, body st
 		return
 	}
 	if workspaceDir == "" {
-		if e.workspacePattern == "" && !e.dispatchTopicIsolation {
-			return
-		}
-		threadID := extractThreadID(effectiveChannelID(msg))
-		workspaceDir = e.resolveWorkspacePattern(threadID, body)
+		workspaceDir = e.topicWorkspaceKey(extractThreadID(effectiveChannelID(msg)), body)
 	}
 	if workspaceDir == "" {
 		return
@@ -17377,15 +17373,15 @@ func (e *Engine) relayContextForSourceSessionKey(fromProject, sourceSessionKey s
 
 	// Thread-scoped workspace pattern (Forum Mode) must be resolved before static
 	// bindings — resolveWorkspace only knows about DB bindings and conventions.
-	// L-0716: the gate must match the interactive path's
-	// commandContextWithWorkspace (engine.go:18263). Without dispatchTopicIsolation,
-	// the 9 isolation-only seats (architect-claude, architect-codex, reviewer-seat,
+	// L-0716 aligned this gate with the interactive path's; it is now the same
+	// gate rather than a copy of it (topicWorkspaceKey), which is what keeps the
+	// 9 isolation-only seats (architect-claude, architect-codex, reviewer-seat,
 	// counsel-seat, security-auditor-seat, researcher-seat, product-manager,
-	// qa-engineer, project-manager-seat) fall through to the global SessionManager
-	// and a relay can never reach the topic shard (L-0714 O2).
+	// qa-engineer, project-manager-seat) from falling through to the global
+	// SessionManager where a relay can never reach the topic shard (L-0714 O2).
 	if e.workspacePattern != "" || e.dispatchTopicIsolation {
 		if threadID := extractThreadIDFromSessionKey(sourceSessionKey); threadID != "" {
-			workspace := e.resolveWorkspacePattern(threadID, "")
+			workspace := e.topicWorkspaceKey(threadID, "")
 			if workspace == "" {
 				return nil, nil, "", "", fmt.Errorf("resolve relay workspace from thread %q", threadID)
 			}
@@ -18247,6 +18243,27 @@ func (e *Engine) appendRehydrationEnv(envVars []string, ccSessionKey, workspaceD
 // chat gets its own persistent session without requiring a workspace binding.
 const defaultDispatchWorkspaceKey = "general"
 
+// topicWorkspaceKey is the one place that asks "does this seat put this thread
+// in a workspace of its own, and which one".
+//
+// It exists because the gate in front of resolveWorkspacePattern was written out
+// by hand at each call site, and the copies did not match: the message path
+// tested `workspacePattern != "" || dispatchTopicIsolation`, while
+// sessionContextForKey tested `workspacePattern != ""` and additionally demanded
+// a non-empty thread id — so isolation-only seats silently resolved nothing
+// there. A gate copied four times is a gate that will differ again; callers now
+// state the thread id and the hint, and nothing else.
+//
+// An empty threadID is meaningful, not missing: a DM and the General topic both
+// produce one, and for a dispatch_topic_isolation seat that resolves to the
+// stable "general" shard.
+func (e *Engine) topicWorkspaceKey(threadID, messageHint string) string {
+	if e.workspacePattern == "" && !e.dispatchTopicIsolation {
+		return ""
+	}
+	return e.resolveWorkspacePattern(threadID, messageHint)
+}
+
 func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) string {
 	if strings.TrimSpace(threadID) == "" {
 		if e.workspacePattern != "" && !strings.Contains(e.workspacePattern, "{{THREAD_ID}}") && strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
@@ -18443,10 +18460,7 @@ func (e *Engine) resolveMessageWorkspaceContext(p Platform, msg *Message) (messa
 	}
 
 	channelID := effectiveChannelID(msg)
-	var workspace string
-	if e.workspacePattern != "" || e.dispatchTopicIsolation {
-		workspace = e.resolveWorkspacePattern(extractThreadID(channelID), msg.Content)
-	}
+	workspace := e.topicWorkspaceKey(extractThreadID(channelID), msg.Content)
 	var channelName string
 	if workspace == "" {
 		if !e.multiWorkspace {
@@ -18492,13 +18506,18 @@ func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager
 			return wsAgent, wsSessions
 		}
 	}
-	if e.workspacePattern != "" {
-		threadID := extractThreadIDFromSessionKey(sessionKey)
-		if threadID != "" {
-			workspace := e.resolveWorkspacePattern(threadID, "")
-			if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
-				return wsAgent, wsSessions
-			}
+	// Topic/isolation workspace, resolved from the stable key exactly as
+	// resolveMessageWorkspaceContext resolves it for a message. This branch used
+	// to require workspacePattern != "" AND a thread id, so every
+	// dispatch_topic_isolation seat fell straight through — in a DM, in General,
+	// and in a letter topic alike — and answered with the global SessionManager,
+	// or (once a live state existed) with a manager keyed by the work-dir path
+	// while the conversation sat in the "general" / "L-<thread>" shard. Callers
+	// are the card renderers, so a seat's /list card listed one store while the
+	// typed command read another.
+	if workspace := e.topicWorkspaceKey(extractThreadIDFromSessionKey(sessionKey), ""); workspace != "" {
+		if wsAgent, wsSessions, _, _, err := e.workspaceContext(workspace, sessionKey); err == nil {
+			return wsAgent, wsSessions
 		}
 	}
 	if !e.multiWorkspace || e.workspaceBindings == nil {
