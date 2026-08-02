@@ -545,6 +545,7 @@ const (
 	MsgReceiptExtractPrefsPersonal  MsgKey = "receipt_extract_prefs_personal"
 	MsgReceiptExtractPrefsFailed    MsgKey = "receipt_extract_prefs_failed"
 	MsgReceiptExtractPrefsDispatched MsgKey = "receipt_extract_prefs_dispatched"
+	MsgReceiptExtractPrefsRegistered MsgKey = "receipt_extract_prefs_registered"
 	MsgReceiptPendingClose          MsgKey = "receipt_pending_close"
 	MsgInboxPendingCloseHeader MsgKey = "inbox_pending_close_header"
 	MsgReceiptEmptyOriginal    MsgKey = "receipt_empty_original"
@@ -1043,6 +1044,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ %s：偏好提取 QUERY %s 已登記並派發給 reviewer-seat。",
 		LangJapanese:           "✅ %s：好み抽出 QUERY %s を登録し reviewer-seat に派遣しました。",
 		LangSpanish:            "✅ %s: QUERY %s de extracción registrada y enviada a reviewer-seat.",
+	},
+	MsgReceiptExtractPrefsRegistered: {
+		LangEnglish:            "✅ %s: preference-extract QUERY %s registered. It is now in the Outbox — dispatch it from there when ready (auto-dispatch retired, L-0759).",
+		LangChinese:            "✅ %s：偏好提取 QUERY %s 已登记。它现在在 Outbox 里——请从那里派发（自动派发已移除，L-0759）。",
+		LangTraditionalChinese: "✅ %s：偏好提取 QUERY %s 已登記。它現在在 Outbox 裡——請從那裡派發（自動派發已移除，L-0759）。",
+		LangJapanese:           "✅ %s：好み抽出 QUERY %s を登録しました。現在は Outbox にあります——準備ができたらそこから派遣してください（自動派遣は廃止、L-0759）。",
+		LangSpanish:            "✅ %s: QUERY %s de extracción registrada. Ahora está en el Outbox — despáchala desde allí cuando esté lista (envío automático retirado, L-0759).",
 	},
 	MsgReceiptPendingClose: {
 		LangEnglish:            "🔒 %s pending close — acknowledged, waiting to be archived.",

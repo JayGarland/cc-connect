@@ -258,7 +258,18 @@ func TestVerificationStateUsesArchiveTextOnly(t *testing.T) {
 	}{
 		{name: "legacy blank verify is ready", want: verificationReady},
 		{name: "named verifier awaits empty result", verify: "architect-codex", want: verificationAwaiting},
-		{name: "any nonempty verified text is ready", verify: "architect-codex", verified: "anything at all", want: verificationReady},
+		// L-0759 item 4: a named verifier is ready ONLY on the protocol PASS
+		// wire format — a bare non-empty string is not PASS.
+		{name: "named verifier awaits yes", verify: "architect-codex", verified: "yes", want: verificationAwaiting},
+		{name: "named verifier awaits done", verify: "architect-codex", verified: "done", want: verificationAwaiting},
+		{name: "named verifier awaits ok", verify: "architect-codex", verified: "ok", want: verificationAwaiting},
+		{name: "named verifier awaits BLOCK", verify: "architect-codex", verified: "BLOCK", want: verificationAwaiting},
+		{name: "named verifier awaits arbitrary text", verify: "architect-codex", verified: "anything at all", want: verificationAwaiting},
+		{name: "named verifier awaits bare PASS literal", verify: "architect-codex", verified: "PASS", want: verificationAwaiting},
+		// Protocol PASS wire format `<seat>-<ID> · YYYY-MM-DD · PASS`
+		// (Boss-Secretary-Engineer-protocol.md:68 @ e8a3cd4) is ready.
+		{name: "protocol PASS wire format is ready", verify: "architect-codex", verified: "architect-codex-L-0686 · 2026-07-29 · PASS", want: verificationReady},
+		{name: "protocol PASS wire format missing date is awaiting", verify: "architect-codex", verified: "architect-codex-L-0686 · PASS", want: verificationAwaiting},
 		{name: "protocol none exemption is ready", verify: "none — Boss 当场豁免预派发校验（2026-07-31 pursuit 直发）", want: verificationReady},
 		{name: "protocol none exemption hyphen variant is ready", verify: "none - letter protocol standard", want: verificationReady},
 	}

@@ -16,6 +16,12 @@ func TestBuildPreferenceExtractQuery(t *testing.T) {
 		"Type: QUERY",
 		"Thread: preference-extract",
 		"Source-Session-Path: F:\\ws\\chat_history.md",
+		// L-0766 OP1 / L-0759 pursuit prerequisite: the registration gate
+		// (archive-daily.ps1 L-0687/L-0747) requires Verify:/Verified: field
+		// lines on every QUERY; the none exemption matches this fully automatic,
+		// zero-decision letter.
+		"Verify: none -",
+		"Verified:",
 		"boss-profile-candidates.md",
 		"Fail-closed",
 	} {

@@ -316,6 +316,20 @@ func validateDispatchArchive(req dispatchRequest) (resultPath, indexPath string,
 	return resultPath, indexPath, nil
 }
 
+// letterVerificationFields reads the Verify/Verified front-matter headers of a
+// letter's own query file — the durable source of pre-dispatch verification
+// state (L-0687). validateDispatchArchive has already confirmed the file exists
+// and its ID/Thread/Type match the request; this helper returns the two headers
+// the actuator-side gate classifies. Missing headers come back empty.
+func letterVerificationFields(queryPath string) (verify, verified string, err error) {
+	data, err := os.ReadFile(queryPath)
+	if err != nil {
+		return "", "", err
+	}
+	h := parseArchiveFrontMatter(string(data))
+	return h["Verify"], h["Verified"], nil
+}
+
 // archiveHeaderCanonical maps a case-folded front-matter key to its canonical
 // protocol spelling. The archive PowerShell tooling (archive-daily.ps1) matches
 // headers with a case-insensitive `-match`, so it happily accepts a lowercase
@@ -695,6 +709,26 @@ func (e *Engine) executeDispatch(p Platform, sourceSessionKey string, req dispat
 	if err != nil {
 		return "", err
 	}
+
+	// Actuator-side verification gate (L-0759 item 3; placement per L-0757 — a
+	// gate binds on the actuator, never on its wrapper). Every dispatch path
+	// ([DISPATCH] text + confirm card, Outbox card, relay) reaches
+	// executeDispatch, so this one check is the binding enforcement that a
+	// letter naming a verifier (L-0687) may not be dispatched until Verified
+	// carries the protocol PASS wire format. The state is derived from the
+	// letter's own front matter — the same source scanOutboxQueries seeds the
+	// Outbox ledger from — never from caller-passed fields, so a new call site
+	// cannot bypass the gate by omitting a field. It reads the file (not
+	// outboxMu), so it is safe to call from paths that already hold the outbox
+	// lock (handleOutboxCommand).
+	verify, verified, verr := letterVerificationFields(req.Path)
+	if verr != nil {
+		return "", fmt.Errorf("dispatch verification gate: %w", verr)
+	}
+	if classifyVerification(verify, verified) == verificationAwaiting {
+		return "", fmt.Errorf("dispatch of %s is blocked: verification is awaiting (Verify: %q, Verified: %q)", req.Letter, verify, verified)
+	}
+
 	dashboardSessionKey := e.resolveDashboardSessionKey(sourceSessionKey)
 	if dashboardSessionKey == "" {
 		return "", fmt.Errorf("dispatch dashboard session key is not configured")

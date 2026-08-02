@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,16 +43,28 @@ const (
 	verificationPendingQC verificationState = "pending_qc"
 )
 
+// verifiedPassWireRe matches the protocol PASS wire format
+// `<seat>-<ID> · YYYY-MM-DD · PASS` (BSE protocol
+// Boss-Secretary-Engineer-protocol.md:68 @ e8a3cd4). It mirrors the Archive
+// registration gate's single predicate (archive-querygate.ps1:60) so both
+// layers share one PASS semantic. A named verifier is ready only when Verified
+// carries this semantic — a bare non-empty string (yes / done / ok / BLOCK /
+// arbitrary text) is not PASS and still awaits (L-0759 item 4).
+var verifiedPassWireRe = regexp.MustCompile(`^\S+-L-\d{4}\s*·\s*\d{4}-\d{2}-\d{2}\s*·\s*PASS\s*$`)
+
 // classifyVerification is intentionally archive-text-only. A blank Verify is
-// legacy/exempt-ready; a named request awaits a nonempty Verified field. It
-// performs no grammar, identity, authorship, or content validation.
+// legacy/exempt-ready; a named request awaits a protocol-format Verified
+// field. It performs no grammar, identity, authorship, or content validation.
 func classifyVerification(verify, verified string) verificationState {
 	// Protocol (L-0687): Verify is either a named verifier seat, or the
 	// exemption literal "none — <basis>". Both the legacy blank form and the
-	// "none" exemption literal are exempt-ready; only a named verifier with an
-	// empty Verified field awaits verification.
+	// "none" exemption literal are exempt-ready (L-0719); only a named verifier
+	// without a PASS-formatted Verified field awaits verification.
 	v := strings.TrimSpace(verify)
-	if v == "" || strings.HasPrefix(strings.ToLower(v), "none") || strings.TrimSpace(verified) != "" {
+	if v == "" || strings.HasPrefix(strings.ToLower(v), "none") {
+		return verificationReady
+	}
+	if verifiedPassWireRe.MatchString(strings.TrimSpace(verified)) {
 		return verificationReady
 	}
 	return verificationAwaiting
@@ -945,7 +958,13 @@ func (e *Engine) handleOutboxCommand(p Platform, msg *Message, args []string) bo
 		return true
 	}
 	if args[0] == "secretary" {
-		receipt, err := e.executeDispatch(p, msg.SessionKey, dispatchRequest{Letter: args[1], Thread: record.Thread, To: record.To, Path: record.QueryPath})
+		// Route through ControlPlaneDispatch (L-0759 item 2) so the Outbox card
+		// dispatch re-enters the sole actuator and lands in the control-plane
+		// audit ledger, closing the complementary-path hole where the one path
+		// that checked verification did not record and the paths that recorded
+		// did not check (L-0759 Context Digest). The actuator-side verification
+		// gate inside executeDispatch still applies.
+		receipt, err := e.ControlPlaneDispatch(p, msg.SessionKey, dispatchRequest{Letter: args[1], Thread: record.Thread, To: record.To, Path: record.QueryPath})
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, "⚠️ Dispatch rejected: "+err.Error())
 		} else {

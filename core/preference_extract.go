@@ -70,6 +70,14 @@ func buildPreferenceExtractQuery(id, parentLetter, transcriptPath, date string) 
 	b.WriteString("To: reviewer\n")
 	b.WriteString("From: secretary\n")
 	b.WriteString("Route: flash\n")
+	// L-0766 OP1 / L-0759 pursuit prerequisite: archive-daily.ps1's registration
+	// gate (L-0687 / L-0747) throws when a QUERY lacks Verify:/Verified: field
+	// lines — preference-extract registration had been failing since the gate
+	// landed (b1d664b). The exemption flow (Verify: none, L-0719) matches the
+	// letter's fully-automatic, zero-decision nature: no human QC, no named
+	// verifier, Verified stays empty.
+	b.WriteString("Verify: none - automatic preference-extract QUERY (L-0467), zero decision, no human QC (L-0687)\n")
+	b.WriteString("Verified:\n")
 	b.WriteString("Project: nexus\n")
 	b.WriteString("Source-Session-Path: " + transcriptPath + "\n")
 	b.WriteString("Date: " + date + "\n")

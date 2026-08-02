@@ -874,3 +874,174 @@ func TestBuildDispatchMessageEmbedsLetterContent(t *testing.T) {
 		t.Fatalf("fallback message must keep the result.md instruction, got:\n%s", got2)
 	}
 }
+
+// TestExecuteDispatchActuatorVerificationGate is the red/green spine for
+// L-0759 item 3/4: the pre-dispatch verification gate now lives inside
+// executeDispatch (the actuator), not on a wrapper, so every dispatch path is
+// bound by it, and a letter naming a verifier is blocked until Verified carries
+// the protocol PASS wire format — never on a bare non-empty string.
+func TestExecuteDispatchActuatorVerificationGate(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", "topology-reframe")
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0154.query.md")
+	writeQuery := func(verified string) {
+		q := "---\nID: L-0154\nThread: topology-reframe\nType: QUERY\nTo: dev-pro\nVerify: architect-codex\nVerified: " + verified + "\nDate: 2026-08-02\n---\n\n## Query\nx\n"
+		if err := os.WriteFile(queryPath, []byte(q), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeQuery("")
+
+	p := &mockTaskTopicPlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}},
+		createTaskTopicFunc: func(ctx context.Context, dashboardSessionKey, title, content string) (*TaskTopic, error) {
+			return nil, fmt.Errorf("not enough rights to create a topic")
+		},
+		reconstructFunc: func(sessionKey string) (any, error) {
+			return "reconstructed-ctx", nil
+		},
+	}
+
+	targetEngine := NewEngine("dev-pro", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	targetEngine.SetWorkspacePattern(filepath.Join(root, "worktrees", "task-{{THREAD_ID}}"))
+
+	sourceEngine := NewEngine("secretary-seat", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sourceEngine.dataDir = root
+	sourceEngine.relayManager = NewRelayManager(root)
+	sourceEngine.relayManager.RegisterEngine("dev-pro", targetEngine)
+	sourceEngine.relayManager.RegisterEngine("secretary-seat", sourceEngine)
+	sourceEngine.configureDispatch(DispatchConfig{
+		Enabled:             true,
+		SourceProject:       "secretary-seat",
+		DashboardSessionKey: "telegram:-1003917051393:7664413698:0",
+		PollInterval:        1 * time.Second,
+	})
+
+	req := dispatchRequest{To: "dev-pro", Letter: "L-0154", Thread: "topology-reframe", Path: queryPath}
+	const sessionKey = "telegram:-1003917051393:7664413698:0"
+
+	// Named verifier + empty Verified → the actuator rejects, direct call.
+	if _, err := sourceEngine.executeDispatch(p, sessionKey, req); err == nil || !strings.Contains(err.Error(), "verification is awaiting") {
+		t.Fatalf("direct executeDispatch with empty Verified: err = %v, want 'verification is awaiting'", err)
+	}
+
+	// The same block through ControlPlaneDispatch must also land in the audit
+	// ledger (L-0759: "查的也记账"), recorded as a rejected outcome.
+	if _, err := sourceEngine.ControlPlaneDispatch(p, sessionKey, req); err == nil || !strings.Contains(err.Error(), "verification is awaiting") {
+		t.Fatalf("ControlPlaneDispatch with empty Verified: err = %v, want 'verification is awaiting'", err)
+	}
+	entries, lerr := sourceEngine.ensureControlPlaneAudit().list()
+	if lerr != nil {
+		t.Fatalf("audit list: %v", lerr)
+	}
+	if len(entries) < 1 || !strings.Contains(entries[len(entries)-1].Outcome, "verification is awaiting") {
+		t.Fatalf("audit must record the blocked dispatch, last outcome = %q", entries[len(entries)-1].Outcome)
+	}
+
+	// Protocol PASS wire format → actuator accepts.
+	writeQuery("architect-codex-L-0154 · 2026-08-02 · PASS")
+	receipt, err := sourceEngine.executeDispatch(p, sessionKey, req)
+	if err != nil {
+		t.Fatalf("executeDispatch with PASS Verified failed: %v", err)
+	}
+	if receipt != "✅ Dispatched L-0154 to dev-pro" {
+		t.Fatalf("receipt = %q, want dispatched receipt", receipt)
+	}
+
+	// none exemption → actuator accepts (L-0719 preserved).
+	exemptPath := filepath.Join(threadDir, "L-0155.query.md")
+	exemptBody := "---\nID: L-0155\nThread: topology-reframe\nType: QUERY\nTo: dev-pro\nVerify: none - auto letter, no human QC\nVerified:\nDate: 2026-08-02\n---\n\n## Query\nx\n"
+	if err := os.WriteFile(exemptPath, []byte(exemptBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exemptReq := dispatchRequest{To: "dev-pro", Letter: "L-0155", Thread: "topology-reframe", Path: exemptPath}
+	if _, err := sourceEngine.executeDispatch(p, sessionKey, exemptReq); err != nil {
+		t.Fatalf("executeDispatch with none exemption failed: %v", err)
+	}
+}
+
+// TestExecuteDispatchCallSitesBoundToControlPlane is a class gate (L-0759 item
+// 3, placement per L-0757): executeDispatch must be reachable only through
+// ControlPlaneDispatch. Any future call site that reaches the actuator directly
+// — the exact defect class this letter closes (outbox.go secretary branch and
+// engine.go preference-extract both called e.executeDispatch directly,
+// bypassing the audit ledger) — is refused by this test. It scans the package
+// source for the receiver-qualified call expression `e.executeDispatch(`; the
+// only permitted occurrence is the wrapper's own single call in controlplane.go.
+// The function definition (`func (e *Engine) executeDispatch(...)`) does not
+// match the `e.executeDispatch(` pattern.
+func TestExecuteDispatchCallSitesBoundToControlPlane(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, "e.executeDispatch(") {
+				continue
+			}
+			if file != "controlplane.go" {
+				t.Fatalf("class gate: %s:%d calls the actuator directly (e.executeDispatch) outside ControlPlaneDispatch — route the dispatch through ControlPlaneDispatch so it is audited and gated", file, i+1)
+			}
+		}
+	}
+}
+
+// TestPreferenceExtractQueryAppearsInOutbox is the empirical check for L-0759
+// item 1: after the auto-dispatch is removed, a preference-extract QUERY
+// registered via the archive is picked up by the Outbox scanner as a
+// dispatchable card. It runs the real scanOutboxQueries against a generated
+// preference-extract letter, and asserts the record is ready (Verify: none
+// exemption) — i.e. the secretary dispatch button renders.
+func TestPreferenceExtractQueryAppearsInOutbox(t *testing.T) {
+	root := t.TempDir()
+	threadDir := filepath.Join(root, "threads", preferenceExtractThread)
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Register the generated letter in INDEX exactly as archive-daily.ps1 does
+	// for a QUERY (the L-0766 OP1 fix makes registration succeed: without the
+	// Verify:/Verified: field lines the gate would throw and the row would never
+	// land here).
+	indexPath := filepath.Join(root, "INDEX.md")
+	index := "| L-0770 | QUERY | preference-extract | ROOT | registered | 2026-08-02 |\n"
+	if err := os.WriteFile(indexPath, []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	queryPath := filepath.Join(threadDir, "L-0770.query.md")
+	body := buildPreferenceExtractQuery("L-0770", "L-0400", `F:\tmp\chat_history.md`, "2026-08-02")
+	if err := os.WriteFile(queryPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	queries, err := scanOutboxQueries(threadDir, indexPath, map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *queryFileInfo
+	for i := range queries {
+		if queries[i].Letter == "L-0770" {
+			found = &queries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("preference-extract QUERY L-0770 not picked up by Outbox scanner; got %d queries", len(queries))
+	}
+	if st := classifyVerification(found.Verify, found.Verified); st != verificationReady {
+		t.Fatalf("Verify=%q Verified=%q classified %q, want ready (secretary button must render)", found.Verify, found.Verified, st)
+	}
+	if !strings.HasPrefix(found.Verify, "none") {
+		t.Fatalf("preference-extract QUERY must carry the none exemption, got Verify=%q", found.Verify)
+	}
+}

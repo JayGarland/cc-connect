@@ -8099,8 +8099,11 @@ func (e *Engine) hasPreferenceTranscript(letter string) bool {
 }
 
 // extractPreferencesFromClosedLetter creates a reviewer QUERY with
-// Source-Session-Path and dispatches it (L-0467 pursuit). Boss-triggered via
-// the close-success card button — reuses executeDispatch.
+// Source-Session-Path and registers it (L-0467 pursuit). Boss-triggered via
+// the close-success card button. The auto-dispatch was removed (L-0759 item 1,
+// Boss Q9 ruling): the registered QUERY lands in the Outbox as an ordinary
+// card and is dispatched by the same human-confirmed path as any other letter —
+// automatic dispatch gets no separate gate.
 func (e *Engine) extractPreferencesFromClosedLetter(p Platform, msg *Message, letter string) bool {
 	if !e.isAdmin(msg.UserID) {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/receipt extractprefs"))
@@ -8143,19 +8146,7 @@ func (e *Engine) extractPreferencesFromClosedLetter(p Platform, msg *Message, le
 		return true
 	}
 
-	req := dispatchRequest{
-		To:     "reviewer",
-		Letter: newID,
-		Thread: preferenceExtractThread,
-		Path:   queryPath,
-	}
-	receiptText, err := e.executeDispatch(p, msg.SessionKey, req)
-	if err != nil {
-		slog.Warn("receipt: dispatch preference extract failed", "letter", letter, "new", newID, "error", err)
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsFailed, letter, err.Error()+" (QUERY registered as "+newID+")"))
-		return true
-	}
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsDispatched, letter, newID)+"\n"+receiptText)
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReceiptExtractPrefsRegistered, letter, newID))
 	return true
 }
 
