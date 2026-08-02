@@ -59,7 +59,10 @@ type relayTopicTarget struct {
 	// It is discovered, never constructed — see resolveRelayTopicTarget.
 	sessionKey string
 	// interactiveKey is how the engine indexes the live turn state for that
-	// conversation: workspace + ":" + sessionKey (see workspaceContext).
+	// conversation. It is not assembled here: it comes from the same resolver
+	// the human-message path uses, because a relay that keys the state
+	// differently starts a second agent process beside the conversation it was
+	// supposed to join.
 	interactiveKey string
 	workspace      string
 	platform       Platform
@@ -75,7 +78,11 @@ type relayTopicTarget struct {
 // resolution path where it would reappear.
 //
 // sessions and workspace come from the caller's already-completed relay context
-// resolution, so this adds no workspace/worktree side effects of its own.
+// resolution and are used only to decide whether this relay is workspace-scoped
+// at all. Once the topic's own session key is discovered, the target is resolved
+// through resolveMessageWorkspaceContext — the same single decider a human
+// message in that topic goes through — so the relay joins that conversation
+// instead of running beside it under a differently-shaped key.
 func (e *Engine) resolveRelayTopicTarget(sourceSessionKey, workspace string, sessions *SessionManager) (*relayTopicTarget, error) {
 	if sessions == nil || workspace == "" {
 		return nil, errNoTopicSession
@@ -110,12 +117,46 @@ func (e *Engine) resolveRelayTopicTarget(sourceSessionKey, workspace string, ses
 			threadID, len(candidates), strings.Join(candidates, ", "))
 	}
 
+	// Resolve the topic exactly as an incoming message to it would be resolved.
+	// The synthetic Message carries only stable keys — the discovered session key
+	// and the channel key the platform itself builds for that chat+thread
+	// ("<chatID>:<threadID>", telegram.go buildChannelKey) — never the relay
+	// text. Assembling the interactive key here instead ("<workspace>:<key>")
+	// is what made a relay to an isolation-only seat address
+	// "L-855:telegram:…" while the seat's own live state sits under
+	// "<work dir>:telegram:…".
+	p := e.platformForName(platformName)
+	probe := &Message{
+		Platform:   platformName,
+		SessionKey: candidates[0],
+		ChannelKey: normalizeChatID(chatID) + ":" + threadID,
+	}
+	wsCtx, err := e.resolveMessageWorkspaceContext(p, probe)
+	if err != nil {
+		return nil, fmt.Errorf("relay: resolve topic %s context: %w", threadID, err)
+	}
+	if wsCtx.needsInit || wsCtx.workspace == "" {
+		// The topic resolves to no workspace of its own; there is nothing for a
+		// relay to join. Fall back to the independent relay session.
+		return nil, errNoTopicSession
+	}
+	if wsCtx.sessions != sessions {
+		// The candidate was discovered in the relay context's SessionManager. If
+		// the message-path resolver lands somewhere else, that manager may not
+		// know this session at all and GetOrCreateActive would cold-start a new
+		// one under an existing conversation's key. Refuse and take the
+		// independent relay session instead of guessing.
+		slog.Warn("relay: topic resolves to a different SessionManager than the relay context; using the independent relay session",
+			"project", e.name, "topic", threadID, "relay_workspace", workspace, "message_workspace", wsCtx.workspace)
+		return nil, errNoTopicSession
+	}
+
 	return &relayTopicTarget{
-		sessions:       sessions,
+		sessions:       wsCtx.sessions,
 		sessionKey:     candidates[0],
-		interactiveKey: workspace + ":" + candidates[0],
-		workspace:      workspace,
-		platform:       e.platformForName(platformName),
+		interactiveKey: wsCtx.interactiveKey,
+		workspace:      wsCtx.workspace,
+		platform:       p,
 	}, nil
 }
 

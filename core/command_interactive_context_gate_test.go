@@ -145,6 +145,105 @@ func TestCommandContext_MatchesInteractiveSessionTarget(t *testing.T) {
 	}
 }
 
+// G1b — the relay path must address the same live state as the human path.
+//
+// A relay is delivered as a turn on the topic's own conversation (L-0718), which
+// only works if it indexes that conversation the way the conversation is
+// indexed. resolveRelayTopicTarget used to assemble "<workspace>:<sessionKey>"
+// from the relay context's pool key, so on an isolation-only seat it addressed
+// "L-855:telegram:…" while the topic's own live state sat under
+// "<work dir>:telegram:…" — two keys, two agent processes, one topic.
+//
+// Observed 2026-08-02 14:16:04 (architect-codex, dispatch_topic_isolation, no
+// workspace_pattern): "relay: continuing topic session
+// interactive_key=L-5214:telegram:-1003917051393:5214:7664413698", against an
+// interactive path that spawns "F:\nexus:telegram:…".
+//
+// Coverage declaration (L-0697): the seat matrix is {pattern, iso, both} — the
+// three configurations in which a topic resolves a workspace at all; the
+// no-flag seat is excluded because it resolves no topic workspace and
+// resolveRelayTopicTarget returns errNoTopicSession before any key is built,
+// which the "resolves" branch of
+// TestCommandContext_MatchesInteractiveSessionTarget already covers. Both key
+// forms coincide for absolute-path (pattern) workspaces; the iso rows are the
+// ones that can drift, and they are in.
+func TestRelayTopicTarget_MatchesInteractiveSessionTarget(t *testing.T) {
+	const (
+		chatID   = "-1003917051393"
+		threadID = "855"
+		uid      = "7664413698"
+	)
+	topicKey := "telegram:" + chatID + ":" + threadID + ":" + uid
+
+	seats := []struct {
+		name    string
+		pattern bool
+		iso     bool
+	}{
+		{"pattern_and_isolation", true, true},
+		{"pattern_only", true, false},
+		{"dispatch_isolation_only", false, true},
+	}
+
+	for _, seat := range seats {
+		t.Run(seat.name, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := filepath.Join(root, "workdir")
+			if err := os.MkdirAll(workDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			agent := &dummyAgentWithWorkDir{stubAgent: stubAgent{}, workDir: workDir}
+			const regName = "g1b-relay-context-agent"
+			agent.name = regName
+			RegisterAgent(regName, func(opts map[string]any) (Agent, error) { return agent, nil })
+
+			p := &stubPlatformEngine{n: "telegram"}
+			e := NewEngine("test-seat", agent, []Platform{p}, filepath.Join(root, "sessions.json"), LangEnglish)
+			e.SetDataDir(root)
+			if seat.pattern {
+				if err := os.MkdirAll(filepath.Join(root, "task-"+threadID), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				e.SetWorkspacePattern(filepath.Join(root, "task-{{THREAD_ID}}"))
+			}
+			if seat.iso {
+				e.SetDispatchTopicIsolation(true)
+			}
+
+			// What a human message in this topic resolves to.
+			_, wantSessions, wantKey, _, err := e.commandContextWithWorkspace(p, &Message{
+				Platform:   "telegram",
+				SessionKey: topicKey,
+				ChannelKey: chatID + ":" + threadID,
+			})
+			if err != nil {
+				t.Fatalf("commandContextWithWorkspace() error = %v", err)
+			}
+
+			// The topic conversation a relay must join.
+			relayAgent, relaySessions, _, relayWorkspace, err := e.relayContextForSourceSessionKey("secretary-seat", topicKey)
+			if err != nil {
+				t.Fatalf("relayContextForSourceSessionKey() error = %v", err)
+			}
+			_ = relayAgent
+			relaySessions.GetOrCreateActive(topicKey)
+
+			target, err := e.resolveRelayTopicTarget(topicKey, relayWorkspace, relaySessions)
+			if err != nil {
+				t.Fatalf("resolveRelayTopicTarget() error = %v", err)
+			}
+			if target.interactiveKey != wantKey {
+				t.Fatalf("relay interactiveKey = %q, want %q — a relay keyed differently from the topic's own live state runs beside the conversation instead of joining it",
+					target.interactiveKey, wantKey)
+			}
+			if target.sessions != wantSessions {
+				t.Fatalf("relay resolved a different SessionManager than the message path")
+			}
+		})
+	}
+}
+
 // routingPrimitives are the calls that decide which agent, SessionManager and
 // interactive key a message belongs to.
 var routingPrimitives = map[string]bool{
