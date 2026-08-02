@@ -4551,19 +4551,45 @@ func (e *Engine) resolveChannelWorkDir(workspace, interactiveKey string) string 
 }
 
 func (e *Engine) workspaceContext(workspace, sessionKey string) (Agent, *SessionManager, string, string, error) {
-	interactiveKey := workspace + ":" + sessionKey
-	effectiveDir := e.resolveChannelWorkDir(workspace, interactiveKey)
+	effectiveDir := e.resolveChannelWorkDir(workspace, workspace+":"+sessionKey)
 	wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(effectiveDir)
 	if err != nil {
 		return nil, nil, "", "", err
 	}
-	physicalDir := effectiveDir
-	if !filepath.IsAbs(physicalDir) {
-		if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
-			physicalDir = wd.GetWorkDir()
-		}
+	return wsAgent, wsSessions, workspace + ":" + sessionKey, e.physicalWorkspaceDir(effectiveDir), nil
+}
+
+// physicalWorkspaceDir maps a workspace pool key to the directory it actually
+// runs in. A pool key that is not a path ("general", "L-855") is a session shard
+// of the seat's own work_dir, not a directory of its own.
+//
+// This is the prefix of an interactive key, so it must have exactly one
+// definition: the key a live agent process is filed under is built from it by
+// the message path, and every lookup of that state has to rebuild the same
+// string or it addresses nothing (see interactiveKeyForSessionKey).
+func (e *Engine) physicalWorkspaceDir(effectiveDir string) string {
+	if filepath.IsAbs(effectiveDir) {
+		return effectiveDir
 	}
-	return wsAgent, wsSessions, interactiveKey, physicalDir, nil
+	if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
+		return wd.GetWorkDir()
+	}
+	return effectiveDir
+}
+
+// topicInteractiveKeyPrefix returns the interactive-key prefix for a session key
+// on a seat that puts threads in workspaces of their own, or "" when the seat
+// resolves workspaces some other way.
+//
+// It deliberately does not create the workspace agent: this runs on lookup
+// paths that must stay cheap, and the prefix is a pure function of the pool key
+// plus the seat's work dir.
+func (e *Engine) topicInteractiveKeyPrefix(sessionKey string) string {
+	workspace := e.topicWorkspaceKey(extractThreadIDFromSessionKey(sessionKey), "")
+	if workspace == "" {
+		return ""
+	}
+	return e.physicalWorkspaceDir(e.resolveChannelWorkDir(workspace, workspace+":"+sessionKey))
 }
 
 // getOrCreateInteractiveStateWith accepts an optional agent override for multi-workspace mode.
@@ -18618,8 +18644,10 @@ func (e *Engine) interactiveKeyForSessionKey(sessionKey string) string {
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
 		return workspace + ":" + sessionKey
 	}
-	// Single-workspace fast path: no scan, no binding lookup, no lock.
-	if !e.multiWorkspace || e.workspaceBindings == nil {
+	// Single-workspace fast path: no scan, no binding lookup, no lock. It must
+	// not fire for a seat that puts threads in their own workspace — that seat's
+	// state is filed under a prefixed key whether or not a binding store exists.
+	if !e.multiWorkspace && e.workspacePattern == "" && !e.dispatchTopicIsolation {
 		return sessionKey
 	}
 	e.interactiveMu.Lock()
@@ -18654,10 +18682,22 @@ func (e *Engine) interactiveKeyForSessionKeyLocked(sessionKey string) string {
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
 		return workspace + ":" + sessionKey
 	}
-	if !e.multiWorkspace || e.workspaceBindings == nil {
+	if !e.multiWorkspace && e.workspacePattern == "" && !e.dispatchTopicIsolation {
 		return sessionKey
 	}
 	if _, ok := e.interactiveStates[sessionKey]; ok {
+		return sessionKey
+	}
+	// Topic/isolation prefix, before the binding lookup and before the live-state
+	// scan. Those two can only recognise a conversation that already exists; this
+	// one answers correctly while it is still cold, which is what callers that
+	// *create* state under this key need — setPendingProviderAdd and
+	// getOrCreateDeleteModeState both do, and both used to file that state under
+	// the bare key while the message path used the prefixed one.
+	if prefix := e.topicInteractiveKeyPrefix(sessionKey); prefix != "" {
+		return prefix + ":" + sessionKey
+	}
+	if e.workspaceBindings == nil {
 		return sessionKey
 	}
 	if channelKey := extractWorkspaceChannelKey(sessionKey); channelKey != "" {

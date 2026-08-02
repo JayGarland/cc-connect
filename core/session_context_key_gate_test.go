@@ -45,6 +45,21 @@ import (
 // recovery path; it is not silently skipped here — the pattern-only rows below
 // carry no letter mention, so both paths agree on "no topic workspace".
 func TestSessionContextForKey_MatchesDecider(t *testing.T) {
+	forEachSeatChannelLiveRow(t, func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext) {
+		_, gotSessions := e.sessionContextForKey(sessionKey)
+		if gotSessions != wsCtx.sessions {
+			t.Fatalf("sessionContextForKey resolved store %q, message path resolved %q — a card callback would read a different store than the typed command",
+				storeName(gotSessions), storeName(wsCtx.sessions))
+		}
+	})
+}
+
+// forEachSeatChannelLiveRow drives the seat × channel × live matrix declared
+// above and hands each row a ready engine plus the message path's answer for
+// that row. Both key-side resolvers are gated against the same 30 rows, so
+// neither can be aligned on a narrower table than the other.
+func forEachSeatChannelLiveRow(t *testing.T, check func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext)) {
+	t.Helper()
 	const (
 		uid      = "7664413698"
 		groupID  = "-1003917051393"
@@ -129,11 +144,7 @@ func TestSessionContextForKey_MatchesDecider(t *testing.T) {
 						e.interactiveMu.Unlock()
 					}
 
-					_, gotSessions := e.sessionContextForKey(ch.sessionKey)
-					if gotSessions != wsCtx.sessions {
-						t.Fatalf("sessionContextForKey resolved store %q, message path resolved %q — a card callback would read a different store than the typed command",
-							storeName(gotSessions), storeName(wsCtx.sessions))
-					}
+					check(t, e, p, ch.sessionKey, wsCtx)
 				})
 			}
 		}
@@ -148,4 +159,30 @@ func storeName(sm *SessionManager) string {
 		return filepath.Base(p)
 	}
 	return "<anonymous>"
+}
+
+// G3 — the interactive key must be the same string before any state exists.
+//
+// interactiveKeyForSessionKey answers "where is this conversation's live turn
+// state filed". Its binding lookup and its live-state suffix scan can both only
+// recognise a conversation that already exists, so on a topic/isolation seat it
+// answered with the bare session key while the conversation was still cold —
+// and two of its callers create state under that answer
+// (setPendingProviderAdd, getOrCreateDeleteModeState). A provider-add or
+// delete-mode flow started before the first message therefore built its state
+// beside the conversation, under a key the message path never reads.
+//
+// Coverage declaration (L-0697): same 5 × 3 × 2 product as
+// TestSessionContextForKey_MatchesDecider — every seat configuration, every
+// channel shape, cold and warm — 30 rows, none excluded. The cold rows are the
+// point: warm rows passed before this fix, because the suffix scan repaired the
+// answer once a live state existed, and testing only warm would have shown a
+// green gate over a broken cold path (7 of 30 rows were red).
+func TestInteractiveKeyForSessionKey_MatchesDecider(t *testing.T) {
+	forEachSeatChannelLiveRow(t, func(t *testing.T, e *Engine, p Platform, sessionKey string, wsCtx messageWorkspaceContext) {
+		if got := e.interactiveKeyForSessionKey(sessionKey); got != wsCtx.interactiveKey {
+			t.Fatalf("interactiveKeyForSessionKey = %q, message path files state under %q — a caller that creates state here builds it beside the conversation",
+				got, wsCtx.interactiveKey)
+		}
+	})
 }
