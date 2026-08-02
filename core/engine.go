@@ -3209,81 +3209,46 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		}
 	}
 
-	// Multi-workspace resolution
-	var wsAgent Agent
-	var wsSessions *SessionManager
-	var resolvedWorkspace string
-	if forcedWorkDir := e.sendWorkDirForSession(msg.SessionKey); forcedWorkDir != "" {
-		e.bindSendWorkDir(msg.SessionKey, forcedWorkDir)
-		var err error
-		wsAgent, wsSessions, err = e.getOrCreateWorkspaceAgent(forcedWorkDir)
-		if err != nil {
-			slog.Error("failed to create send work_dir agent", "work_dir", forcedWorkDir, "err", err)
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", err))
-			return
+	// Multi-workspace resolution. This is the *only* place the interactive path
+	// decides where a message lives; commandContextWithWorkspace calls the same
+	// resolver, so /new, /cancel and /stop act on the very session this message
+	// would use.
+	wsCtx, wsErr := e.resolveMessageWorkspaceContext(p, msg)
+	if wsErr != nil {
+		var agentErr *workspaceAgentError
+		if errors.As(wsErr, &agentErr) {
+			slog.Error("failed to create workspace agent", "workspace", agentErr.workspace, "err", agentErr.err)
+			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", agentErr.err))
+		} else {
+			slog.Error("workspace resolution failed", "err", wsErr)
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, wsErr))
 		}
-		resolvedWorkspace = forcedWorkDir
-	} else if e.multiWorkspace {
-		channelID := effectiveChannelID(msg)
-		channelKey := effectiveWorkspaceChannelKey(msg)
-		var workspace string
-		var channelName string
-		var err error
-		if e.workspacePattern != "" || e.dispatchTopicIsolation {
-			threadID := extractThreadID(channelID)
-			workspace = e.resolveWorkspacePattern(threadID, msg.Content)
-		}
-		if workspace == "" {
-			workspace, channelName, err = e.resolveWorkspace(p, channelID)
-			if err != nil {
-				slog.Error("workspace resolution failed", "err", err)
-				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
-				return
-			}
-		}
-		if workspace == "" {
-			// No workspace — handle init flow (unless it's a /workspace command)
-			if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {
-				if e.handleWorkspaceInitFlow(p, msg, channelName) {
-					return
-				}
-			} else {
-				// Workspace command bypassed the init flow; clean up any stale flow
-				// so it doesn't interfere if the channel becomes unbound again later.
-				e.initFlowsMu.Lock()
-				delete(e.initFlows, channelKey)
-				e.initFlowsMu.Unlock()
-			}
-			// If init flow didn't consume, only workspace commands work
-			if !strings.HasPrefix(content, "/") {
+		return
+	}
+	if wsCtx.needsInit {
+		// No workspace — handle init flow (unless it's a /workspace command)
+		if !strings.HasPrefix(content, "/workspace") && !strings.HasPrefix(content, "/ws ") {
+			if e.handleWorkspaceInitFlow(p, msg, wsCtx.channelName) {
 				return
 			}
 		} else {
-			// Touch for idle tracking
-			if ws := e.workspacePool.Get(workspace); ws != nil {
-				ws.Touch()
-			}
-
-			var effectiveWorkspace string
-			wsAgent, wsSessions, _, effectiveWorkspace, err = e.workspaceContext(workspace, msg.SessionKey)
-			if err != nil {
-				slog.Error("failed to create workspace agent", "workspace", workspace, "err", err)
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", err))
-				return
-			}
-			resolvedWorkspace = effectiveWorkspace
+			// Workspace command bypassed the init flow; clean up any stale flow
+			// so it doesn't interfere if the channel becomes unbound again later.
+			e.initFlowsMu.Lock()
+			delete(e.initFlows, effectiveWorkspaceChannelKey(msg))
+			e.initFlowsMu.Unlock()
+		}
+		// If init flow didn't consume, only workspace commands work
+		if !strings.HasPrefix(content, "/") {
+			return
 		}
 	}
 
 	// Select session manager and agent based on workspace mode
-	sessions := e.sessions
-	agent := e.agent
-	interactiveKey := msg.SessionKey
-	if resolvedWorkspace != "" && wsSessions != nil {
-		sessions = wsSessions
-		agent = wsAgent
-		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
-	}
+	sessions := wsCtx.sessions
+	agent := wsCtx.agent
+	interactiveKey := wsCtx.interactiveKey
+	resolvedWorkspace := wsCtx.workspace
 
 	// Chat-history sync (inbound): record the directed user message to the
 	// Topic transcript before any prompt injection mutates msg.Content. Commands
@@ -18398,38 +18363,125 @@ func (e *Engine) branchNameForWorkspace(workspace string) string {
 // the resolved workspace path for callers that need to forward it to
 // processInteractiveMessageWith (idle reaper bookkeeping, reply footer, etc).
 func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *SessionManager, string, string, error) {
+	wsCtx, err := e.resolveMessageWorkspaceContext(p, msg)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	// needsInit: multi-workspace mode with no binding yet. The interactive path
+	// runs the /workspace init flow here; a command has nothing to act on, so it
+	// falls back to the global context exactly as before.
+	return wsCtx.agent, wsCtx.sessions, wsCtx.interactiveKey, wsCtx.workspace, nil
+}
+
+// messageWorkspaceContext is where one message lives: which agent and
+// SessionManager own it, and the key its live agent process is filed under in
+// e.interactiveStates.
+type messageWorkspaceContext struct {
+	agent          Agent
+	sessions       *SessionManager
+	interactiveKey string
+	// workspace is the *effective* workspace directory, "" in single-workspace
+	// mode. It is the interactiveKey prefix, so it must be the physical dir, not
+	// the pool key: an isolation-only seat resolves the pool key "general" or
+	// "L-5214" but files its live state under the seat's real work_dir.
+	workspace string
+	// channelName is only meaningful together with needsInit — it feeds the
+	// /workspace init flow's prompt.
+	channelName string
+	// needsInit reports multi-workspace mode with no binding for this channel.
+	needsInit bool
+}
+
+// workspaceAgentError distinguishes "could not build the agent for a workspace
+// we did resolve" from "could not resolve which workspace this message belongs
+// to". The two are reported differently to the user.
+type workspaceAgentError struct {
+	workspace string
+	err       error
+}
+
+func (w *workspaceAgentError) Error() string { return w.err.Error() }
+func (w *workspaceAgentError) Unwrap() error { return w.err }
+
+// resolveMessageWorkspaceContext is the single decider for a message's routing
+// target. Both the interactive hot path (handleMessage) and the command path
+// (commandContextWithWorkspace) must call it and nothing else.
+//
+// They used to resolve independently and disagreed in two ways, which is why
+// /new and /cancel stopped clearing anything in a private DM (and in the General
+// topic) for dispatch_topic_isolation seats:
+//
+//   - the command path consulted resolveWorkspacePattern only when the channel
+//     had a Telegram thread. A DM has none, so it never saw the "general"
+//     sentinel that resolveWorkspacePattern has returned for threadless chat
+//     since 0402834e, and fell through to the global SessionManager — while the
+//     live session was in the "general" one;
+//   - it took its interactive key from workspaceContext (prefixed with the pool
+//     key, e.g. "general:" / "L-5214:") while handleMessage prefixes with the
+//     effective work dir ("F:\nexus:"). cleanupInteractiveState then looked up a
+//     key nothing was ever stored under, so the live agent process survived
+//     /new and the next message resumed it (is_resume=true).
+func (e *Engine) resolveMessageWorkspaceContext(p Platform, msg *Message) (messageWorkspaceContext, error) {
+	global := messageWorkspaceContext{agent: e.agent, sessions: e.sessions, interactiveKey: msg.SessionKey}
+
+	if forcedWorkDir := e.sendWorkDirForSession(msg.SessionKey); forcedWorkDir != "" {
+		e.bindSendWorkDir(msg.SessionKey, forcedWorkDir)
+		wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(forcedWorkDir)
+		if err != nil {
+			return global, &workspaceAgentError{workspace: forcedWorkDir, err: err}
+		}
+		return messageWorkspaceContext{
+			agent:          wsAgent,
+			sessions:       wsSessions,
+			interactiveKey: forcedWorkDir + ":" + msg.SessionKey,
+			workspace:      forcedWorkDir,
+		}, nil
+	}
+
+	if !e.multiWorkspace && e.workspacePattern == "" && !e.dispatchTopicIsolation {
+		return global, nil
+	}
+
+	channelID := effectiveChannelID(msg)
+	var workspace string
 	if e.workspacePattern != "" || e.dispatchTopicIsolation {
-		channelID := effectiveChannelID(msg)
-		threadID := extractThreadID(channelID)
-		if threadID != "" {
-			workspace := e.resolveWorkspacePattern(threadID, msg.Content)
-			agent, sessions, interactiveKey, effectiveDir, err := e.workspaceContext(workspace, msg.SessionKey)
-			if err != nil {
-				return nil, nil, "", "", err
-			}
-			return agent, sessions, interactiveKey, effectiveDir, nil
+		workspace = e.resolveWorkspacePattern(extractThreadID(channelID), msg.Content)
+	}
+	var channelName string
+	if workspace == "" {
+		if !e.multiWorkspace {
+			return global, nil
+		}
+		var err error
+		workspace, channelName, err = e.resolveWorkspace(p, channelID)
+		if err != nil {
+			return global, err
 		}
 	}
-	if !e.multiWorkspace {
-		return e.agent, e.sessions, msg.SessionKey, "", nil
-	}
-	channelID := effectiveChannelID(msg)
-	channelKey := effectiveWorkspaceChannelKey(msg)
-	if channelKey == "" || channelID == "" {
-		return e.agent, e.sessions, msg.SessionKey, "", nil
-	}
-	workspace, _, err := e.resolveWorkspace(p, channelID)
-	if err != nil {
-		return nil, nil, "", "", err
-	}
 	if workspace == "" {
-		return e.agent, e.sessions, msg.SessionKey, "", nil
+		global.channelName = channelName
+		global.needsInit = true
+		return global, nil
 	}
-	agent, sessions, interactiveKey, effectiveDir, err := e.workspaceContext(workspace, msg.SessionKey)
+
+	// Touch for idle tracking
+	if e.workspacePool != nil {
+		if ws := e.workspacePool.Get(workspace); ws != nil {
+			ws.Touch()
+		}
+	}
+
+	wsAgent, wsSessions, _, effectiveWorkspace, err := e.workspaceContext(workspace, msg.SessionKey)
 	if err != nil {
-		return nil, nil, "", "", err
+		return global, &workspaceAgentError{workspace: workspace, err: err}
 	}
-	return agent, sessions, interactiveKey, effectiveDir, nil
+	return messageWorkspaceContext{
+		agent:          wsAgent,
+		sessions:       wsSessions,
+		interactiveKey: effectiveWorkspace + ":" + msg.SessionKey,
+		workspace:      effectiveWorkspace,
+		channelName:    channelName,
+	}, nil
 }
 
 // sessionContextForKey resolves the agent and session manager for a sessionKey.

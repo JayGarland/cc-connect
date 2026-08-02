@@ -406,8 +406,19 @@ func TestWorkspacePatternRouting_DispatchTopicIsolation(t *testing.T) {
 	// The shard is the stable per-topic key L-2793 (from threadID), NOT the
 	// L-0323 mentioned in the body — a free-text letter mention must not switch
 	// the cooperative seat's session shard.
-	if interactiveKey != "L-2793:telegram:-1003917051393:2793:7664413698" {
-		t.Errorf("unexpected interactiveKey: %q", interactiveKey)
+	if shard := e.resolveWorkspacePattern("2793", msg.Content); shard != "L-2793" {
+		t.Errorf("session shard = %q, want %q (a free-text letter mention must not switch shards)", shard, "L-2793")
+	}
+
+	// The interactive key is prefixed with the *effective work dir*, not the
+	// shard key. This assertion used to read "L-2793:..." — it pinned the
+	// command path's own output without ever comparing it to the key
+	// handleMessage files live state under, which is what let the two drift
+	// apart until /new stopped clearing anything (see
+	// TestCommandContext_MatchesInteractiveSessionTarget).
+	wantKey := dummyWorkDir + ":telegram:-1003917051393:2793:7664413698"
+	if interactiveKey != wantKey {
+		t.Errorf("interactiveKey = %q, want %q", interactiveKey, wantKey)
 	}
 
 	// The effective directory should NOT be the virtual workspace "L-2793"
