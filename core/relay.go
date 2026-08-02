@@ -302,6 +302,11 @@ type RelayRequest struct {
 	To         string `json:"to"`          // target project name
 	SessionKey string `json:"session_key"` // source session key (contains platform + chatID)
 	Message    string `json:"message"`
+	// Visibility, when non-empty, overrides the manager's global visibility for
+	// this one relay. Used by machine-to-machine relays (pre-dispatch
+	// verification) that must stay off the group chat's visibility echo while
+	// leaving interactive relays on the configured default.
+	Visibility string `json:"visibility,omitempty"`
 }
 
 // RelayResponse is the result of a relay send.
@@ -330,6 +335,9 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 	targetEngine := rm.engines[req.To]
 	sourceEngine := rm.engines[req.From]
 	visibility := rm.visibility
+	if req.Visibility != "" {
+		visibility = normalizeRelayVisibility(req.Visibility)
+	}
 	rm.mu.RUnlock()
 
 	if binding == nil {
