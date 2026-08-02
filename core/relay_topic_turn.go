@@ -65,7 +65,10 @@ type relayTopicTarget struct {
 	// supposed to join.
 	interactiveKey string
 	workspace      string
-	platform       Platform
+	// agent and sessions are the resolver's answer for this conversation, not a
+	// second lookup: the turn must run on the same pair the human path runs on.
+	agent    Agent
+	platform Platform
 }
 
 // resolveRelayTopicTarget finds the conversation a relay should continue.
@@ -156,6 +159,7 @@ func (e *Engine) resolveRelayTopicTarget(sourceSessionKey, workspace string, ses
 		sessionKey:     candidates[0],
 		interactiveKey: wsCtx.interactiveKey,
 		workspace:      wsCtx.workspace,
+		agent:          wsCtx.agent,
 		platform:       p,
 	}, nil
 }
@@ -212,8 +216,7 @@ func (e *Engine) SubmitTopicTurn(target *relayTopicTarget, fromProject, message 
 		// append, leaving the queued turn with no one to run it. Same race, and
 		// same guard, as the human-message path in handleMessage.
 		if session.TryLock() {
-			agent, _ := e.sessionContextForKey(target.sessionKey)
-			go e.drainOrphanedQueue(session, target.sessions, target.interactiveKey, agent, target.workspace)
+			go e.drainOrphanedQueue(session, target.sessions, target.interactiveKey, target.agent, target.workspace)
 		}
 		return respCh, nil
 	}
@@ -224,10 +227,11 @@ func (e *Engine) SubmitTopicTurn(target *relayTopicTarget, fromProject, message 
 		return nil, fmt.Errorf("relay: target session %q is busy and its queue is unavailable", target.sessionKey)
 	}
 
-	agent, sessions := e.sessionContextForKey(target.sessionKey)
-	if sessions == nil {
-		sessions = target.sessions
-	}
+	// The agent and SessionManager come from the target, i.e. from the same
+	// resolver the human path used — not from sessionContextForKey, which has no
+	// dispatch_topic_isolation branch and answers "the global agent, the global
+	// SessionManager" for an isolation-only seat. Running the turn on those would
+	// record the resumed agent session id in a store the topic never reads.
 	e.setTurnResponseSink(target.interactiveKey, respCh)
 	session.TouchUserActivity()
 	e.noteUserMessageAccepted(target.interactiveKey, msg.UserMessageTimeMs)
@@ -238,7 +242,7 @@ func (e *Engine) SubmitTopicTurn(target *relayTopicTarget, fromProject, message 
 		"session", session.ID,
 		"agent_session", session.GetAgentSessionID())
 
-	go e.processInteractiveMessageWith(target.platform, msg, session, agent, sessions,
+	go e.processInteractiveMessageWith(target.platform, msg, session, target.agent, target.sessions,
 		target.interactiveKey, target.workspace, target.sessionKey)
 
 	return respCh, nil
