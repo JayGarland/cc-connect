@@ -558,7 +558,11 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 
 	cardManager, supportsCard := p.(ReceiptCardManager)
 	if !supportsCard {
-		return true, e.dispatchWithCardFallback(p, sourceSessionKey, req)
+		// Fail-closed (L-0759 pursuit, Boss ruling): a platform that cannot show
+		// the confirmation card cannot obtain Boss's confirmation, so the
+		// [DISPATCH] is refused rather than auto-executed past the card.
+		return true, e.rejectDispatch(req, sourceSessionKey,
+			fmt.Errorf("platform %s cannot display a dispatch confirmation card; refusing to auto-dispatch (fail-closed, L-0759 pursuit)", p.Name()))
 	}
 
 	if _, _, err := validateDispatchArchive(req); err != nil {
@@ -600,8 +604,11 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	}
 	locator, err := cardManager.SendReceiptCard(e.ctx, replyCtx, cardContent, buttons)
 	if err != nil {
-		slog.Warn("dispatch: failed to send confirm card, using disclosed automatic fallback", "project", e.name, "letter", req.Letter, "error", err)
-		return true, e.dispatchWithCardFallback(p, sourceSessionKey, req)
+		// Fail-closed (L-0759 pursuit, Boss ruling): a confirm card that cannot
+		// be delivered means Boss never saw a confirm button — auto-dispatching
+		// would bypass the human gate. Refuse instead.
+		slog.Warn("dispatch: confirm card send failed, refusing to auto-dispatch", "project", e.name, "letter", req.Letter, "error", err)
+		return true, e.rejectDispatch(req, sourceSessionKey, fmt.Errorf("failed to send dispatch confirmation card: %w", err))
 	}
 
 	if err := e.ensurePendingDispatchStore().upsert(PendingDispatch{
@@ -615,31 +622,6 @@ func (e *Engine) maybeHandleDispatchBlock(p Platform, sourceSessionKey, fullResp
 	}
 
 	return true, fmt.Sprintf("📋 Dispatch proposal for %s posted — awaiting confirmation.", req.Letter)
-}
-
-// dispatchWithCardFallback makes the deliberate automatic-dispatch fallback
-// observable before its irreversible control-plane action. req remains the
-// parsed dispatchRequest: its letter/path binding, not mutable warning text,
-// is the sole input to ControlPlaneDispatch.
-func (e *Engine) dispatchWithCardFallback(p Platform, sourceSessionKey string, req dispatchRequest) string {
-	replyCtx := any(sourceSessionKey)
-	if rc, ok := p.(ReplyContextReconstructor); ok {
-		if reconstructed, err := rc.ReconstructReplyCtx(sourceSessionKey); err == nil {
-			replyCtx = reconstructed
-		}
-	}
-
-	warning := fmt.Sprintf("⚠️ Dispatch confirmation card failed for %s; automatic dispatch is happening.", req.Letter)
-	if err := p.Send(e.ctx, replyCtx, warning); err != nil {
-		return e.rejectDispatch(req, sourceSessionKey, fmt.Errorf("send automatic-dispatch warning: %w", err))
-	}
-
-	receipt, err := e.ControlPlaneDispatch(p, sourceSessionKey, req)
-	if err != nil {
-		slog.Warn("dispatch rejected", "project", e.name, "letter", req.Letter, "to", req.To, "error", err)
-		return "⚠️ Dispatch rejected: " + err.Error()
-	}
-	return receipt
 }
 
 // rejectDispatch is the single exit for a [DISPATCH] rejected BEFORE it reaches
