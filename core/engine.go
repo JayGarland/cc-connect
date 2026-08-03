@@ -3186,11 +3186,21 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	// would use.
 	wsCtx, wsErr := e.resolveMessageWorkspaceContext(p, msg)
 	if wsErr != nil {
+		var refusal *unauthorizedTopicError
 		var agentErr *workspaceAgentError
-		if errors.As(wsErr, &agentErr) {
+		switch {
+		case errors.As(wsErr, &refusal):
+			// L-0767: refuse out loud. The operator gets the reason and the way
+			// forward in the topic itself; the log line carries the stable keys so
+			// the refusal is greppable without reading chat history.
+			slog.Warn("refused unauthorized topic for letter-dispatch seat",
+				"project", refusal.project, "thread_id", refusal.threadID,
+				"session_key", msg.SessionKey, "reason", "no dispatch-ledger entry and no topic binding")
+			e.reply(p, msg.ReplyCtx, refusal.Error())
+		case errors.As(wsErr, &agentErr):
 			slog.Error("failed to create workspace agent", "workspace", agentErr.workspace, "err", agentErr.err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", agentErr.err))
-		} else {
+		default:
 			slog.Error("workspace resolution failed", "err", wsErr)
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, wsErr))
 		}
@@ -18251,17 +18261,78 @@ const defaultDispatchWorkspaceKey = "general"
 // produce one, and for a dispatch_topic_isolation seat that resolves to the
 // stable "general" shard.
 func (e *Engine) topicWorkspaceKey(threadID, messageHint string) string {
+	workspace, _ := e.topicWorkspaceKeyChecked(threadID, messageHint)
+	return workspace
+}
+
+// topicWorkspaceKeyChecked is the error-returning form of topicWorkspaceKey.
+// A non-nil error means the topic was REFUSED, which is not the same thing as
+// "this seat does not isolate by topic" (that is a nil error with an empty
+// workspace). Callers that can surface a refusal to the operator must use this
+// form; topicWorkspaceKey exists for the lookup paths that only need the
+// resolved value.
+func (e *Engine) topicWorkspaceKeyChecked(threadID, messageHint string) (string, error) {
 	if e.workspacePattern == "" && !e.dispatchTopicIsolation {
-		return ""
+		return "", nil
 	}
-	return e.resolveWorkspacePattern(threadID, messageHint)
+	return e.resolveWorkspacePatternChecked(threadID, messageHint)
+}
+
+// unauthorizedTopicError reports that a letter-dispatch seat was asked to work
+// in a topic that no authoritative source binds to a letter: no dispatch-ledger
+// entry, no sticky topic→letter binding.
+//
+// This is deliberately an error rather than an empty string. An empty workspace
+// means "this seat has no per-topic isolation" and makes the message path fall
+// back to the seat's own work_dir — for dev-pro that is the base repo's main
+// worktree (F:\GitHub\resonova), which the fleet forbids working in (L-0564).
+// Degrading a refused topic into that directory would be another silent
+// failure, just bleeding somewhere else. The error keeps the two outcomes
+// distinguishable so the refusal can be stated out loud and the turn stopped.
+type unauthorizedTopicError struct {
+	project  string
+	threadID string
+}
+
+func (u *unauthorizedTopicError) Error() string {
+	return fmt.Sprintf(
+		"topic %s is not bound to any letter for seat %s: no dispatch-ledger entry and no existing topic binding. "+
+			"This seat only enters a letter's worktree through a dispatch card; it will not invent one. "+
+			"Dispatch the letter from the Outbox, then send this message again.",
+		u.threadID, u.project,
+	)
 }
 
 func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) string {
+	workspace, _ := e.resolveWorkspacePatternChecked(threadID, messageHint)
+	return workspace
+}
+
+// resolveWorkspacePatternChecked resolves a topic to its workspace, or refuses.
+//
+// It is the ACTUATOR for this decision: every workspace/shard identity for a
+// letter-dispatch seat is produced here, and the fail-closed check therefore
+// lives here rather than in any caller. resolveWorkspacePattern and
+// topicWorkspaceKey are thin wrappers that discard the error; a call site added
+// later still cannot obtain a fabricated identity, because there is no code
+// path that produces one (L-0757: the gate goes on the actuator, never on a
+// wrapper).
+//
+// Authorized sources of a persistent topic→letter binding, and the only ones:
+//   - the dispatch ledger (findLetterIDByTopic) — written by an actual dispatch;
+//   - the sticky topic→letter binding store — written by an earlier authorized
+//     resolution.
+//
+// Message text is NOT such a source and is not consulted (L-0666 removed the
+// last instance; observe-first-stable-identity.md states the invariant). Absent
+// both authorized sources this returns an *unauthorizedTopicError and writes
+// nothing: fabricating "L-"+threadID here is exactly the defect this function
+// now refuses (L-0767).
+func (e *Engine) resolveWorkspacePatternChecked(threadID string, messageHint string) (string, error) {
 	if strings.TrimSpace(threadID) == "" {
 		if e.workspacePattern != "" && !strings.Contains(e.workspacePattern, "{{THREAD_ID}}") && strings.Contains(e.workspacePattern, "{{LETTER_ID}}") {
 			if letterID := ExtractLetterIDFromText(messageHint); letterID != "" {
-				return strings.ReplaceAll(e.workspacePattern, "{{LETTER_ID}}", letterID)
+				return strings.ReplaceAll(e.workspacePattern, "{{LETTER_ID}}", letterID), nil
 			}
 		}
 		if e.dispatchTopicIsolation {
@@ -18271,25 +18342,30 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			// shard and cold-start. Formal letter dispatch always arrives on a
 			// Telegram topic and is resolved from the dispatch ledger below, never
 			// from free text. (L-0587 follow-up to the reuse-race fix.)
-			return defaultDispatchWorkspaceKey
+			return defaultDispatchWorkspaceKey, nil
 		}
-		return ""
+		return "", nil
 	}
 	if e.workspacePattern == "" {
 		if e.dispatchTopicIsolation {
 			// Dispatched letters are resolved from the ledger (findLetterIDByTopic);
-			// a topic that is not a dispatch target stays on a stable per-topic
-			// shard (L-<threadID>). We deliberately do NOT fall back to an L-XXXX
+			// a topic with no ledger entry stays on a stable per-topic shard
+			// (L-<threadID>). We deliberately do NOT fall back to an L-XXXX
 			// scraped from the message body — that let ad-hoc chat mentioning a
 			// letter hop shards and cold-start (L-0587).
+			//
+			// This branch is NOT subject to the L-0767 fail-closed rule, and the
+			// distinction is load-bearing: the value returned here is a session
+			// SHARD KEY, not a workspace path. It is not absolute, so
+			// getOrCreateWorkspaceAgent runs it against the seat's own static
+			// work_dir and never provisions a git worktree (see
+			// defaultDispatchWorkspaceKey above). "L-"+threadID here is therefore
+			// not a fabricated letter identity — it is a per-topic shard name
+			// derived from threadID, which is itself a stable key. Refusing here
+			// would deny ad-hoc chat its own session for no safety gain.
 			letterID := e.findLetterIDByTopic(threadID)
 			ledgerHit := letterID != ""
 			if !ledgerHit {
-				// Ledger miss: this topic was never [DISPATCH]-registered. Stay
-				// pinned to whatever this topic already resolved to before,
-				// rather than recomputing "L-"+threadID fresh (a no-op here since
-				// threadID is stable, but kept symmetric with the {{LETTER_ID}}
-				// branch below where the fallback source can otherwise vary).
 				if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
 					letterID = bound
 				}
@@ -18300,9 +18376,9 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 			if !ledgerHit {
 				e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 			}
-			return letterID
+			return letterID, nil
 		}
-		return ""
+		return "", nil
 	}
 	workspace := strings.ReplaceAll(e.workspacePattern, "{{THREAD_ID}}", threadID)
 	if strings.Contains(workspace, "{{LETTER_ID}}") {
@@ -18319,31 +18395,34 @@ func (e *Engine) resolveWorkspacePattern(threadID string, messageHint string) st
 		// a pattern-seat's worktree.
 		letterID := e.findLetterIDByTopic(threadID)
 		ledgerHit := letterID != ""
-		if !ledgerHit && letterID == "" {
-			// Ledger miss AND no extractable letter in this message: this is the
-			// ambiguous-continuation case (e.g. "continue from where 650 stopped"
-			// — no "L-" prefix, only 3 digits, matches none of the extraction
-			// regexes). Stay pinned to whatever this topic last resolved to
-			// instead of fabricating "L-"+threadID, which would silently reroute
-			// an established topic onto a brand-new, disconnected worktree.
+		if !ledgerHit {
+			// Ledger miss: this is the ambiguous-continuation case (e.g. "continue
+			// from where 650 stopped" — no "L-" prefix, only 3 digits, matches
+			// none of the extraction regexes). Stay pinned to whatever this topic
+			// last resolved to under an authorized binding.
 			if bound := e.ensureTopicLetterBindingStore().lookup(e.name, threadID); bound != "" {
 				letterID = bound
 			}
 		}
 		if letterID == "" {
-			letterID = "L-" + threadID
+			// Fail closed (L-0767). This is where "L-"+threadID used to be
+			// fabricated: topic 10565 became letter "L-10565" with a worktree of
+			// its own, disconnected from the L-0765 work it actually carried, and
+			// the resulting cwd/transcript mismatch cost a 5.75-hour session
+			// (cc-connect-stdout.log 2026-08-03T05:47:06.840). Nothing is written
+			// on this path — a refusal that persisted its own guess would be read
+			// back as authorization on the next message.
+			return "", &unauthorizedTopicError{project: e.name, threadID: threadID}
 		}
 		if !ledgerHit {
-			// Remember this resolution as the topic's new default, whether it
-			// came from an explicit mention (redirect) or the sticky binding
-			// (unchanged) or a first-ever fabrication. bind() upserts, so a later
-			// explicit redirect keeps updating what "ambiguous continuation"
-			// means for this topic going forward.
+			// Remember this authorized resolution as the topic's default. bind()
+			// upserts, so a later dispatch keeps updating what "ambiguous
+			// continuation" means for this topic going forward.
 			e.ensureTopicLetterBindingStore().bind(e.name, threadID, letterID)
 		}
 		workspace = strings.ReplaceAll(workspace, "{{LETTER_ID}}", letterID)
 	}
-	return workspace
+	return workspace, nil
 }
 
 func (e *Engine) branchNameForWorkspace(workspace string) string {
@@ -18453,7 +18532,16 @@ func (e *Engine) resolveMessageWorkspaceContext(p Platform, msg *Message) (messa
 	}
 
 	channelID := effectiveChannelID(msg)
-	workspace := e.topicWorkspaceKey(extractThreadID(channelID), msg.Content)
+	workspace, wsErr := e.topicWorkspaceKeyChecked(extractThreadID(channelID), msg.Content)
+	if wsErr != nil {
+		// Fail closed AND loud (L-0767). A refused topic must not fall through to
+		// the branches below: `global` carries the seat's own work_dir, and for
+		// dev-pro that is F:\GitHub\resonova — the base repo's main worktree,
+		// which the fleet forbids working in (L-0564). Returning the error stops
+		// the turn before any agent is started and lets handleMessage state the
+		// reason in the topic.
+		return global, wsErr
+	}
 	var channelName string
 	if workspace == "" {
 		if !e.multiWorkspace {

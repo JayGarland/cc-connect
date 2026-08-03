@@ -38,32 +38,36 @@ func TestWorkspacePatternResolvesLetterIDFromDispatchLedger(t *testing.T) {
 	}
 }
 
-func TestWorkspacePatternLetterFallbackUsesTaskBranch(t *testing.T) {
+// TestWorkspacePatternLetterFallbackRefusesUnauthorizedTopic used to assert the
+// opposite: that a topic with no ledger entry silently became letter
+// "L-<threadID>" with a worktree and branch of its own. Boss ruled that
+// fabrication out on 2026-08-03 (L-0767) after topic 10565 produced letter
+// "L-10565", a worktree disconnected from the L-0765 work it actually carried,
+// and a discarded 5.75-hour session. Fail closed, and say so out loud.
+func TestWorkspacePatternLetterFallbackRefusesUnauthorizedTopic(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	want := filepath.Join(root, "worktrees", "letter-L-2222")
-	if got := e.resolveWorkspacePattern("2222", ""); got != want {
-		t.Fatalf("resolveWorkspacePattern() = %q, want %q", got, want)
-	}
-	if got := e.branchNameForWorkspace(want); got != "L-2222" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", got, "L-2222")
+	if got, err := e.resolveWorkspacePatternChecked("2222", ""); err == nil {
+		t.Fatalf("resolveWorkspacePatternChecked() = %q with no error; want refusal for an unauthorized topic", got)
 	}
 }
 
 // TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry reproduces
 // the bug reported against the resonova-pipeline-controller thread: a topic
-// whose letter was never registered in the dispatch ledger (a real, recurring
-// gap for pattern seats fed by ad-hoc pursuit continuations, not just fresh
-// [DISPATCH]) must stay pinned to its first-resolved letter regardless of
-// what any later message says. Updated for L-0666 (Phase 4 of the L-0658
-// RFC): message-hint text is no longer consulted for pattern seats AT ALL —
-// not even on the first message — so every resolution in this test fabricates
-// "L-<threadID>" and pins to that; a mention of any letter, matching or not,
-// must never redirect an established topic (the old manual-dispatch text
-// redirect, L-0320, is retired).
+// bound by an earlier authorized resolution must stay pinned to that letter
+// regardless of what any later message says. Updated for L-0666 (Phase 4 of the
+// L-0658 RFC): message-hint text is no longer consulted for pattern seats AT
+// ALL, so a mention of any letter, matching or not, must never redirect an
+// established topic (the old manual-dispatch text redirect, L-0320, is retired).
+//
+// Updated again for L-0767: an UNBOUND topic no longer fabricates
+// "L-<threadID>" to pin to — it is refused. This test therefore establishes the
+// binding the authorized way (a dispatch-ledger entry) and then asserts that
+// later message text cannot move it. The "hint is ignored" coverage is
+// unchanged; only the way the topic first becomes legitimate is.
 func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
@@ -71,9 +75,8 @@ func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
 	const threadID = "6031"
-	// No ledger entry exists (this topic's whole letter lineage was never
-	// [DISPATCH]-registered). The first resolution ignores the message hint
-	// entirely and fabricates "L-<threadID>".
+	// Authorized binding, written the only sanctioned way.
+	e.ensureTopicLetterBindingStore().bind("dev-pro", threadID, "L-6031")
 	want := filepath.Join(root, "worktrees", "letter-L-6031")
 
 	if got := e.resolveWorkspacePattern(threadID, "L-0650 Step 0-B/C landed"); got != want {
@@ -107,34 +110,29 @@ func TestWorkspacePatternStaysPinnedAcrossMessagesWithoutLedgerEntry(t *testing.
 // on rather than re-derived (which would be a no-op here since threadID is
 // stable, but this guards the invariant explicitly rather than relying on
 // coincidence).
-func TestWorkspacePatternFirstResolutionViaFallbackStaysPinned(t *testing.T) {
+// TestWorkspacePatternFirstResolutionViaFallbackRefuses asserts that a topic
+// with no dispatch-ledger entry and no sticky binding is refused, not silently
+// assigned "L-<threadID>" (L-0767 fail-closed).
+func TestWorkspacePatternFirstResolutionViaFallbackRefuses(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
 	const threadID = "7777"
-	want := filepath.Join(root, "worktrees", "letter-L-7777")
-
-	if got := e.resolveWorkspacePattern(threadID, ""); got != want {
-		t.Fatalf("first resolution (no hint) = %q, want %q", got, want)
+	if got, err := e.resolveWorkspacePatternChecked(threadID, ""); err == nil {
+		t.Fatalf("resolveWorkspacePatternChecked() = %q, want refusal (no ledger, no binding)", got)
 	}
-	// A later ambiguous message (no extractable letter) stays on the
-	// fallback-established binding.
-	if got := e.resolveWorkspacePattern(threadID, "still working on it"); got != want {
-		t.Fatalf("later ambiguous message = %q, want %q (must stay pinned)", got, want)
-	}
-
-	bound := e.ensureTopicLetterBindingStore().lookup("dev-pro", threadID)
-	if bound != "L-7777" {
-		t.Fatalf("persisted binding = %q, want %q", bound, "L-7777")
+	// Nothing should have been pinned.
+	if bound := e.ensureTopicLetterBindingStore().lookup("dev-pro", threadID); bound != "" {
+		t.Fatalf("binding written after refusal = %q, want empty", bound)
 	}
 }
 
-// TestWorkspacePatternLedgerAlwaysWinsOverBinding confirms the dispatch
-// ledger remains authoritative: if a topic is (later) properly
-// [DISPATCH]-registered, the ledger's answer must be used even if an earlier
-// ledger-miss already pinned this topic to a fallback ID.
+// TestWorkspacePatternLedgerAlwaysWinsOverBinding confirms the dispatch ledger
+// is authoritative: if a topic IS properly [DISPATCH]-registered, the ledger
+// answer wins. The pre-L-0767 "fallback binding" path is retired; this test
+// no longer exercises that path (it was fabricating "L-<threadID>").
 func TestWorkspacePatternLedgerAlwaysWinsOverBinding(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-pro", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
@@ -142,11 +140,8 @@ func TestWorkspacePatternLedgerAlwaysWinsOverBinding(t *testing.T) {
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
 	const threadID = "8888"
-	fallbackWant := filepath.Join(root, "worktrees", "letter-L-8888")
-	if got := e.resolveWorkspacePattern(threadID, ""); got != fallbackWant {
-		t.Fatalf("first resolution (ledger miss) = %q, want %q", got, fallbackWant)
-	}
 
+	// Register via dispatch ledger (the only authorized way).
 	if err := e.ensureDispatchStore().upsert(DispatchExpectation{
 		Letter:          "L-0200",
 		To:              "dev-pro",
@@ -159,7 +154,7 @@ func TestWorkspacePatternLedgerAlwaysWinsOverBinding(t *testing.T) {
 
 	ledgerWant := filepath.Join(root, "worktrees", "letter-L-0200")
 	if got := e.resolveWorkspacePattern(threadID, ""); got != ledgerWant {
-		t.Fatalf("resolution after ledger registration = %q, want %q (ledger must win over a stale fallback binding)", got, ledgerWant)
+		t.Fatalf("resolution = %q, want %q (ledger must win)", got, ledgerWant)
 	}
 }
 
@@ -320,39 +315,39 @@ func TestIsThreadWorktreeBranch(t *testing.T) {
 // Regression test for L-0320: manual dispatch (no ledger entry) should extract
 // the letter ID from the message content (e.g. "处理 L-0313") instead of
 // fabricating L-<topicID> (e.g. L-2793).
+// TestResolveWorkspacePattern_MessageHintIgnoredForPatternSeats verifies that a
+// pattern seat never reads the message body for routing. A topic with no ledger
+// entry is refused (fail-closed, L-0767); a topic that IS ledger-registered
+// ignores any letter mention in the message text.
 func TestResolveWorkspacePattern_MessageHintIgnoredForPatternSeats(t *testing.T) {
 	root := t.TempDir()
 	e := NewEngine("dev-swift", &stubAgent{}, nil, filepath.Join(root, "sessions.json"), LangEnglish)
 	e.SetDataDir(root)
 	e.SetWorkspacePattern(filepath.Join(root, "worktrees", "letter-{{LETTER_ID}}"))
 
-	// No ledger entry, and a message that happens to mention L-0313 in free
-	// text (e.g. "处理 L-0313"). Per L-0666 (Phase 4 of the L-0658 RFC), a
-	// pattern seat's workspace binding is decided ONLY by the dispatch
-	// ledger (findLetterIDByTopic) or the sticky topic->letter binding —
-	// never by scraping the message body. The old manual-redirect fallback
-	// (ExtractLetterIDFromText, L-0320) is retired: the hint must be
-	// ignored entirely, falling back to fabricating "L-<threadID>" and
-	// pinning the topic to that from now on.
-	want := filepath.Join(root, "worktrees", "letter-L-2793")
-	got := e.resolveWorkspacePattern("2793", "处理 L-0313")
-	if got != want {
-		t.Fatalf("resolveWorkspacePattern(message hint present) = %q, want %q (hint must be ignored)", got, want)
-	}
-	if branch := e.branchNameForWorkspace(want); branch != "L-2793" {
-		t.Fatalf("branchNameForWorkspace() = %q, want %q", branch, "L-2793")
+	// No ledger entry — must be refused regardless of message content.
+	if got, err := e.resolveWorkspacePatternChecked("2793", "处理 L-0313"); err == nil {
+		t.Fatalf("resolveWorkspacePatternChecked(no ledger, hint present) = %q, want refusal", got)
 	}
 
-	// A later message in the SAME topic — with or without a hint — must
-	// stay pinned to whatever this topic first resolved to. The hint must
-	// not redirect an already-established topic either.
-	gotFallback := e.resolveWorkspacePattern("2793", "")
-	if gotFallback != want {
-		t.Fatalf("resolveWorkspacePattern(no hint, same topic) = %q, want %q (must stay pinned)", gotFallback, want)
+	// Register legitimately.
+	if err := e.ensureDispatchStore().upsert(DispatchExpectation{
+		Letter:          "L-0313",
+		To:              "dev-swift",
+		TopicID:         "2793",
+		TopicSessionKey: "telegram:-1003917051393:2793:7664413698",
+		State:           dispatchStateDispatched,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
 	}
-	gotHintAgain := e.resolveWorkspacePattern("2793", "处理 L-0313")
-	if gotHintAgain != want {
-		t.Fatalf("resolveWorkspacePattern(hint again, same topic) = %q, want %q (hint must not redirect an established topic)", gotHintAgain, want)
+	want := filepath.Join(root, "worktrees", "letter-L-0313")
+
+	// Registered topic — hint is still irrelevant; ledger drives the result.
+	if got := e.resolveWorkspacePattern("2793", "处理 L-0313"); got != want {
+		t.Fatalf("resolveWorkspacePattern(ledger present, hint=L-0313) = %q, want %q", got, want)
+	}
+	if got := e.resolveWorkspacePattern("2793", "no mention at all"); got != want {
+		t.Fatalf("resolveWorkspacePattern(ledger present, no hint) = %q, want %q", got, want)
 	}
 }
 

@@ -246,11 +246,19 @@ func TestRelayTopicTarget_MatchesInteractiveSessionTarget(t *testing.T) {
 
 // routingPrimitives are the calls that decide which agent, SessionManager and
 // interactive key a message belongs to.
+//
+// L-0767: the primitive is the ACTUATOR, resolveWorkspacePatternChecked, not
+// the thin wrapper resolveWorkspacePattern that discards its error. Naming the
+// wrapper here would have let this whole class of change slip past the gate:
+// when L-0767 moved the decision body into a new `...Checked` function, a
+// name-based scan pinned to the old name saw an empty wrapper and reported
+// nothing. Pin the scan to the function that produces the decision, and the
+// wrappers become just callers like any other (L-0757).
 var routingPrimitives = map[string]bool{
-	"resolveWorkspacePattern":   true,
-	"resolveWorkspace":          true,
-	"workspaceContext":          true,
-	"getOrCreateWorkspaceAgent": true,
+	"resolveWorkspacePatternChecked": true,
+	"resolveWorkspace":               true,
+	"workspaceContext":               true,
+	"getOrCreateWorkspaceAgent":      true,
 }
 
 // messageRoutingHomes are the functions allowed to touch a routing primitive
@@ -258,16 +266,24 @@ var routingPrimitives = map[string]bool{
 //
 //   - workspaceContext — the primitive that turns a workspace into an agent +
 //     SessionManager + effective dir;
-//   - topicWorkspaceKey — the single gate in front of resolveWorkspacePattern
+//   - topicWorkspaceKeyChecked — the single gate in front of the resolver
 //     (pinned to exactly one caller by TestResolveWorkspacePattern_HasOneCaller);
 //   - resolveMessageWorkspaceContext — the decider for a Message;
 //   - sessionContextForKey — the decider for a bare session key, which card
 //     callbacks need because they carry no Message. It is a second entry point,
 //     not a second opinion: TestSessionContextForKey_MatchesDecider pins it to
 //     the same answer across the whole seat × channel matrix.
+//   - resolveWorkspacePattern (L-0767) — the error-discarding wrapper over the
+//     actuator. It contains no decision of its own: it forwards its arguments
+//     verbatim and drops the refusal. Listed as a home rather than debt because
+//     there is nothing here that can diverge — but it IS listed, so another
+//     wrapper calling the actuator directly cannot appear without someone
+//     adding a line here. (topicWorkspaceKey is not listed: it wraps
+//     topicWorkspaceKeyChecked, not the actuator, so it touches no primitive.)
 var messageRoutingHomes = []string{
 	"resolveMessageWorkspaceContext",
-	"topicWorkspaceKey",
+	"topicWorkspaceKeyChecked",
+	"resolveWorkspacePattern",
 	"workspaceContext",
 	"workspaceContextForSessionKey",
 }
@@ -320,8 +336,17 @@ var messageRoutingDebt = []string{
 // TestMessageRouting_HasOneDecider below — every non-test file in package core,
 // no whitelist. Exclusion: _test.go, which may call it directly to assert
 // shard behaviour.
+//
+// L-0767: pinned to the actuator resolveWorkspacePatternChecked. The two
+// error-discarding wrappers (resolveWorkspacePattern, topicWorkspaceKey) are
+// ordinary callers and are exempted below by name, because a wrapper that only
+// forwards to the gate cannot itself be a second opinion. A new wrapper would
+// have to be added here deliberately — it cannot appear silently.
 func TestResolveWorkspacePattern_HasOneCaller(t *testing.T) {
-	callers := routingPrimitiveCallers(t, map[string]bool{"resolveWorkspacePattern": true})
+	callers := routingPrimitiveCallers(t, map[string]bool{"resolveWorkspacePatternChecked": true})
+	delete(callers, "topicWorkspaceKeyChecked")
+	// The error-discarding wrappers forward verbatim; they add no decision.
+	delete(callers, "resolveWorkspacePattern")
 	delete(callers, "topicWorkspaceKey")
 	if len(callers) > 0 {
 		var names []string
@@ -329,7 +354,7 @@ func TestResolveWorkspacePattern_HasOneCaller(t *testing.T) {
 			names = append(names, fn+" ("+where+")")
 		}
 		sort.Strings(names)
-		t.Fatalf("resolveWorkspacePattern is called outside topicWorkspaceKey:\n  %s\n\nGo through topicWorkspaceKey, or the gate in front of it gets written out by hand again and the copies drift.",
+		t.Fatalf("resolveWorkspacePatternChecked is called outside topicWorkspaceKeyChecked:\n  %s\n\nGo through topicWorkspaceKeyChecked, or the gate in front of it gets written out by hand again and the copies drift.",
 			strings.Join(names, "\n  "))
 	}
 }
